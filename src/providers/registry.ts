@@ -59,7 +59,7 @@ export function findMatchingRoute(
  * config surface minimal and the behavior predictable.
  *
  * Examples:
- *   "anthropic/*" matches "anthropic/claude-sonnet-4-6"
+ *   "anthropic/*" matches "anthropic/claude-sonnet-4.6"
  *   "*"           matches anything
  *   "openai/gpt-*" matches "openai/gpt-4o"
  */
@@ -76,7 +76,7 @@ export function globMatch(pattern: string, value: string): boolean {
  * slash — handles the case where the user's config already uses a bare id.
  *
  * NOT applied to OpenRouter: its native model-id namespace already contains
- * prefixes (`qwen/qwen3-30b`, `anthropic/claude-sonnet-4-6`), and stripping
+ * prefixes (`qwen/qwen3-30b`, `anthropic/claude-sonnet-4.6`), and stripping
  * them would break routing at the OR layer.
  */
 export function stripRoutingPrefix(modelId: string): string {
@@ -113,7 +113,7 @@ function instantiate(
       return new OpenRouterProvider({ apiKey, model: modelId })
 
     case "anthropic":
-      // Anthropic SDK expects a bare id ("claude-sonnet-4-6").
+      // Anthropic SDK expects a bare id ("claude-sonnet-4.6").
       return new AnthropicProvider({
         apiKey,
         model: stripRoutingPrefix(modelId),

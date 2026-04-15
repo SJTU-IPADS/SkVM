@@ -69,7 +69,7 @@ function sanitizeTag(s: string): string {
 
 /**
  * Abbreviate a model ID for use in session ID tags.
- * "anthropic/claude-sonnet-4-6" → "claude-sonnet-4-6"
+ * "anthropic/claude-sonnet-4.6" → "claude-sonnet-4.6"
  * "qwen/qwen3-30b-a3b-instruct-2507" → "qwen3-30b"
  */
 export function shortModel(model: string): string {

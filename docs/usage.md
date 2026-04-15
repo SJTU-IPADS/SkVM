@@ -88,7 +88,7 @@ skvm aot-compile --skill=<path> --model=<id> --pass=1,2
 skvm aot-compile --skill=<path> --model=<id> --dry-run
 
 # Override the compiler backend model
-skvm aot-compile --skill=<path> --model=<id> --compiler-model=anthropic/claude-sonnet-4-6
+skvm aot-compile --skill=<path> --model=<id> --compiler-model=anthropic/claude-sonnet-4.6
 ```
 
 Three sequential compiler passes:
@@ -170,7 +170,7 @@ skvm jit-optimize \
   --task-source=synthetic \
   --synthetic-count=3 \
   --synthetic-test-count=2 \
-  --optimizer-model=anthropic/claude-sonnet-4-6 \
+  --optimizer-model=anthropic/claude-sonnet-4.6 \
   --target-model=qwen/qwen3-30b-a3b-instruct-2507 \
   --rounds=3
 ```
@@ -189,7 +189,7 @@ skvm jit-optimize \
   --task-source=real \
   --tasks=<train-id-or-path,...> \
   --test-tasks=<test-id-or-path,...> \
-  --optimizer-model=anthropic/claude-sonnet-4-6 \
+  --optimizer-model=anthropic/claude-sonnet-4.6 \
   --target-model=qwen/qwen3-30b-a3b-instruct-2507 \
   --rounds=3
 ```
@@ -208,7 +208,7 @@ skvm jit-optimize \
   --task-source=log \
   --logs=path/to/log1.jsonl,path/to/log2.jsonl \
   --failures=path/to/log1-failure.json,path/to/log2-failure.json \
-  --optimizer-model=anthropic/claude-sonnet-4-6 \
+  --optimizer-model=anthropic/claude-sonnet-4.6 \
   --target-model=qwen/qwen3-30b-a3b-instruct-2507
 ```
 

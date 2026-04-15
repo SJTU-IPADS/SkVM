@@ -15,6 +15,7 @@ import type { EvalCriterion } from "../../core/types.ts"
 import type { BenchTask } from "../types.ts"
 import { writeTask, addFixtureFile } from "../loader.ts"
 import { createLogger } from "../../core/logger.ts"
+import { TASK_FILE_DEFAULTS } from "../../core/ui-defaults.ts"
 
 const log = createLogger("import-pinchbench")
 
@@ -340,7 +341,7 @@ export async function importPinchBench(
         fixtures: Object.keys(fixtures).length > 0 ? fixtures : undefined,
         eval: eval_,
         timeoutMs: (fm.timeout_seconds ?? 120) * 1000,
-        maxSteps: 30,
+        maxSteps: TASK_FILE_DEFAULTS.maxSteps,
         category: fm.category,
         gradingType,
         gradingWeights,

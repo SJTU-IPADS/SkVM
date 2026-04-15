@@ -57,52 +57,85 @@ Set your API key:
 export OPENROUTER_API_KEY=sk-or-...
 ```
 
+Every example below passes every flag with a default explicitly, so the command you copy is exactly the command that runs — no implicit behavior to look up. Drop a flag to accept its default; change a value to override.
+
 ### 1. Profile a model's primitive capabilities
 
 Writes a target capability profile to `~/.skvm/profiles/`.
 
 ```bash
-skvm profile --model=qwen/qwen3.5-35b-a3b --adapter=openclaw
+skvm profile \
+  --model=qwen/qwen3.5-35b-a3b \
+  --adapter=openclaw \
+  --instances=3 \
+  --concurrency=1
 ```
+
+Defaults shown: `--adapter=bare-agent` (overridden to `openclaw` above), `--instances=3`, `--concurrency=1`.
 
 ### 2. Compile a skill against that profile
 
 The compiler rewrites the skill to match the target's capabilities.
 
 ```bash
-skvm aot-compile --skill=path/to/your/SKILL.md --model=qwen/qwen3.5-35b-a3b
+skvm aot-compile \
+  --skill=path/to/skill-dir \
+  --model=qwen/qwen3.5-35b-a3b \
+  --adapter=bare-agent \
+  --pass=1,2,3 \
+  --concurrency=1 \
+  --compiler-model=anthropic/claude-sonnet-4.6
 ```
+
+Defaults shown: `--adapter=bare-agent`, `--pass=1,2,3`, `--concurrency=1`, `--compiler-model=anthropic/claude-sonnet-4.6`.
 
 ### 3. Autotune the skill with synthetic tasks
 
 The optimizer LLM derives tasks from the skill itself, then loops edit → rerun → score.
 
 ```bash
-skvm jit-optimize --skill=path/to/skill-dir \
+skvm jit-optimize \
+  --skill=path/to/skill-dir \
   --task-source=synthetic \
   --optimizer-model=anthropic/claude-sonnet-4.6 \
-  --target-model=qwen/qwen3.5-35b-a3b
+  --target-model=qwen/qwen3.5-35b-a3b \
+  --target-adapter=bare-agent \
+  --synthetic-count=3 \
+  --synthetic-test-count=2 \
+  --rounds=3 \
+  --runs-per-task=2 \
+  --task-concurrency=1 \
+  --convergence=0.95
 ```
+
+Defaults shown: `--target-adapter=bare-agent`, `--synthetic-count=3`, `--synthetic-test-count=2`, `--rounds=3`, `--runs-per-task=2`, `--task-concurrency=1`, `--convergence=0.95`.
 
 ### 4. Optimize from an existing conversation log
 
 No rerun, just diagnose and edit. Good for post-mortems and for the `skvm-jit` post-task feedback hook.
 
 ```bash
-skvm jit-optimize --skill=path/to/skill-dir \
+skvm jit-optimize \
+  --skill=path/to/skill-dir \
   --task-source=log \
   --logs=path/to/session.jsonl \
   --optimizer-model=anthropic/claude-sonnet-4.6 \
-  --target-model=qwen/qwen3.5-35b-a3b
+  --target-model=qwen/qwen3.5-35b-a3b \
+  --target-adapter=bare-agent \
+  --rounds=1
 ```
+
+Defaults shown: `--target-adapter=bare-agent`, `--rounds=1` (log mode defaults to 1 round; `--runs-per-task`, `--convergence`, `--baseline` are forbidden for log).
 
 ### Review, accept, or reject the proposal
 
 ```bash
-skvm proposals list
+skvm proposals list --sort=recent
 skvm proposals show <id>
 skvm proposals accept <id>
 ```
+
+Defaults shown: `--sort=recent` (other sort keys: `delta`, `skill`, `model`).
 
 ## Configuration
 

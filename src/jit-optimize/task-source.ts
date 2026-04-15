@@ -903,8 +903,8 @@ async function resolveRealTasks(taskRefs: string[], label: string): Promise<Runn
       eval: task.eval,
       workDir,
       fixturesDir,
-      timeoutMs: task.timeoutMs ?? 300_000,
-      maxSteps: task.maxSteps ?? 30,
+      timeoutMs: task.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS,
+      maxSteps: task.maxSteps ?? DEFAULT_TASK_MAX_STEPS,
     })
   }
   return out
@@ -934,10 +934,10 @@ async function loadTaskFromPath(ref: string): Promise<import("../bench/types.ts"
       prompt: parsed.prompt,
       fixtures: parsed.fixtures ? { ...parsed.fixtures } : undefined,
       eval: eval_,
-      timeoutMs: parsed.timeoutMs ?? 120_000,
-      maxSteps: parsed.maxSteps ?? 30,
-      category: parsed.category ?? "general",
-      gradingType: parsed.gradingType ?? "automated",
+      timeoutMs: parsed.timeoutMs,
+      maxSteps: parsed.maxSteps,
+      category: parsed.category,
+      gradingType: parsed.gradingType,
       gradingWeights: parsed.gradingWeights,
       skill: parsed.skill,
       taskDir,

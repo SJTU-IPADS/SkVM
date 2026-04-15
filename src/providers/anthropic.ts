@@ -74,7 +74,7 @@ export class AnthropicProvider implements LLMProvider {
 
   constructor(opts: { apiKey?: string; model?: string } = {}) {
     this.client = new Anthropic({ apiKey: opts.apiKey ?? process.env.ANTHROPIC_API_KEY })
-    this.model = opts.model ?? process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6"
+    this.model = opts.model ?? process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4.6"
   }
 
   async complete(params: CompletionParams): Promise<LLMResponse> {

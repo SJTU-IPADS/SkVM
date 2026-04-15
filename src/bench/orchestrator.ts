@@ -24,6 +24,7 @@ import { createLogger } from "../core/logger.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { createAsyncMutex, runScheduled, type WorkItem, type RunnerHandle } from "../core/concurrency.ts"
 import { RunSession, shortModel } from "../core/run-session.ts"
+import { TASK_FILE_DEFAULTS, MODEL_DEFAULTS } from "../core/ui-defaults.ts"
 
 const log = createLogger("bench-orchestrator")
 
@@ -176,7 +177,7 @@ async function prepareBenchSession(config: BenchRunConfig): Promise<{
   const adapterConfig: AdapterConfig = {
     model: config.model,
     maxSteps: config.maxSteps,
-    timeoutMs: 120_000 * config.timeoutMult,
+    timeoutMs: TASK_FILE_DEFAULTS.timeoutMs * config.timeoutMult,
   }
 
   const providerFactory = (cfg: AdapterConfig): LLMProvider => createProviderForModel(cfg.model)
@@ -197,7 +198,7 @@ async function prepareBenchSession(config: BenchRunConfig): Promise<{
   // no-skill / original / jit-optimized / jit-boost for not having a
   // compiler key set up.
   let compilerProvider: LLMProvider | undefined
-  const compilerModel = config.compilerModel ?? "anthropic/claude-sonnet-4.6"
+  const compilerModel = config.compilerModel ?? MODEL_DEFAULTS.compiler
   if (config.conditions.some((c) => isAotCondition(c))) {
     compilerProvider = createProviderForModel(compilerModel)
     log.info(`Compiler provider: ${compilerProvider.name} (${compilerModel})`)

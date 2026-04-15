@@ -5,7 +5,7 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   // Anthropic
   "claude-opus-4.6": { input: 15, output: 75 },
   "claude-opus-4-6": { input: 15, output: 75 },
-  "claude-sonnet-4-6": { input: 3, output: 15 },
+  "claude-sonnet-4.6": { input: 3, output: 15 },
   "claude-haiku-4.5": { input: 0.8, output: 4 },
   "claude-haiku-4-5": { input: 0.8, output: 4 },
   // OpenAI
@@ -38,7 +38,7 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
 
 /**
  * Normalize model name by stripping provider prefix.
- * e.g. "anthropic/claude-sonnet-4-6" -> "claude-sonnet-4-6"
+ * e.g. "anthropic/claude-sonnet-4.6" -> "claude-sonnet-4.6"
  *      "qwen/qwen3.5-9b" -> "qwen3.5-9b"
  */
 function normalizeModelName(model: string): string {

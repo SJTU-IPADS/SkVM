@@ -56,6 +56,7 @@ import { createProviderForModel } from "../providers/registry.ts"
 import { isProviderError } from "../providers/errors.ts"
 import { isHeadlessAgentError } from "../core/headless-agent.ts"
 import { type AdapterName, createAdapter } from "../adapters/registry.ts"
+import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { createLogger } from "../core/logger.ts"
 import { Pool } from "../core/concurrency.ts"
@@ -293,7 +294,7 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
   const adapterPool = new Pool(adapterInstances)
   const adapterConfig: AdapterConfig = {
     model: config.targetAdapter.model,
-    maxSteps: config.targetAdapter.adapterConfig?.maxSteps ?? 30,
+    maxSteps: config.targetAdapter.adapterConfig?.maxSteps ?? TASK_FILE_DEFAULTS.maxSteps,
     timeoutMs: config.targetAdapter.adapterConfig?.timeoutMs ?? 300_000,
     apiKey: config.targetAdapter.adapterConfig?.apiKey,
     providerOptions: config.targetAdapter.adapterConfig?.providerOptions,

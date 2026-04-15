@@ -2,18 +2,19 @@ import { z } from "zod"
 import { EvalCriterionSchema } from "../core/types.ts"
 import type { Task, EvalCheckpoint, EvalCriterion, TokenUsage, SkillMode, RunStatus } from "../core/types.ts"
 import type { AdapterName } from "../adapters/registry.ts"
+import { TASK_FILE_DEFAULTS, BENCH_CONFIG_DEFAULTS } from "../core/ui-defaults.ts"
 
 // ---------------------------------------------------------------------------
 // Bench Config
 // ---------------------------------------------------------------------------
 
 export const BenchConfigFileSchema = z.object({
-  excludedTasks: z.array(z.string()).default([]),
-  defaultConditions: z.array(z.string()).default(["no-skill", "original", "aot-compiled", "jit-optimized"]),
-  defaultJitRuns: z.number().default(3),
-  defaultTimeoutMult: z.number().default(1.0),
-  defaultMaxSteps: z.number().default(30),
-  models: z.array(z.string()).default([]),
+  excludedTasks: z.array(z.string()).default(() => [...BENCH_CONFIG_DEFAULTS.excludedTasks]),
+  defaultConditions: z.array(z.string()).default(() => [...BENCH_CONFIG_DEFAULTS.defaultConditions]),
+  defaultJitRuns: z.number().default(BENCH_CONFIG_DEFAULTS.defaultJitRuns),
+  defaultTimeoutMult: z.number().default(BENCH_CONFIG_DEFAULTS.defaultTimeoutMult),
+  defaultMaxSteps: z.number().default(BENCH_CONFIG_DEFAULTS.defaultMaxSteps),
+  models: z.array(z.string()).default(() => [...BENCH_CONFIG_DEFAULTS.models]),
 })
 
 export type BenchConfigFile = z.infer<typeof BenchConfigFileSchema>
@@ -65,17 +66,17 @@ export interface BenchTask extends Task {
 export const BenchTaskFileSchema = z.object({
   id: z.string(),
   name: z.string().optional(),
-  category: z.string().default("general"),
-  gradingType: z.enum(["automated", "llm_judge", "hybrid"]).default("automated"),
+  category: z.string().default(TASK_FILE_DEFAULTS.category),
+  gradingType: z.enum(["automated", "llm_judge", "hybrid"]).default(TASK_FILE_DEFAULTS.gradingType),
   prompt: z.string(),
-  timeoutMs: z.number().default(120_000),
-  maxSteps: z.number().default(30),
+  timeoutMs: z.number().default(TASK_FILE_DEFAULTS.timeoutMs),
+  maxSteps: z.number().default(TASK_FILE_DEFAULTS.maxSteps),
   eval: z.array(z.any()).min(1),
   fixtures: z.record(z.string()).optional(),
   gradingWeights: z.object({ automated: z.number(), llmJudge: z.number() }).optional(),
   skill: z.union([z.string(), z.array(z.string()), z.null()]).optional(),
   origin: OriginSchema.optional(),
-  hostReady: z.boolean().default(true),
+  hostReady: z.boolean().default(TASK_FILE_DEFAULTS.hostReady),
   difficulty: z.enum(["easy", "medium", "hard"]).optional(),
 })
 

@@ -5,6 +5,7 @@ import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir } from "../core/config.ts"
 import { runCommand } from "./opencode.ts"
+import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 
 const log = createLogger("hermes")
 
@@ -207,15 +208,15 @@ export async function resolveHermesCmd(): Promise<string[]> {
 export class HermesAdapter implements AgentAdapter {
   readonly name = "hermes"
   private model = ""
-  private maxSteps = 30
-  private timeoutMs = 120_000
+  private maxSteps = TASK_FILE_DEFAULTS.maxSteps
+  private timeoutMs = TASK_FILE_DEFAULTS.timeoutMs
   private cmdPrefix: string[] = []
   private repoDir: string | undefined
 
   async setup(config: AdapterConfig): Promise<void> {
     this.model = config.model
-    this.maxSteps = config.maxSteps ?? 30
-    this.timeoutMs = config.timeoutMs ?? 120_000
+    this.maxSteps = config.maxSteps ?? TASK_FILE_DEFAULTS.maxSteps
+    this.timeoutMs = config.timeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs
     this.repoDir = getAdapterRepoDir("hermes")
     this.cmdPrefix = await resolveHermesCmd()
     log.info(`hermes command: ${this.cmdPrefix.join(" ")}`)

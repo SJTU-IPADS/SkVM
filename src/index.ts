@@ -3,6 +3,7 @@
 import "./core/env-bootstrap.ts"
 import { setLogLevel, createLogger } from "./core/logger.ts"
 import { ALL_ADAPTERS, type AdapterName, createAdapter, isAdapterName } from "./adapters/registry.ts"
+import { CLI_DEFAULTS, MODEL_DEFAULTS } from "./core/ui-defaults.ts"
 import pkgJson from "../package.json" with { type: "json" }
 
 const args = process.argv.slice(2)
@@ -128,15 +129,15 @@ Usage:
 
 Options:
   --model=<id,...>      Model identifier(s), comma-separated (required unless --batch)
-  --adapter=<name,...>  Agent adapter(s), comma-separated (default: bare-agent;
+  --adapter=<name,...>  Agent adapter(s), comma-separated (default: ${CLI_DEFAULTS.adapter};
                         batch default: all adapters)
   --primitives=<list>   Comma-separated primitive IDs (default: all registered)
   --skip=<list>         Comma-separated primitive IDs to skip
-  --instances=<n>       Instances per level (default: 3)
+  --instances=<n>       Instances per level (default: ${CLI_DEFAULTS.profileInstances})
   --force               Ignore cached profile, re-run
   --list                List cached profiles
   --batch               Profile all models from bench config
-  --concurrency=<n>     Parallel primitives across all model×adapter combos (default: 1).
+  --concurrency=<n>     Parallel primitives across all model×adapter combos (default: ${CLI_DEFAULTS.concurrency}).
                         Slots are distributed per-adapter then per-model.
   --verbose             Show detailed output`)
     process.exit(0)
@@ -158,9 +159,9 @@ Options:
 
   const primitives = flags.primitives?.split(",")
   const skip = flags.skip?.split(",")
-  const instances = flags.instances ? parseInt(flags.instances) : 3
+  const instances = flags.instances ? parseInt(flags.instances) : CLI_DEFAULTS.profileInstances
   const force = flags.force === "true"
-  const concurrency = flags.concurrency ? parseInt(flags.concurrency) : 1
+  const concurrency = flags.concurrency ? parseInt(flags.concurrency) : CLI_DEFAULTS.concurrency
 
   // Resolve models
   let models: string[]
@@ -185,7 +186,7 @@ Options:
   } else if (flags.batch === "true") {
     adapters = [...ALL_ADAPTERS]
   } else {
-    adapters = ["bare-agent"]
+    adapters = [CLI_DEFAULTS.adapter as AdapterName]
   }
 
   // Provider-specific API key is checked lazily when createProviderForModel
@@ -326,7 +327,7 @@ Required:
 
 Options:
   --skill=<path>        Optional path to a SKILL.md file
-  --adapter=<name>      Agent adapter: ${ALL_ADAPTERS.join(" | ")} (default: bare-agent)
+  --adapter=<name>      Agent adapter: ${ALL_ADAPTERS.join(" | ")} (default: ${CLI_DEFAULTS.adapter})
   --workdir=<path>      Use this directory instead of a temp work directory
   --timeoutMs=<n>       Override task timeout in ms
   --maxSteps=<n>        Override max steps for the adapter
@@ -347,7 +348,7 @@ Notes:
     process.exit(1)
   }
 
-  const harnessStr = flags.adapter ?? "bare-agent"
+  const harnessStr = flags.adapter ?? CLI_DEFAULTS.adapter
   if (!isAdapterName(harnessStr)) {
     console.error(`Invalid adapter: ${harnessStr}. Valid: ${ALL_ADAPTERS.join(", ")}`)
     process.exit(1)
@@ -438,12 +439,12 @@ Usage:
 Options:
   --skill=<id,...>      Skill name(s) or path(s), comma-separated (required)
   --model=<id,...>      Target model(s), comma-separated (required)
-  --adapter=<name,...>  Harness name(s), comma-separated (${ALL_ADAPTERS.join(" | ")}; default: bare-agent)
+  --adapter=<name,...>  Harness name(s), comma-separated (${ALL_ADAPTERS.join(" | ")}; default: ${CLI_DEFAULTS.adapter})
   --profile=<path>      Path to TCP JSON (single-job only; default: load from cache)
   --pass=1,2,3          Which passes to run (default: 1,2,3)
-  --concurrency=<n>     Parallel compilations (default: 1)
+  --concurrency=<n>     Parallel compilations (default: ${CLI_DEFAULTS.concurrency})
   --dry-run             Show plan without applying
-  --compiler-model=<id> Compiler model via OpenRouter (default: anthropic/claude-sonnet-4.6)`)
+  --compiler-model=<id> Compiler model via OpenRouter (default: ${MODEL_DEFAULTS.compiler})`)
     process.exit(0)
   }
 
@@ -454,11 +455,11 @@ Options:
 
   const skillInputs = flags.skill.split(",").map(s => s.trim())
   const models = flags.model.split(",").map(m => m.trim())
-  const adapters = (flags.adapter ?? "bare-agent").split(",").map(a => a.trim())
+  const adapters = (flags.adapter ?? CLI_DEFAULTS.adapter).split(",").map(a => a.trim())
   const passes: number[] = flags.pass
     ? flags.pass.split(",").map(p => Number(p.trim()))
     : [1, 2, 3]
-  const concurrency = flags.concurrency ? parseInt(flags.concurrency) : 1
+  const concurrency = flags.concurrency ? parseInt(flags.concurrency) : CLI_DEFAULTS.concurrency
   const dryRun = flags["dry-run"] === "true"
 
   for (const a of adapters) {
@@ -562,7 +563,7 @@ Options:
   // Create shared provider and run jobs
   // ---------------------------------------------------------------------------
   const { createProviderForModel } = await import("./providers/registry.ts")
-  const compilerModel = flags["compiler-model"] ?? "anthropic/claude-sonnet-4.6"
+  const compilerModel = flags["compiler-model"] ?? MODEL_DEFAULTS.compiler
   const provider = createProviderForModel(compilerModel)
   const { compileSkill, writeVariant } = await import("./compiler/index.ts")
   const { createSlotPool } = await import("./core/concurrency.ts")
@@ -644,11 +645,11 @@ Usage:
 Options:
   --skill=<path>          Path to skill directory or SKILL.md (required)
   --model=<id>            Target model (required)
-  --adapter=<name>        Harness: ${ALL_ADAPTERS.join(" | ")} (default: bare-agent)
+  --adapter=<name>        Harness: ${ALL_ADAPTERS.join(" | ")} (default: ${CLI_DEFAULTS.adapter})
   --force-profile         Re-profile even if cached
   --profile=<path>        Use specific TCP file (skip auto-profiling)
   --pass=1,2,3            Compiler passes (default: 1,2,3)
-  --compiler-model=<id>   Compiler model via OpenRouter (default: anthropic/claude-sonnet-4.6)
+  --compiler-model=<id>   Compiler model via OpenRouter (default: ${MODEL_DEFAULTS.compiler})
   --dry-run               Show compilation plan without writing`)
     process.exit(0)
   }
@@ -660,7 +661,7 @@ Options:
     process.exit(1)
   }
 
-  const harnessStr = flags.adapter ?? "bare-agent"
+  const harnessStr = flags.adapter ?? CLI_DEFAULTS.adapter
   if (!isAdapterName(harnessStr)) {
     console.error(`Invalid adapter: ${harnessStr}. Valid: ${ALL_ADAPTERS.join(", ")}`)
     process.exit(1)
@@ -751,7 +752,7 @@ Options:
   console.log(`\nCompiling skill for ${model} -- ${harness}...`)
 
   const { createProviderForModel: createCompilerProvider } = await import("./providers/registry.ts")
-  const pipelineCompilerModel = flags["compiler-model"] ?? "anthropic/claude-sonnet-4.6"
+  const pipelineCompilerModel = flags["compiler-model"] ?? MODEL_DEFAULTS.compiler
   const provider = createCompilerProvider(pipelineCompilerModel)
 
   const { dirname: pipelineDirname } = await import("node:path")
@@ -1001,14 +1002,14 @@ async function runLogs(flags: Record<string, string>) {
 
 Options:
   --type=<type>    Filter by type (profile, aot-compile, bench, run, pipeline)
-  --limit=<n>      Show last N entries (default: 20)
+  --limit=<n>      Show last N entries (default: ${CLI_DEFAULTS.listLimit})
   --all            Show all entries (no limit)`)
     process.exit(0)
   }
 
   const { readSessions } = await import("./core/run-session.ts")
 
-  const limit = flags.all === "true" ? undefined : (flags.limit ? parseInt(flags.limit) : 20)
+  const limit = flags.all === "true" ? undefined : (flags.limit ? parseInt(flags.limit) : CLI_DEFAULTS.listLimit)
   const entries = await readSessions({ type: flags.type, limit })
 
   if (entries.length === 0) {
@@ -1100,7 +1101,7 @@ Proposals root: $SKVM_PROPOSALS_DIR or ~/.skvm/proposals by default.`)
       if (!Number.isNaN(min)) rows = filterByMinDelta(rows, min)
     }
 
-    const sortKey = (flags.sort ?? "recent") as "recent" | "delta" | "skill" | "model"
+    const sortKey = (flags.sort ?? CLI_DEFAULTS.listSort) as "recent" | "delta" | "skill" | "model"
     rows = sortRows(rows, sortKey)
 
     if (flags["group-by"]) {
@@ -1186,8 +1187,8 @@ Proposals root: $SKVM_PROPOSALS_DIR or ~/.skvm/proposals by default.`)
   }
 
   if (sub === "serve") {
-    const port = flags.port ? parseInt(flags.port, 10) : 7878
-    const host = flags.host ?? "127.0.0.1"
+    const port = flags.port ? parseInt(flags.port, 10) : CLI_DEFAULTS.reportPort
+    const host = flags.host ?? CLI_DEFAULTS.reportHost
     if (Number.isNaN(port) || port < 1 || port > 65535) {
       console.error(`--port must be a valid port number`)
       process.exit(1)
@@ -1263,10 +1264,10 @@ Required for all sources:
 
 Task-source-specific flags:
   --task-source=synthetic
-    --synthetic-count=<n>      Train tasks to generate (default: 3)
-    --synthetic-test-count=<n> Held-out test tasks to generate (default: 2)
+    --synthetic-count=<n>      Train tasks to generate (default: ${CLI_DEFAULTS.syntheticTrainCount})
+    --synthetic-test-count=<n> Held-out test tasks to generate (default: ${CLI_DEFAULTS.syntheticTestCount})
     --target-model=<id>        Target model being optimized for          [required]
-    --target-adapter=<name>    ${ALL_ADAPTERS.join(" | ")} (default: bare-agent)
+    --target-adapter=<name>    ${ALL_ADAPTERS.join(" | ")} (default: ${CLI_DEFAULTS.adapter})
     (forbidden: --tasks, --test-tasks, --logs, --failures)
 
   --task-source=real
@@ -1274,26 +1275,26 @@ Task-source-specific flags:
     --test-tasks=<id|path,...> Held-out test tasks. If omitted, --tasks is used as
                                both train and test (fallback for small task lists).
     --target-model=<id>        Target model being optimized for          [required]
-    --target-adapter=<name>    ${ALL_ADAPTERS.join(" | ")} (default: bare-agent)
+    --target-adapter=<name>    ${ALL_ADAPTERS.join(" | ")} (default: ${CLI_DEFAULTS.adapter})
     (forbidden: --synthetic-count, --synthetic-test-count, --logs, --failures)
 
   --task-source=log
     --logs=<path,...>          Conversation log files, comma-separated   [required]
     --failures=<path,...>      Per-log failure JSON files, same order    [optional]
     --target-model=<id>        Target model the logs were produced on    [required]
-    --target-adapter=<name>    ${ALL_ADAPTERS.join(" | ")} (default: bare-agent)
+    --target-adapter=<name>    ${ALL_ADAPTERS.join(" | ")} (default: ${CLI_DEFAULTS.adapter})
                                (informational only — log source does not rerun tasks)
     (forbidden: --tasks, --test-tasks, --synthetic-count, --synthetic-test-count,
                 --runs-per-task, --convergence, --baseline)
 
 Loop:
   --rounds=<n>               Max optimization rounds (default: 1 for log, 3 otherwise)
-  --runs-per-task=<n>        Runs per task per round (default: 2; forbidden for log).
+  --runs-per-task=<n>        Runs per task per round (default: ${CLI_DEFAULTS.jitOptimizeRunsPerTask}; forbidden for log).
                              Default was 1 prior to the pickBestRound hardening;
                              raised to give the selection noise-floor a cleaner
                              statistical basis and reduce single-run variance in
                              per-task monotonicity checks.
-  --task-concurrency=<n>     Max parallel in-flight task runs per round (default: 1;
+  --task-concurrency=<n>     Max parallel in-flight task runs per round (default: ${CLI_DEFAULTS.jitOptimizeTaskConcurrency};
                              forbidden for log). Train + test share the same limiter,
                              so total in-flight never exceeds N. jiuwenclaw holds a
                              global sidecar file lock and serializes naturally
@@ -1309,7 +1310,7 @@ Delivery (writes to the proposals tree):
 
 Batch mode:
   --skill-list=<file>        One skill path per line
-  --concurrency=<n>          Parallel jobs (default: 1)
+  --concurrency=<n>          Parallel jobs (default: ${CLI_DEFAULTS.concurrency})
 `)
     process.exit(0)
   }
@@ -1336,7 +1337,7 @@ Batch mode:
   // used to run anything; it's the storage key (target the logs came from),
   // and the user knows it because they're feeding in those logs.
   const tModel = flags["target-model"] ?? flags.model
-  const tHarnessStr = flags["target-adapter"] ?? flags.adapter ?? "bare-agent"
+  const tHarnessStr = flags["target-adapter"] ?? flags.adapter ?? CLI_DEFAULTS.adapter
   if (!isAdapterName(tHarnessStr)) {
     console.error(`jit-optimize: invalid --target-adapter "${tHarnessStr}". Valid: ${ALL_ADAPTERS.join(", ")}`)
     process.exit(1)
@@ -1359,8 +1360,8 @@ Batch mode:
   // scoring variance. Two runs is the cheapest meaningful improvement on
   // that statistical basis. Users can still pass `--runs-per-task=1`
   // explicitly to opt out.
-  const runsPerTask = flags["runs-per-task"] ? parseInt(flags["runs-per-task"], 10) : 2
-  const taskConcurrency = flags["task-concurrency"] ? parseInt(flags["task-concurrency"], 10) : 1
+  const runsPerTask = flags["runs-per-task"] ? parseInt(flags["runs-per-task"], 10) : CLI_DEFAULTS.jitOptimizeRunsPerTask
+  const taskConcurrency = flags["task-concurrency"] ? parseInt(flags["task-concurrency"], 10) : CLI_DEFAULTS.jitOptimizeTaskConcurrency
   if (!Number.isFinite(taskConcurrency) || taskConcurrency < 1) {
     console.error(`jit-optimize: --task-concurrency must be an integer >= 1 (got "${flags["task-concurrency"]}")`)
     process.exit(1)
@@ -1369,7 +1370,7 @@ Batch mode:
   const baseline = flags.baseline === "true" || flags.baseline === ""
   const keepAllRounds = flags["no-keep-all-rounds"] !== "true" && flags["no-keep-all-rounds"] !== ""
   const autoApply = flags["auto-apply"] === "true" || flags["auto-apply"] === ""
-  const concurrency = flags.concurrency ? parseInt(flags.concurrency, 10) : 1
+  const concurrency = flags.concurrency ? parseInt(flags.concurrency, 10) : CLI_DEFAULTS.concurrency
 
   const { jitOptimize } = await import("./jit-optimize/index.ts")
   const { acquireOptimizeLock, releaseOptimizeLock } = await import("./proposals/storage.ts")
@@ -1469,8 +1470,8 @@ function buildTaskSource(flags: Record<string, string>): import("./jit-optimize/
     process.exit(1)
   }
   if (kind === "synthetic" || kind === "synthetic-task") {
-    const trainCount = flags["synthetic-count"] ? parseInt(flags["synthetic-count"], 10) : 3
-    const testCount = flags["synthetic-test-count"] ? parseInt(flags["synthetic-test-count"], 10) : 2
+    const trainCount = flags["synthetic-count"] ? parseInt(flags["synthetic-count"], 10) : CLI_DEFAULTS.syntheticTrainCount
+    const testCount = flags["synthetic-test-count"] ? parseInt(flags["synthetic-test-count"], 10) : CLI_DEFAULTS.syntheticTestCount
     if (trainCount < 1) {
       console.error("jit-optimize: --synthetic-count must be >= 1")
       process.exit(1)

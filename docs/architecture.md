@@ -209,4 +209,4 @@ The bench `jit-optimized` condition reads `round-{bestRound}/` of the latest pro
 - Zod schemas for all JSON artifacts — `types.ts` defines types and schemas together.
 - All imports use the `.ts` extension (required by `verbatimModuleSyntax`).
 - Plans and deep design docs go under `docs/skvm/`.
-- Model IDs use OpenRouter format: `qwen/qwen3-30b-a3b-instruct-2507`, `anthropic/claude-sonnet-4-6`.
+- Model IDs use OpenRouter format: `qwen/qwen3-30b-a3b-instruct-2507`, `anthropic/claude-sonnet-4.6`.

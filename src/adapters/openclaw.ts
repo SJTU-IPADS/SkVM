@@ -6,6 +6,7 @@ import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir } from "../core/config.ts"
 import { tryAcquireFileLock, withFileLock, releaseFileLock } from "../core/file-lock.ts"
+import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 
 const log = createLogger("openclaw")
 
@@ -655,7 +656,7 @@ const openclawPool = new OpenClawPool()
 export class OpenClawAdapter implements AgentAdapter {
   readonly name = "openclaw"
   private model = ""
-  private timeoutMs = 120_000
+  private timeoutMs = TASK_FILE_DEFAULTS.timeoutMs
 
   async setup(config: AdapterConfig): Promise<void> {
     this.model = config.model

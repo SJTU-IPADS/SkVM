@@ -10,6 +10,7 @@ import { estimateCost } from "../core/cost.ts"
 import { createLogger } from "../core/logger.ts"
 import { ConversationSession, type ConversationLog } from "../core/conversation-logger.ts"
 import { LoggingProvider } from "../core/logging-provider.ts"
+import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 
 const log = createLogger("bare-agent")
 
@@ -128,8 +129,8 @@ export class BareAgentAdapter implements AgentAdapter {
   readonly name = "bare-agent"
   private provider!: LLMProvider
   private model = ""
-  private maxSteps = 30
-  private timeoutMs = 120_000
+  private maxSteps = TASK_FILE_DEFAULTS.maxSteps
+  private timeoutMs = TASK_FILE_DEFAULTS.timeoutMs
   private hooks: RuntimeHooks = {}
 
   constructor(

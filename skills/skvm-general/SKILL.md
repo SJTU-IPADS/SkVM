@@ -115,7 +115,7 @@ skvm proposals accept <id> --target=<dir>                     # deploy to a non-
 skvm proposals reject <id>                                    # mark as rejected (no deploy)
 ```
 
-Proposal id format: `<harness>/<target-model>/<skill-name>/<timestamp>`. When the user gives you an id like `bare-agent/claude-sonnet-4-6/calendar/20260401T120000Z`, pass it verbatim — do not reformat it.
+Proposal id format: `<harness>/<target-model>/<skill-name>/<timestamp>`. When the user gives you an id like `bare-agent/claude-sonnet-4.6/calendar/20260401T120000Z`, pass it verbatim — do not reformat it.
 
 **Critical rule**: only run `skvm proposals accept` when the user has **explicitly** asked to deploy. If the user just says "check the proposals", run `list` and `show` and stop there. Accepting without confirmation overwrites the skill files in place.
 

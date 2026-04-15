@@ -42,6 +42,7 @@ import {
   registerCustomEvaluator,
   type CustomEvaluator,
 } from "../../framework/types.ts"
+import { TASK_FILE_DEFAULTS } from "../../core/ui-defaults.ts"
 
 const log = createLogger("junit-grade")
 
@@ -69,7 +70,7 @@ export const JunitGradePayloadSchema = z
     /** Reserved for future runners (pytest, jest, …). Only "bun" is wired today. */
     runner: z.enum(["bun"]).default("bun"),
     /** Timeout for the test subprocess in milliseconds. */
-    timeoutMs: z.number().int().positive().default(120_000),
+    timeoutMs: z.number().int().positive().default(TASK_FILE_DEFAULTS.timeoutMs),
     criteria: z
       .array(JunitGradeCriterionSchema)
       .min(1, "criteria must be a non-empty array"),

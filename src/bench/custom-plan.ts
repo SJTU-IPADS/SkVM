@@ -20,6 +20,7 @@ import { createLogger } from "../core/logger.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { runScheduled, createAsyncMutex, type WorkItem, type RunnerHandle } from "../core/concurrency.ts"
 import { RunSession, shortModel } from "../core/run-session.ts"
+import { TASK_FILE_DEFAULTS, CLI_DEFAULTS } from "../core/ui-defaults.ts"
 
 const log = createLogger("bench-custom")
 
@@ -101,9 +102,9 @@ export async function parseCustomPlan(yamlPath: string): Promise<{
     model: plan.defaults?.model,
     adapter: plan.defaults?.adapter,
     judgeModel: plan.defaults?.["judge-model"],
-    timeoutMult: plan.defaults?.["timeout-mult"] ?? 1.0,
-    maxSteps: plan.defaults?.["max-steps"] ?? 30,
-    runsPerTask: plan.defaults?.["runs-per-task"] ?? 1,
+    timeoutMult: plan.defaults?.["timeout-mult"] ?? CLI_DEFAULTS.timeoutMult,
+    maxSteps: plan.defaults?.["max-steps"] ?? CLI_DEFAULTS.maxSteps,
+    runsPerTask: plan.defaults?.["runs-per-task"] ?? CLI_DEFAULTS.benchRunsPerTask,
   }
 
   const workItems: PlanWorkItem[] = []
@@ -159,7 +160,7 @@ export async function parseCustomPlan(yamlPath: string): Promise<{
 
   return {
     workItems,
-    concurrency: plan.defaults?.concurrency ?? 1,
+    concurrency: plan.defaults?.concurrency ?? CLI_DEFAULTS.concurrency,
   }
 }
 
@@ -407,7 +408,7 @@ export async function executeCustomPlan(yamlPath: string, resumeSession?: string
           throw new Error(`custom-plan: unknown adapter "${adapterName}"`)
         }
         const adapter = createAdapter(adapterName, (cfg) => providerFactory(cfg.model))
-        await adapter.setup({ model, maxSteps: 30, timeoutMs: 120_000 })
+        await adapter.setup({ model, maxSteps: TASK_FILE_DEFAULTS.maxSteps, timeoutMs: TASK_FILE_DEFAULTS.timeoutMs })
         return { adapter, teardown: async () => adapter.teardown() }
       },
       execute: async (runner, workItem) => {
@@ -415,7 +416,7 @@ export async function executeCustomPlan(yamlPath: string, resumeSession?: string
         const adapterConfig: AdapterConfig = {
           model: item.model,
           maxSteps: item.maxSteps,
-          timeoutMs: 120_000 * item.timeoutMult,
+          timeoutMs: TASK_FILE_DEFAULTS.timeoutMs * item.timeoutMult,
         }
         const evaluatorConfig = getEvaluatorConfig(item.judgeModel)
 
@@ -502,8 +503,8 @@ export async function executeCustomPlan(yamlPath: string, resumeSession?: string
       taskReports.push({
         taskId,
         taskName: task.name ?? taskId,
-        category: task.category ?? "general",
-        gradingType: task.gradingType ?? "automated",
+        category: task.category ?? TASK_FILE_DEFAULTS.category,
+        gradingType: task.gradingType ?? TASK_FILE_DEFAULTS.gradingType,
         conditions: aggregated,
       })
     }
@@ -513,8 +514,8 @@ export async function executeCustomPlan(yamlPath: string, resumeSession?: string
       adapter: adapter! as AdapterName,
       conditions: keyLabels,
       jitRuns: 0,
-      timeoutMult: 1.0,
-      maxSteps: 30,
+      timeoutMult: CLI_DEFAULTS.timeoutMult,
+      maxSteps: CLI_DEFAULTS.maxSteps,
       keepWorkDirs: false,
       verbose: false,
     }
@@ -565,10 +566,10 @@ async function loadTaskFromPath(taskDir: string): Promise<BenchTask | undefined>
       prompt: parsed.prompt,
       fixtures: parsed.fixtures ? { ...parsed.fixtures } : undefined,
       eval: eval_,
-      timeoutMs: parsed.timeoutMs ?? 120_000,
-      maxSteps: parsed.maxSteps ?? 30,
-      category: parsed.category ?? "general",
-      gradingType: parsed.gradingType ?? "automated",
+      timeoutMs: parsed.timeoutMs,
+      maxSteps: parsed.maxSteps,
+      category: parsed.category,
+      gradingType: parsed.gradingType,
       gradingWeights: parsed.gradingWeights,
       skill: parsed.skill,
       taskDir,

@@ -15,6 +15,7 @@ import { LOGS_DIR, getBenchLogDir } from "../core/config.ts"
 import { mkdir, readdir } from "node:fs/promises"
 import { runDeferredJudge, readDeferredResults, mergeDeferredResults } from "../framework/deferred-eval.ts"
 import { ALL_ADAPTERS, type AdapterName, isAdapterName } from "../adapters/registry.ts"
+import { CLI_DEFAULTS, MODEL_DEFAULTS } from "../core/ui-defaults.ts"
 
 const HOME = process.env.HOME ?? ""
 
@@ -85,7 +86,7 @@ export async function runBench(flags: Record<string, string>): Promise<void> {
   }
 
   // Parse adapter(s): comma-separated
-  const adapterRaw = (flags.adapter ?? "bare-agent").split(",").map(a => a.trim())
+  const adapterRaw = (flags.adapter ?? CLI_DEFAULTS.adapter).split(",").map(a => a.trim())
   for (const a of adapterRaw) {
     if (!isAdapterName(a)) {
       console.error(`Error: unknown adapter "${a}". Valid: ${ALL_ADAPTERS.join(", ")}`)
@@ -99,19 +100,19 @@ export async function runBench(flags: Record<string, string>): Promise<void> {
     conditions,
     tasks,
     skillMode,
-    jitRuns: parseInt(flags["jit-runs"] ?? "3", 10),
-    timeoutMult: parseFloat(flags["timeout-mult"] ?? "1.0"),
-    maxSteps: parseInt(flags["max-steps"] ?? "30", 10),
-    judgeModel: flags["judge-model"] ?? "anthropic/claude-sonnet-4.6",
+    jitRuns: flags["jit-runs"] ? parseInt(flags["jit-runs"], 10) : CLI_DEFAULTS.jitRuns,
+    timeoutMult: flags["timeout-mult"] ? parseFloat(flags["timeout-mult"]) : CLI_DEFAULTS.timeoutMult,
+    maxSteps: flags["max-steps"] ? parseInt(flags["max-steps"], 10) : CLI_DEFAULTS.maxSteps,
+    judgeModel: flags["judge-model"] ?? MODEL_DEFAULTS.judge,
     compilerModel: flags["compiler-model"],
     source: flags.source ? flags.source.split(",").map(s => s.trim()) : undefined,
     tcpPath: flags.profile,
     resumeSession: flags.resume,
     keepWorkDirs: flags["keep-workdirs"] === "true",
     verbose: flags.verbose === "true",
-    concurrency: parseInt(flags.concurrency ?? "1", 10),
+    concurrency: flags.concurrency ? parseInt(flags.concurrency, 10) : CLI_DEFAULTS.concurrency,
     asyncJudge: flags["async-judge"] === "true" || flags["async-judge"] === "",
-    runsPerTask: parseInt(flags["runs-per-task"] ?? "1", 10),
+    runsPerTask: flags["runs-per-task"] ? parseInt(flags["runs-per-task"], 10) : CLI_DEFAULTS.benchRunsPerTask,
   }
 
   if (!baseConfig.tcpPath && conditions.some(c => isAotCondition(c))) {
@@ -370,9 +371,9 @@ async function handleJudge(flags: Record<string, string>): Promise<void> {
     process.exit(1)
   }
 
-  const judgeModel = flags["judge-model"] ?? "anthropic/claude-sonnet-4.6"
+  const judgeModel = flags["judge-model"] ?? MODEL_DEFAULTS.judge
 
-  const concurrency = flags.concurrency ? parseInt(flags.concurrency, 10) : 4
+  const concurrency = flags.concurrency ? parseInt(flags.concurrency, 10) : CLI_DEFAULTS.benchJudgeConcurrency
 
   // Create LLM provider via registry (routes the judge model to the right backend)
   const { createProviderForModel } = await import("../providers/registry.ts")
@@ -435,7 +436,7 @@ async function handleMergeJudge(flags: Record<string, string>): Promise<void> {
 
 async function handleCompare(flags: Record<string, string>): Promise<void> {
   const model = flags.model
-  const adapter = flags.adapter ?? "bare-agent"
+  const adapter = flags.adapter ?? CLI_DEFAULTS.adapter
   const skillPath = flags["skill-path"]
   const lhs = flags.lhs
   const rhs = flags.rhs
@@ -497,7 +498,7 @@ Usage:
 Benchmark Options:
   --model=<id,...>       Target model(s), comma-separated.
   --adapter=<name,...>   ${ALL_ADAPTERS.join(" | ")} — comma-separated for
-                         multi-adapter mode (default: bare-agent)
+                         multi-adapter mode (default: ${CLI_DEFAULTS.adapter})
   --tasks=<list>         Comma-separated task IDs (default: all)
   --source=<name,...>    Filter tasks by origin source(s), comma-separated
                          (e.g. pinchbench, skillsbench, clawhub)
@@ -506,12 +507,12 @@ Benchmark Options:
   --custom=<file.yaml>   Run a custom bench plan from a YAML file. Defines task-skill
                          mappings, models, and adapters in nested groups. Bypasses
                          the standard condition system entirely.
-  --skill-mode=<mode>    inject | discover (default: inject)
-  --jit-runs=<n>         JIT-boost warm-up runs (default: 3)
-  --timeout-mult=<n>     Multiply task timeouts (default: 1.0)
-  --max-steps=<n>        Max agent steps per task (default: 30)
-  --judge-model=<id>     LLM judge model (default: anthropic/claude-sonnet-4.6)
-  --compiler-model=<id>  Model for AOT compiler (default: anthropic/claude-sonnet-4.6)
+  --skill-mode=<mode>    inject | discover (default: ${CLI_DEFAULTS.skillMode})
+  --jit-runs=<n>         JIT-boost warm-up runs (default: ${CLI_DEFAULTS.jitRuns})
+  --timeout-mult=<n>     Multiply task timeouts (default: ${CLI_DEFAULTS.timeoutMult.toFixed(1)})
+  --max-steps=<n>        Max agent steps per task (default: ${CLI_DEFAULTS.maxSteps})
+  --judge-model=<id>     LLM judge model (default: ${MODEL_DEFAULTS.judge})
+  --compiler-model=<id>  Model for AOT compiler (default: ${MODEL_DEFAULTS.compiler})
   --profile=<path>       TCP JSON path (required for aot conditions)
   --resume=<session>     Resume an interrupted session (or "latest")
   --list-sessions        List all bench sessions with status
@@ -521,9 +522,9 @@ Benchmark Options:
   --rhs=<condition>      Right-hand condition for --compare
   --output-dir=<dir>     Required root directory for compare outputs
   --analyze-model=<id>   Optional OpenRouter model for summarizing the skill differences
-  --concurrency=<n>     Parallel task runs (default: 1, sequential).
+  --concurrency=<n>     Parallel task runs (default: ${CLI_DEFAULTS.concurrency}, sequential).
                          In multi-model mode, slots are distributed across models.
-  --runs-per-task=<n>    Runs per task-condition pair, averaged to reduce variance (default: 1)
+  --runs-per-task=<n>    Runs per task-condition pair, averaged to reduce variance (default: ${CLI_DEFAULTS.benchRunsPerTask})
   --keep-workdirs        Don't delete work directories after runs
   --verbose              Enable debug logging
 
@@ -564,5 +565,5 @@ Examples:
   bun run skvm bench --compare --model=qwen/qwen3.5-122b-a10b \
     --adapter=bare-agent --skill-path=skvm-data/skills/calendar \
     --lhs=original --rhs=aot-compiled-p1 --output-dir=compare-runs \
-    --analyze-model=anthropic/claude-sonnet-4.6`)
+    --analyze-model=${MODEL_DEFAULTS.judge}`)
 }

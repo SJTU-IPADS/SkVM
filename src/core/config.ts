@@ -114,7 +114,7 @@ export const SKVM_TASKS_DIR = path.join(SKVM_DATA_DIR, "tasks")
 /**
  * Sanitize a model ID for use in filesystem paths.
  * Replaces `/` with `--` and `:` with `_`.
- * e.g. "anthropic/claude-sonnet-4-6" → "anthropic--claude-sonnet-4-6"
+ * e.g. "anthropic/claude-sonnet-4.6" → "anthropic--claude-sonnet-4.6"
  * e.g. "meta/llama-3.1:free" → "meta--llama-3.1_free"
  *
  * Reject `.` / `..` / empty input. Model ids flow into many path

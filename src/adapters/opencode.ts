@@ -4,6 +4,7 @@ import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, Token
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir } from "../core/config.ts"
+import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 
 const log = createLogger("opencode")
 
@@ -277,13 +278,13 @@ export function toOpenCodeModel(model: string): string {
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = "opencode"
   private model = ""
-  private timeoutMs = 120_000
+  private timeoutMs = TASK_FILE_DEFAULTS.timeoutMs
   private cmdPrefix: string[] = []
   private envOverlay: Record<string, string> = {}
 
   async setup(config: AdapterConfig): Promise<void> {
     this.model = toOpenCodeModel(config.model)
-    this.timeoutMs = config.timeoutMs ?? 120_000
+    this.timeoutMs = config.timeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs
     const resolved = await resolveOpenCodeCmd()
     this.cmdPrefix = resolved.cmd
     this.envOverlay = resolved.env

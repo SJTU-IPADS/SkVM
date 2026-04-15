@@ -1,5 +1,6 @@
 import { z } from "zod"
 import type { ConversationLog } from "./conversation-logger.ts"
+import { TASK_FILE_DEFAULTS, EVAL_DEFAULTS, HEADLESS_AGENT_DEFAULTS } from "./ui-defaults.ts"
 
 // ---------------------------------------------------------------------------
 // Primitive Capabilities
@@ -120,7 +121,7 @@ export const EvalCriterionSchema = z.discriminatedUnion("method", [
     ...EvalCriterionBase,
     method: z.literal("script"),
     command: z.string(),
-    expectedExitCode: z.number().default(0),
+    expectedExitCode: z.number().default(EVAL_DEFAULTS.scriptExpectedExitCode),
     expectedOutput: z.string().optional(),
   }),
   z.object({
@@ -135,7 +136,7 @@ export const EvalCriterionSchema = z.discriminatedUnion("method", [
     ...EvalCriterionBase,
     method: z.literal("llm-judge"),
     rubric: z.union([z.string(), z.record(z.string(), z.string())]),
-    maxScore: z.number().default(1.0),
+    maxScore: z.number().default(EVAL_DEFAULTS.llmJudgeMaxScore),
   }),
   z.object({
     ...EvalCriterionBase,
@@ -159,8 +160,8 @@ export const TaskSchema = z.object({
   prompt: z.string(),
   fixtures: z.record(z.string()).optional(),
   eval: z.array(EvalCriterionSchema).min(1),
-  timeoutMs: z.number().default(120_000),
-  maxSteps: z.number().default(30),
+  timeoutMs: z.number().default(TASK_FILE_DEFAULTS.timeoutMs),
+  maxSteps: z.number().default(TASK_FILE_DEFAULTS.maxSteps),
 })
 
 export type Task = z.infer<typeof TaskSchema>
@@ -407,8 +408,8 @@ export type WorkflowDAG = z.infer<typeof WorkflowDAGSchema>
 export const AdapterConfigSchema = z.object({
   model: z.string(),
   apiKey: z.string().optional(),
-  maxSteps: z.number().default(30),
-  timeoutMs: z.number().default(120_000),
+  maxSteps: z.number().default(TASK_FILE_DEFAULTS.maxSteps),
+  timeoutMs: z.number().default(TASK_FILE_DEFAULTS.timeoutMs),
   providerOptions: z.record(z.unknown()).optional(),
 })
 
@@ -442,8 +443,8 @@ export const HeadlessAgentDriverSchema = z.enum(["opencode"])
 export type HeadlessAgentDriverName = z.infer<typeof HeadlessAgentDriverSchema>
 
 export const HeadlessAgentConfigSchema = z.object({
-  driver: HeadlessAgentDriverSchema.default("opencode"),
-  modelPrefix: z.string().default("openrouter/"),
+  driver: HeadlessAgentDriverSchema.default(HEADLESS_AGENT_DEFAULTS.driver),
+  modelPrefix: z.string().default(HEADLESS_AGENT_DEFAULTS.modelPrefix),
 })
 export type HeadlessAgentConfig = z.infer<typeof HeadlessAgentConfigSchema>
 

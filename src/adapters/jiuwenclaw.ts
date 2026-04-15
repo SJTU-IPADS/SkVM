@@ -8,6 +8,7 @@ import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir } from "../core/config.ts"
 import { acquireFileLock, releaseFileLock } from "../core/file-lock.ts"
 import { runCommandWithEnv } from "./hermes.ts"
+import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 
 const log = createLogger("jiuwenclaw")
 
@@ -287,7 +288,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
   readonly name = "jiuwenclaw"
   private model = ""
   private apiKey: string | undefined
-  private timeoutMs = 120_000
+  private timeoutMs = TASK_FILE_DEFAULTS.timeoutMs
   private cmdPrefix: string[] = []
   private repoDir: string | undefined
   private sidecar: ReturnType<typeof Bun.spawn> | undefined
@@ -299,7 +300,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
   async setup(config: AdapterConfig): Promise<void> {
     this.model = config.model
     this.apiKey = config.apiKey
-    this.timeoutMs = config.timeoutMs ?? 120_000
+    this.timeoutMs = config.timeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs
     this.repoDir = getAdapterRepoDir("jiuwenclaw")
     this.cmdPrefix = await resolveJiuwenClawCmd()
     this.sidecarPython = await resolveSidecarPython(this.repoDir, this.cmdPrefix[0]!)
