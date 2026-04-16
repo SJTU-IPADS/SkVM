@@ -4,6 +4,8 @@
 
 **Compile and run LLM agent skills across heterogeneous models and harnesses**
 
+[English](./README.md) | [中文](./README.zh-CN.md)
+
 [Website](https://skillvm.ai) · [GitHub](https://github.com/SJTU-IPADS/SkVM) · [Paper](https://arxiv.org/abs/2604.03088)
 
 [![npm](https://img.shields.io/npm/v/@ipads-skvm/skvm?color=cb3837&logo=npm)](https://www.npmjs.com/package/@ipads-skvm/skvm)
@@ -19,6 +21,10 @@ SkVM is a compilation and runtime system that makes LLM agent skills portable ac
 - **AOT-Compilation** — compile a skill with multiple passes in AOT compiler
 - **JIT-Optimization** — improve runtime speed (JIT-boost) and skill content (JIT-optimize)
 - **Benchmark** — evaluate original, compiled, and optimized skills across tasks, conditions, and models
+
+<p align="center">
+  <img src="./docs/skvm_arch.png" alt="SkVM architecture" width="960" />
+</p>
 
 Reference: **SkVM: Revisiting Language VM for Skills across Heterogenous LLMs and Harnesses** — https://arxiv.org/abs/2604.03088
 
@@ -61,8 +67,6 @@ Set your API key:
 export OPENROUTER_API_KEY=sk-or-...
 ```
 
-Every example below passes every flag with a default explicitly, so the command you copy is exactly the command that runs — no implicit behavior to look up. Drop a flag to accept its default; change a value to override.
-
 ### 1. Profile a model's primitive capabilities
 
 Writes a target capability profile to `~/.skvm/profiles/`.
@@ -72,6 +76,8 @@ skvm profile \
   --model=qwen/qwen3.5-35b-a3b \
   --adapter=bare-agent
 ```
+
+With the default `--concurrency=1`, this example typically takes about 20 minutes for one full run. If you want it to finish faster, increase `--concurrency` to profile more primitives in parallel.
 
 ### 2. Compile a skill against that profile
 
