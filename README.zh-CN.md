@@ -59,6 +59,34 @@ cp -r ~/.local/share/skvm/skills/skvm-general ~/.hermes/skills/
 - `skvm-jit` — 任务结束后收集对话日志，并提交给 `skvm jit-optimize`
 - `skvm-general` — 帮助用户驱动 `profile` / `aot-compile` / `bench` / `proposals`
 
+### 使用 OpenClaw 快速下载 SkVM 并集成
+
+如果你希望让 OpenClaw 自己完成 SkVM 的引导安装，可以把下面这段指令直接交给 OpenClaw。它会让 OpenClaw 使用官方安装脚本安装 SkVM，再从 SkillVM 的具体链接下载 `skvm-general` 和 `skvm-jit`，并把它们放到 OpenClaw 的全局 skills 目录 `~/.openclaw/workspace/skills/` 下。
+
+```text
+请先使用官方安装脚本为这台机器安装 SkVM：
+curl -fsSL https://skillvm.ai/install.sh | sh
+
+然后用下面这些命令安装两个 OpenClaw skill：
+mkdir -p ~/.openclaw/workspace/skills
+
+mkdir -p ~/.openclaw/workspace/skills/skvm-general
+curl -fsSL https://skillvm.ai/skills/skvm-general/SKILL.md -o ~/.openclaw/workspace/skills/skvm-general/SKILL.md
+
+mkdir -p ~/.openclaw/workspace/skills/skvm-jit
+curl -fsSL https://skillvm.ai/skills/skvm-jit/SKILL.md -o ~/.openclaw/workspace/skills/skvm-jit/SKILL.md
+curl -fsSL https://skillvm.ai/skills/skvm-jit/adapter-skill-paths.md -o ~/.openclaw/workspace/skills/skvm-jit/adapter-skill-paths.md
+
+安装完成后，目录中应该有：
+~/.openclaw/workspace/skills/skvm-general/SKILL.md
+~/.openclaw/workspace/skills/skvm-jit/SKILL.md
+~/.openclaw/workspace/skills/skvm-jit/adapter-skill-paths.md
+```
+
+**安装完成后，以后在 OpenClaw 下发任何会使用 skill 的任务时，请在任务说明里追加一句：“如果执行任务的时候使用了 skill，那么使用 SkVM 对 skill 进行优化。”**
+
+这是让 OpenClaw 环境一次性具备 SkVM 工具链和这两个集成 skill 的最快方式，不需要额外走一套单独的手工安装流程。
+
 ## 快速开始
 
 先配置 API Key：

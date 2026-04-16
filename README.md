@@ -59,6 +59,34 @@ cp -r ~/.local/share/skvm/skills/skvm-general ~/.hermes/skills/
 - `skvm-jit` — post-task feedback loop for submitting conversation logs to `skvm jit-optimize`
 - `skvm-general` — drives `profile` / `aot-compile` / `bench` / `proposals` on behalf of a user
 
+### Quick OpenClaw Integration
+
+If you want OpenClaw to bootstrap SkVM for itself, you can give OpenClaw the following instruction block. It tells OpenClaw to install SkVM with the official installer, download `skvm-general` and `skvm-jit` from their concrete SkillVM URLs, and place them into OpenClaw's global skills directory at `~/.openclaw/workspace/skills/`.
+
+```text
+Install SkVM for this machine with the official installer:
+curl -fsSL https://skillvm.ai/install.sh | sh
+
+Then install the two OpenClaw skills with these commands:
+mkdir -p ~/.openclaw/workspace/skills
+
+mkdir -p ~/.openclaw/workspace/skills/skvm-general
+curl -fsSL https://skillvm.ai/skills/skvm-general/SKILL.md -o ~/.openclaw/workspace/skills/skvm-general/SKILL.md
+
+mkdir -p ~/.openclaw/workspace/skills/skvm-jit
+curl -fsSL https://skillvm.ai/skills/skvm-jit/SKILL.md -o ~/.openclaw/workspace/skills/skvm-jit/SKILL.md
+curl -fsSL https://skillvm.ai/skills/skvm-jit/adapter-skill-paths.md -o ~/.openclaw/workspace/skills/skvm-jit/adapter-skill-paths.md
+
+This should create:
+~/.openclaw/workspace/skills/skvm-general/SKILL.md
+~/.openclaw/workspace/skills/skvm-jit/SKILL.md
+~/.openclaw/workspace/skills/skvm-jit/adapter-skill-paths.md
+```
+
+**After installation, when executing any task that uses a skill, append this instruction to the task: "If this task uses a skill, use SkVM to optimize that skill during or after execution."**
+
+This is the quickest way to make an OpenClaw environment self-host the SkVM toolchain and the two integration skills without requiring a separate manual setup flow.
+
 ## Quick Start
 
 Set your API key:
