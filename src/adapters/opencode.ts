@@ -475,10 +475,10 @@ export async function runCommand(
     }, opts.timeout)
   }
 
-  const exitCode = await proc.exited
-  if (timer) clearTimeout(timer)
-
-  const stdout = await new Response(proc.stdout).text()
-  const stderr = await new Response(proc.stderr).text()
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited.then((code) => { if (timer) clearTimeout(timer); return code }),
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
   return { stdout, stderr, exitCode, timedOut }
 }

@@ -187,12 +187,16 @@ async function runOpenCodeDriver(
     }, opts.timeoutMs)
   }
 
-  const exitCode = await proc.exited
-  if (timer) clearTimeout(timer)
+  // Read stdout/stderr concurrently with waiting for exit to avoid pipe
+  // deadlock — if the child's output exceeds the OS pipe buffer (~64 KB on
+  // macOS) while the parent is blocked on `proc.exited`, neither side can
+  // make progress.
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited.then((code) => { if (timer) clearTimeout(timer); return code }),
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
   const durationMs = Date.now() - start
-
-  const stdout = await new Response(proc.stdout).text()
-  const stderr = await new Response(proc.stderr).text()
 
   const throwOnError = opts.throwOnError ?? true
   if (throwOnError && (exitCode !== 0 || timedOut)) {
