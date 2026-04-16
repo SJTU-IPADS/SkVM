@@ -22,9 +22,7 @@ const INTERVAL_MS = 80
 // Gradient color helpers (true-color / 24-bit ANSI)
 // ---------------------------------------------------------------------------
 
-const TRAIL_LEN = 3            // number of braille particles shown
 const HUE_CYCLE_MS = 6000      // full rainbow period (ms)
-const PARTICLE_HUE_GAP = 45    // hue degrees between adjacent particles
 
 /** HSL → RGB  (h ∈ [0,360), s/l ∈ [0,1]) */
 function hslToRgb(h: number, s: number, l: number): [number, number, number] {
@@ -169,24 +167,16 @@ class SpinnerImpl implements Spinner {
     const now = Date.now()
     const elapsed = formatElapsed(now - this.startTime)
 
-    let particles: string
+    let particle: string
     if (useColor) {
-      // Base hue rotates slowly over time
-      const baseHue = ((now - this.startTime) / HUE_CYCLE_MS * 360) % 360
-      particles = ""
-      // Build trail: oldest particle first → newest (lead) last
-      for (let i = TRAIL_LEN - 1; i >= 0; i--) {
-        const idx = (this.frameIndex - i + FRAMES.length) % FRAMES.length
-        const hue = (baseHue - i * PARTICLE_HUE_GAP + 360) % 360
-        const lightness = 0.65 - i * 0.1   // lead=bright, trail=dim
-        const [r, g, b] = hslToRgb(hue, 0.8, lightness)
-        particles += truecolor(FRAMES[idx]!, r, g, b)
-      }
+      const hue = ((now - this.startTime) / HUE_CYCLE_MS * 360) % 360
+      const [r, g, b] = hslToRgb(hue, 0.8, 0.65)
+      particle = truecolor(FRAMES[this.frameIndex]!, r, g, b)
     } else {
-      particles = FRAMES[this.frameIndex]!
+      particle = FRAMES[this.frameIndex]!
     }
 
-    const line = `${particles} ${this.text}  ${c.dim(elapsed)}`
+    const line = `${particle} ${this.text}  ${c.dim(elapsed)}`
     const plainLen = stripAnsi(line).length
     const pad = this.lastLen > plainLen ? " ".repeat(this.lastLen - plainLen) : ""
     process.stdout.write(`\r${line}${pad}`)
