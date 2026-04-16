@@ -19,6 +19,38 @@ const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "
 const INTERVAL_MS = 80
 
 // ---------------------------------------------------------------------------
+// Gradient color helpers (true-color / 24-bit ANSI)
+// ---------------------------------------------------------------------------
+
+const TRAIL_LEN = 3            // number of braille particles shown
+const HUE_CYCLE_MS = 6000      // full rainbow period (ms)
+const PARTICLE_HUE_GAP = 45    // hue degrees between adjacent particles
+
+/** HSL → RGB  (h ∈ [0,360), s/l ∈ [0,1]) */
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const ch = (1 - Math.abs(2 * l - 1)) * s
+  const x = ch * (1 - Math.abs((h / 60) % 2 - 1))
+  const m = l - ch / 2
+  let r = 0, g = 0, b = 0
+  if (h < 60)       { r = ch; g = x }
+  else if (h < 120) { r = x;  g = ch }
+  else if (h < 180) { g = ch; b = x }
+  else if (h < 240) { g = x;  b = ch }
+  else if (h < 300) { r = x;  b = ch }
+  else               { r = ch; b = x }
+  return [
+    Math.round((r + m) * 255),
+    Math.round((g + m) * 255),
+    Math.round((b + m) * 255),
+  ]
+}
+
+/** Wrap text with 24-bit foreground color. */
+function truecolor(text: string, r: number, g: number, b: number): string {
+  return `\x1b[38;2;${r};${g};${b}m${text}\x1b[0m`
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -134,9 +166,27 @@ class SpinnerImpl implements Spinner {
 
   private render(): void {
     if (!isTTY) return
-    const elapsed = formatElapsed(Date.now() - this.startTime)
-    const frame = useColor ? c.cyan(FRAMES[this.frameIndex]!) : FRAMES[this.frameIndex]!
-    const line = `${frame} ${this.text}  ${c.dim(elapsed)}`
+    const now = Date.now()
+    const elapsed = formatElapsed(now - this.startTime)
+
+    let particles: string
+    if (useColor) {
+      // Base hue rotates slowly over time
+      const baseHue = ((now - this.startTime) / HUE_CYCLE_MS * 360) % 360
+      particles = ""
+      // Build trail: oldest particle first → newest (lead) last
+      for (let i = TRAIL_LEN - 1; i >= 0; i--) {
+        const idx = (this.frameIndex - i + FRAMES.length) % FRAMES.length
+        const hue = (baseHue - i * PARTICLE_HUE_GAP + 360) % 360
+        const lightness = 0.65 - i * 0.1   // lead=bright, trail=dim
+        const [r, g, b] = hslToRgb(hue, 0.8, lightness)
+        particles += truecolor(FRAMES[idx]!, r, g, b)
+      }
+    } else {
+      particles = FRAMES[this.frameIndex]!
+    }
+
+    const line = `${particles} ${this.text}  ${c.dim(elapsed)}`
     const plainLen = stripAnsi(line).length
     const pad = this.lastLen > plainLen ? " ".repeat(this.lastLen - plainLen) : ""
     process.stdout.write(`\r${line}${pad}`)
