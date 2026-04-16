@@ -68,7 +68,8 @@ function shouldLog(level: LogLevel): boolean {
 }
 
 export function formatLogMsg(level: LogLevel, component: string, msg: string): string {
-  const ts = new Date().toISOString().slice(11, 23)
+  const now = new Date()
+  const ts = now.toLocaleTimeString("en-GB", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3 })
   const colorFn = LEVEL_COLOR[level]
   return `${c.dim(ts)} ${colorFn(`[${level.toUpperCase().padEnd(5)}]`)} ${c.dim(`[${component}]`)} ${msg}`
 }
