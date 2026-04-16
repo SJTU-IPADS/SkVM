@@ -39,25 +39,25 @@ async function main() {
   }
 
   if (!command) {
-    console.log(`skvm - SkVM implementation
+    console.log(`skvm — Compile and run LLM agent skills across heterogeneous models and harnesses
 
 Commands:
-  test         Run a task against an agent adapter
   profile      Profile a model's primitive capabilities
-  aot-compile  Compile a skill for a target model (AOT)
-  run          Run a user-specified task with a skill
-  pipeline     Profile (if needed) → AOT compile a skill
-  bench        Run PinchBench benchmark across skill conditions
-  jit-optimize Optimize a skill based on execution evidence
-  proposals    List, show, accept, or reject jit-optimize proposals
-  clean-jit    Clear persisted JIT artifacts for a model+adapter
-  logs         List recent runs across all subsystems
+  aot-compile  AOT-compile a skill for a target model
+  pipeline     Profile (if needed), then AOT-compile
+  run          Run a task with an optional skill (no scoring)
+  bench        Benchmark skills across conditions and models
+  jit-optimize Optimize a skill from synthetic, real, or log evidence
+  proposals    List, inspect, accept, or reject proposals
+  clean-jit    Remove persisted JIT artifacts for a model+adapter
+  logs         List recent runs across subsystems
 
 Global Options:
-  --data-dir=<path>     Override data directory (default: ./data)
-  --verbose             Enable debug logging
-  --version, -v         Print version and exit
-  --help, -h            Print this help and exit
+  --skvm-cache=<path>      Override cache root (default: ~/.skvm)
+  --skvm-data-dir=<path>   Override dataset root (default: ./skvm-data)
+  --verbose                Enable debug logging
+  --version, -v            Print version and exit
+  --help, -h               Print this help and exit
 
 Use --help with any command for details.`)
     process.exit(0)
