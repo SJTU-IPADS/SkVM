@@ -96,9 +96,13 @@ jobs:
   npm-publish:
     needs: [build, release]
     runs-on: ubuntu-latest
-    # Kill switch: flip the ENABLE_NPM_PUBLISH repo variable to "false" to
-    # skip this job (e.g. during staged rollouts or if npm is broken).
-    if: ${{ vars.ENABLE_NPM_PUBLISH == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    # Kill switch: publishing is enabled by default; set the
+    # ENABLE_NPM_PUBLISH repo variable to "false" to skip this job
+    # (e.g. during staged rollouts or if npm is broken).
+    if: ${{ vars.ENABLE_NPM_PUBLISH != 'false' }}
     # Trusted Publishing: auth is via GitHub Actions OIDC JWT, not NPM_TOKEN.
     # The `id-token: write` permission at the top of this workflow issues the
     # JWT; the npm side must have this workflow configured as a Trusted
@@ -112,7 +116,9 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # npm Trusted Publishing currently requires npm >= 11.5.1
+          # and Node >= 22.14.0; use a current LTS/runtime here.
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
       - name: Sync package.json version to tag
@@ -126,4 +132,4 @@ jobs:
           "
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: npm publish --access public

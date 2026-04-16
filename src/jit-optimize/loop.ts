@@ -710,16 +710,24 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
           //    "don't repeat these" instruction. The agent-backed generator
           //    retries once on failure internally and throws loudly if both
           //    attempts produce nothing — no silent empty-return footgun.
-          const regen = await resolveSyntheticTasks(
-            syntheticSource.trainCount,
-            {
-              skillDir,
-              optimizerModel,
-              proposalDir: proposal.dir,
-              runLabel: `run-regen-round-${round}`,
-            },
-            priorPrompts,
-          )
+          const regenTaskSp = createSpinner(`Round ${round}/${rounds} — regenerating synthetic tasks...`)
+          let regen: Awaited<ReturnType<typeof resolveSyntheticTasks>>
+          try {
+            regen = await resolveSyntheticTasks(
+              syntheticSource.trainCount,
+              {
+                skillDir,
+                optimizerModel,
+                proposalDir: proposal.dir,
+                runLabel: `run-regen-round-${round}`,
+              },
+              priorPrompts,
+            )
+            regenTaskSp.succeed(`Round ${round}/${rounds} — regenerated ${regen.tasks.length} synthetic task(s)`)
+          } catch (err) {
+            regenTaskSp.fail(`Round ${round}/${rounds} — synthetic task regeneration failed`)
+            throw err
+          }
           if (regen.tasks.length === 0) {
             // Unreachable in practice — the generator throws on empty result.
             // Kept as a defensive break so a future signature change can't
@@ -740,6 +748,7 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
           // 2. Re-evaluate the current skill (whichever currentSkillDir
           //    points at — original or last edited round) on the fresh
           //    train probe. Judge cost lands directly in setupCost.
+          const regenEvalSp = createSpinner(`Round ${round}/${rounds} — re-evaluating on fresh probe...`)
           let newTrainEv: Evidence[]
           try {
             newTrainEv = await runTrainOnly(
@@ -747,8 +756,10 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
               `round-${round}-regen`,
               setupCost,
             )
+            regenEvalSp.succeed(`Round ${round}/${rounds} — re-evaluation complete`)
           } catch (err) {
             if (err instanceof InfraBlockedRoundError) {
+              regenEvalSp.fail(`Round ${round}/${rounds} — re-evaluation infra-blocked`)
               log.warn(
                 `Round ${round} regen: all evidence infra-tainted: ${err.reason}. ` +
                 `Finalizing proposal with status=infra-blocked.`,
@@ -764,6 +775,7 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
               infraBlocked = { roundLabel: err.roundLabel, reason: err.reason, blockedIds: err.blockedIds }
               break
             }
+            regenEvalSp.fail(`Round ${round}/${rounds} — re-evaluation failed`)
             throw err
           }
 
