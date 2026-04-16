@@ -1,11 +1,13 @@
 ---
 name: skvm-jit
-description: Submit task feedback to `skvm jit-optimize` so the skill author receives a reviewable proposal. Trigger after finishing a task that was driven by any skill (not just SkVM-compiled ones) when the outcome was a failure, was partial, or the skill's instructions clearly caused confusion or an unnecessary detour. Successful runs do not need feedback. For general skvm usage (profile/aot-compile/bench/proposals), use the sibling `skvm-general` skill instead.
+description: Trigger `skvm jit-optimize` with post-task evidence so it generates a reviewable optimization proposal for a skill. Use after finishing a task that was driven by any skill (not just SkVM-compiled ones) when the outcome was a failure, was partial, or the skill's instructions clearly caused confusion or an unnecessary detour. Clean successful runs usually do not need an optimization pass. For general skvm usage (profile/aot-compile/bench/proposals), use the sibling `skvm-general` skill instead.
 ---
 
-# SkVM JIT Optimize Feedback
+# SkVM JIT Optimize Trigger
 
-When you finish a task that was driven by a skill, and the skill's own instructions appear to have caused problems, write a short structured report and submit it to `skvm jit-optimize`. The optimizer reads your report, proposes improvements to the skill's files, and stores them as a **proposal** that the skill author can review with `skvm proposals show <id>`.
+When you finish a task that was driven by a skill, and the skill's own instructions appear to have caused problems, collect a short structured record of what happened and invoke `skvm jit-optimize`. The optimizer reads that evidence, proposes improvements to the skill's files, and stores them as a **proposal** you can inspect with `skvm proposals show <id>`.
+
+This skill is not a human review workflow. Its job is to turn task evidence into a concrete optimization run.
 
 This works for **any** skill the host harness can load — it does not need to have been produced by SkVM's compiler. `jit-optimize` only needs the skill folder on disk; it does not require SkVM-specific artifacts.
 
@@ -23,7 +25,7 @@ Do **not** run this skill when:
 - the task succeeded and the skill read cleanly — silent passes are fine, the optimizer does not need "nothing to report" submissions
 - the failure was purely user-side (typo in the prompt, missing credentials, network failure) and no change to the skill would have helped
 - the task did not use a skill at all, or used only a trivial one-shot instruction
-- you are running inside `skvm bench` or any other SkVM-orchestrated flow — the bench owns its own feedback loop, do not double-submit
+- you are running inside `skvm bench` or any other SkVM-orchestrated flow — bench owns its own optimization loop, do not double-submit
 
 ## Step 1: Locate the skill directory
 
@@ -33,11 +35,11 @@ Each agent harness installs skills in well-known locations. Read `adapter-skill-
 
 If none of the listed paths contains the skill, or the reference file marks your harness as "confirm with user", ask the user for the path — do not guess.
 
-## Step 2: Write a report
+## Step 2: Prepare optimizer input
 
 Pick **one** of the two formats below. Save it anywhere (e.g. a temp file); you'll pass its path as `--logs=<path>` in Step 3.
 
-### Format A — Simple report (preferred for one-off observations)
+### Format A — Simple optimization report (preferred for one-off observations)
 
 Save as `report.json`:
 
@@ -55,7 +57,9 @@ Save as `report.json`:
 
 Keep `issues` focused on things the **skill's instructions** could prevent or clarify. Do not include issues that were purely user-side (typos in the prompt, missing credentials, network failures).
 
-When `outcome` is `fail` or `partial`, the optimizer treats the issues and skill_feedback as failure reasons attached to a synthetic "agent-reported" criterion. When `outcome` is `pass`, the report still enters the optimizer but with no failures, letting it notice what worked well.
+The JSON key is still named `skill_feedback` because that is the current report schema consumed by `jit-optimize`; treat it as an optimization hint for the engine, not as human-directed feedback.
+
+When `outcome` is `fail` or `partial`, the optimizer treats the issues and `skill_feedback` as failure reasons attached to a synthetic "agent-reported" criterion. When `outcome` is `pass`, the report still enters the optimizer but with no failures, letting it notice what worked well.
 
 ### Format B — Conversation log (preferred when the full turn-by-turn trace is informative)
 
@@ -69,7 +73,7 @@ Save as `conv-log.jsonl`, one JSON object per line:
 
 Only include entries that matter for diagnosing the skill's quality. Redact secrets.
 
-## Step 3: Submit to jit-optimize
+## Step 3: Run jit-optimize
 
 ```bash
 skvm jit-optimize \
@@ -83,7 +87,7 @@ skvm jit-optimize \
 Required parameters:
 
 - `--skill` — path to the skill directory (the one containing `SKILL.md`)
-- `--task-source=log` — tells jit-optimize to analyze a conversation log without rerunning anything. **This is the only task source valid from a feedback submission** — `real` and `synthetic` sources rerun tasks against a live model, which a post-hoc report cannot do.
+- `--task-source=log` — tells jit-optimize to analyze a conversation log without rerunning anything. **This is the only task source valid from this post-task optimization flow** — `real` and `synthetic` sources rerun tasks against a live model, which a post-hoc report cannot do.
 - `--logs` — path to the report file you wrote in Step 2
 - `--target-model=<id>` — **required for every `skvm jit-optimize` invocation, including `--task-source=log`**. In log mode the target model is not used for execution — it is the *storage key* that decides which folder under `proposals/<harness>/<target-model>/<skill>/` the proposal lands in, so proposals stay grouped by the model the skill is tuned for. Use the OpenRouter-format id of the model that just ran the task — **that is you**, the agent reading this skill. Read your own model id out of your system prompt / harness environment (Claude Code exposes it as the "exact model ID", e.g. map `claude-opus-4-6` → `anthropic/claude-opus-4-6`; opencode/openclaw/hermes similarly). If you genuinely cannot determine your own model id, ask the user once and stop — do not substitute a placeholder.
 - `--optimizer-model=<id>` — the LLM that drives the optimizer agent. Use any OpenRouter-compatible model; `z-ai/glm-5.1` is a good cheap default.
@@ -112,13 +116,13 @@ Rounds: <count>
 
 If you want fire-and-forget, wrap the invocation in `(skvm jit-optimize ... &)` in your shell. There is no built-in `--async` flag.
 
-## Step 4: Tell the user
+## Step 4: Report the proposal id
 
 Print one line with the proposal id you captured:
 
-> Submitted feedback to skvm jit-optimize for `<skill>`. Review with `skvm proposals show <id>`; accept with `skvm proposals accept <id>`.
+> Triggered `skvm jit-optimize` for `<skill>`. Review with `skvm proposals show <id>`; accept with `skvm proposals accept <id>`.
 
-Do **not** attempt to accept or deploy the proposal yourself — only the skill author should decide whether to deploy it. If the user explicitly asks you to deploy, run `skvm proposals accept <id>` and report the deployed file list.
+Do **not** accept or deploy the proposal yourself unless the user explicitly asks you to. If the user asks you to deploy, run `skvm proposals accept <id>` and report the deployed file list.
 
 ## Rules
 

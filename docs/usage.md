@@ -200,7 +200,7 @@ Real-specific flags:
 
 ### `--task-source=log` (post-mortem)
 
-Feed pre-existing conversation logs to the optimizer without rerunning anything. Good for triaging real failures from production, CI, or an `skvm-jit` post-task feedback hook.
+Feed pre-existing conversation logs to the optimizer without rerunning anything. Good for triaging real failures from production, CI, or an `skvm-jit` post-task optimization hook.
 
 ```bash
 skvm jit-optimize \

@@ -56,7 +56,7 @@ cp -r ~/.local/share/skvm/skills/skvm-jit ~/.hermes/skills/
 cp -r ~/.local/share/skvm/skills/skvm-general ~/.hermes/skills/
 ```
 
-- `skvm-jit` — post-task feedback loop for submitting conversation logs to `skvm jit-optimize`
+- `skvm-jit` — post-task JIT optimization skill for submitting conversation logs to `skvm jit-optimize`
 - `skvm-general` — drives `profile` / `aot-compile` / `bench` / `proposals` on behalf of a user
 
 ### Quick OpenClaw Integration
@@ -142,7 +142,7 @@ Results are written under `~/.skvm/proposals/jit-optimize/<adapter>/<safeTargetM
 
 ### 4. Optimize from an existing conversation log
 
-No rerun, just diagnose and edit. Good for post-mortems and for the `skvm-jit` post-task feedback hook.
+No rerun, just diagnose and edit. Good for post-mortems and for the `skvm-jit` post-task optimization hook.
 
 ```bash
 skvm jit-optimize \
