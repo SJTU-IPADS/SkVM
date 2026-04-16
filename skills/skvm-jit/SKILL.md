@@ -90,7 +90,7 @@ Required parameters:
 
 Optional:
 
-- `--target-adapter=<name>` — purely informational in log mode (default: `bare-agent`). Set it if the log came from a non-default adapter so the proposal is filed under the right harness folder.
+- `--target-adapter=<name>` — purely informational in log mode (default: `bare-agent`). Set it if the log came from a non-default adapter (e.g., openClaw, Hermes, jiuwenclaw) so the proposal is filed under the right harness folder.
 - `--failures=<path,...>` — structured failure-reasons JSON, one path per corresponding entry in `--logs`. Pass only when you already have a cleaner per-criterion breakdown than the report file itself; the count must match `--logs`. Skip it for single-report cases.
 
 **What NOT to pass in log mode** (the CLI will error if you do):
