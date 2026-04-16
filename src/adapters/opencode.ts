@@ -1,4 +1,4 @@
-import { mkdir, copyFile, readdir } from "node:fs/promises"
+import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, TokenUsage, SkillMode } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
@@ -278,7 +278,7 @@ export function toOpenCodeModel(model: string): string {
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = "opencode"
   private model = ""
-  private timeoutMs = TASK_FILE_DEFAULTS.timeoutMs
+  private timeoutMs: number = TASK_FILE_DEFAULTS.timeoutMs
   private cmdPrefix: string[] = []
   private envOverlay: Record<string, string> = {}
 
@@ -298,7 +298,6 @@ export class OpenCodeAdapter implements AgentAdapter {
     skillContent?: string
     skillMode?: SkillMode
     skillMeta?: { name: string; description: string }
-    skillBundleDir?: string
     taskId?: string
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
@@ -310,15 +309,6 @@ export class OpenCodeAdapter implements AgentAdapter {
       if (skillMode === "inject") {
         // Inject mode: write skill content to CONTEXT.md (opencode auto-loads into system prompt)
         await Bun.write(path.join(task.workDir, "CONTEXT.md"), task.skillContent)
-        // Copy bundle files to workDir root
-        if (task.skillBundleDir) {
-          const entries = await readdir(task.skillBundleDir, { withFileTypes: true })
-          for (const entry of entries) {
-            if (entry.isFile() && !entry.name.endsWith(".md")) {
-              await copyFile(path.join(task.skillBundleDir, entry.name), path.join(task.workDir, entry.name))
-            }
-          }
-        }
         // skillLoaded will be verified from NDJSON events below
         skillLoaded = false
       } else {
@@ -329,15 +319,6 @@ export class OpenCodeAdapter implements AgentAdapter {
         await mkdir(skillDir, { recursive: true })
         const frontmatter = `---\nname: ${skillName}\ndescription: ${skillDesc}\n---\n\n`
         await Bun.write(path.join(skillDir, "SKILL.md"), frontmatter + task.skillContent)
-        // Copy bundle files to skill dir
-        if (task.skillBundleDir) {
-          const entries = await readdir(task.skillBundleDir, { withFileTypes: true })
-          for (const entry of entries) {
-            if (entry.isFile() && !entry.name.endsWith(".md")) {
-              await copyFile(path.join(task.skillBundleDir, entry.name), path.join(skillDir, entry.name))
-            }
-          }
-        }
         // skillLoaded will be determined by checking NDJSON output below
         skillLoaded = false
       }
@@ -475,10 +456,10 @@ export async function runCommand(
     }, opts.timeout)
   }
 
-  const exitCode = await proc.exited
-  if (timer) clearTimeout(timer)
-
-  const stdout = await new Response(proc.stdout).text()
-  const stderr = await new Response(proc.stderr).text()
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited.then((code) => { if (timer) clearTimeout(timer); return code }),
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
   return { stdout, stderr, exitCode, timedOut }
 }

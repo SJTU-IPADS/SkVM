@@ -1,5 +1,5 @@
 import path from "node:path"
-import { readdir } from "node:fs/promises"
+import { readdir, mkdir, copyFile } from "node:fs/promises"
 import { createHash } from "node:crypto"
 
 // ---------------------------------------------------------------------------
@@ -99,6 +99,24 @@ export function parseSkillMeta(skillContent: string, skillDir: string): SkillMet
   return { name, description }
 }
 
+/**
+ * Copy skill bundle files (scripts, templates) into a target directory,
+ * preserving subdirectory structure. Used by callers that pre-populate
+ * the agent's workDir before running the adapter.
+ */
+export async function copySkillBundle(skill: ResolvedSkill, destDir: string): Promise<void> {
+  if (skill.bundleFiles.length === 0) return
+  for (const relPath of skill.bundleFiles) {
+    const src = path.join(skill.skillDir, relPath)
+    const dest = path.join(destDir, relPath)
+    await mkdir(path.dirname(dest), { recursive: true })
+    await copyFile(src, dest)
+  }
+}
+
+/** VCS metadata and OS junk that should never appear in a skill bundle. */
+const BUNDLE_EXCLUDED = new Set([".git", ".DS_Store"])
+
 async function listBundleFiles(skillDir: string, prefix = ""): Promise<string[]> {
   const out: string[] = []
   let entries
@@ -108,6 +126,7 @@ async function listBundleFiles(skillDir: string, prefix = ""): Promise<string[]>
     return out
   }
   for (const entry of entries) {
+    if (BUNDLE_EXCLUDED.has(entry.name)) continue
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name
     if (entry.isDirectory()) {
       out.push(...await listBundleFiles(path.join(skillDir, entry.name), rel))

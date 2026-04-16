@@ -21,6 +21,7 @@ import { type AdapterName, createAdapter } from "../adapters/registry.ts"
 import { getBenchLogDir, safeModelName } from "../core/config.ts"
 import { createProviderForModel } from "../providers/registry.ts"
 import { createLogger } from "../core/logger.ts"
+import { createProgressSpinner } from "../core/spinner.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { createAsyncMutex, runScheduled, type WorkItem, type RunnerHandle } from "../core/concurrency.ts"
 import { RunSession, shortModel } from "../core/run-session.ts"
@@ -610,6 +611,7 @@ export async function runBenchmark(config: BenchRunConfig): Promise<BenchReport>
 
   const concurrency = config.concurrency ?? 1
   log.info(`Work items: ${workItems.length} (concurrency=${concurrency})`)
+  const benchProgress = createProgressSpinner("Benchmarking", workItems.length)
 
   if (workItems.length === 0) {
     if (ctx.tasks.length === 0) {
@@ -622,7 +624,6 @@ export async function runBenchmark(config: BenchRunConfig): Promise<BenchReport>
   }
 
   const withProgressLock = createAsyncMutex()
-
   await runScheduled({
     concurrency,
     items: workItems,
@@ -658,11 +659,13 @@ export async function runBenchmark(config: BenchRunConfig): Promise<BenchReport>
         if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
         ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
         ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
+        benchProgress.tick(`Benchmarked ${workItems.length} runs`)
         await saveProgress(ctx.progress)
       })
     },
   })
 
+  benchProgress.stop()
   process.removeListener("SIGINT", sigintHandler)
   const report = await finalizeBenchReport(ctx)
   await session?.complete(`${report.tasks.length} tasks`)
@@ -734,6 +737,7 @@ export async function runMultiModelBenchmark(
   // Single dispatch — scheduler distributes by adapter, then models sequentially,
   // with work-stealing when one model finishes faster
   const withProgressLock = createAsyncMutex()
+  const mmProgress = createProgressSpinner(`Benchmarking ${models.length} models`, allItems.length)
 
   await runScheduled({
     concurrency: totalConcurrency,
@@ -772,10 +776,12 @@ export async function runMultiModelBenchmark(
         if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
         ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
         ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
+        mmProgress.tick(`Benchmarked ${allItems.length} runs across ${models.length} models`)
         await saveProgress(ctx.progress)
       })
     },
   })
+  mmProgress.stop()
 
   // Finalize each model's report
   const reports: BenchReport[] = []
@@ -949,6 +955,7 @@ export async function runMultiAdapterBenchmark(
   log.info(`Total work items: ${allItems.length} across ${adapters.length} adapters (concurrency=${totalConcurrency})`)
 
   const withProgressLock = createAsyncMutex()
+  const maProgress = createProgressSpinner(`Benchmarking ${adapters.length} adapters`, allItems.length)
 
   await runScheduled({
     concurrency: totalConcurrency,
@@ -987,10 +994,12 @@ export async function runMultiAdapterBenchmark(
         if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
         ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
         ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
+        maProgress.tick(`Benchmarked ${allItems.length} runs across ${adapters.length} adapters`)
         await saveProgress(ctx.progress)
       })
     },
   })
+  maProgress.stop()
 
   // Finalize each adapter's report
   const reports: BenchReport[] = []

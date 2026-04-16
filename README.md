@@ -23,7 +23,7 @@ SkVM is a compilation and runtime system that makes LLM agent skills portable ac
 - **Benchmark** — evaluate original, compiled, and optimized skills across tasks, conditions, and models
 
 <p align="center">
-  <img src="./docs/skvm_arch.png" alt="SkVM architecture" width="960" />
+  <img src="./docs/skvm_arch.png" alt="SkVM architecture" width="66%" />
 </p>
 
 Reference: **SkVM: Revisiting Language VM for Skills across Heterogenous LLMs and Harnesses** — https://arxiv.org/abs/2604.03088
@@ -94,6 +94,8 @@ Set your API key:
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
 ```
+
+If you use another provider, see [docs/providers.md](docs/providers.md).
 
 ### 1. Profile a model's primitive capabilities
 

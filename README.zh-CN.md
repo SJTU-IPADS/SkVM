@@ -23,7 +23,7 @@ SkVM 是一个面向 LLM Agent Skill 的编译与运行时系统，用来让 Ski
 - **基准测试** — 在不同任务、条件和模型下评估原始、编译后和优化后的 Skill
 
 <p align="center">
-  <img src="./docs/skvm_arch_zh.png" alt="SkVM 架构图" width="960" />
+  <img src="./docs/skvm_arch_zh.png" alt="SkVM 架构图" width="66%" />
 </p>
 
 参考论文：**SkVM: Revisiting Language VM for Skills across Heterogenous LLMs and Harnesses** — https://arxiv.org/abs/2604.03088
@@ -94,6 +94,8 @@ curl -fsSL https://skillvm.ai/skills/skvm-jit/adapter-skill-paths.md -o ~/.openc
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
 ```
+
+如果你使用其他 provider，可以参考 [docs/providers.md](docs/providers.md)。
 
 ### 1. 评测模型的原语能力
 

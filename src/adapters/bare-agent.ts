@@ -1,5 +1,5 @@
 import path from "node:path"
-import { readdir, mkdir, copyFile } from "node:fs/promises"
+import { readdir, mkdir } from "node:fs/promises"
 import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, TokenUsage, SkillMode } from "../core/types.ts"
 import { emptyTokenUsage, addTokenUsage } from "../core/types.ts"
 import type { LLMProvider, LLMTool, LLMToolCall, LLMToolResult, LLMResponse, CompletionParams } from "../providers/types.ts"
@@ -102,21 +102,12 @@ export function createToolExecutor(workDir: string) {
 // ---------------------------------------------------------------------------
 
 async function copySkillToDiscoverDir(
-  task: { skillContent: string; skillMeta: { name: string; description: string }; skillBundleDir?: string },
+  task: { skillContent: string; skillMeta: { name: string; description: string } },
   workDir: string,
 ): Promise<void> {
   const skillDir = path.join(workDir, "skills", task.skillMeta.name)
   await mkdir(skillDir, { recursive: true })
   await Bun.write(path.join(skillDir, "SKILL.md"), task.skillContent)
-  if (task.skillBundleDir) {
-    // Copy all non-.md bundle files from skillBundleDir to skillDir
-    const entries = await readdir(task.skillBundleDir, { withFileTypes: true })
-    for (const entry of entries) {
-      if (entry.isFile() && !entry.name.endsWith(".md")) {
-        await copyFile(path.join(task.skillBundleDir, entry.name), path.join(skillDir, entry.name))
-      }
-    }
-  }
 }
 
 const LOAD_SKILL_RE = /<?load-skill>\s*(.*?)\s*<\/load-skill>/
@@ -129,8 +120,8 @@ export class BareAgentAdapter implements AgentAdapter {
   readonly name = "bare-agent"
   private provider!: LLMProvider
   private model = ""
-  private maxSteps = TASK_FILE_DEFAULTS.maxSteps
-  private timeoutMs = TASK_FILE_DEFAULTS.timeoutMs
+  private maxSteps: number = TASK_FILE_DEFAULTS.maxSteps
+  private timeoutMs: number = TASK_FILE_DEFAULTS.timeoutMs
   private hooks: RuntimeHooks = {}
 
   constructor(
@@ -158,7 +149,6 @@ export class BareAgentAdapter implements AgentAdapter {
     skillContent?: string
     skillMode?: SkillMode
     skillMeta?: { name: string; description: string }
-    skillBundleDir?: string
     taskId?: string
     convLog?: ConversationLog
     timeoutMs?: number
@@ -186,7 +176,7 @@ export class BareAgentAdapter implements AgentAdapter {
     } else if (task.skillContent && skillMode === "discover" && task.skillMeta) {
       // Discover mode: copy skill dir to workDir, show only name+description in prompt
       await copySkillToDiscoverDir(
-        { skillContent: task.skillContent, skillMeta: task.skillMeta, skillBundleDir: task.skillBundleDir },
+        { skillContent: task.skillContent, skillMeta: task.skillMeta },
         task.workDir,
       )
       const skillName = task.skillMeta.name

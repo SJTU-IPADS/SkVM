@@ -2,6 +2,7 @@
 
 import "./core/env-bootstrap.ts"
 import { setLogLevel, createLogger, c, shouldUseColor } from "./core/logger.ts"
+import { createSpinner, createProgressSpinner, spinnerLog } from "./core/spinner.ts"
 import { ALL_ADAPTERS, type AdapterName, createAdapter, isAdapterName } from "./adapters/registry.ts"
 
 const noColor = (s: string) => s
@@ -410,6 +411,8 @@ Notes:
     harness,
   })
 
+  const runSp = createSpinner(`Running task ${task.id}...`)
+
   try {
     const result = await executeRun({
       task,
@@ -419,6 +422,7 @@ Notes:
       workDir: flags.workdir,
       keepWorkDir: true,
     })
+    runSp.succeed(`Task ${task.id} complete`)
 
     console.log(`\n=== Run Complete ===`)
     console.log(`Task: ${result.task.id}`)
@@ -446,6 +450,7 @@ Notes:
     }
     await runSession.complete(`${task.id}, ${(result.runResult.durationMs / 1000).toFixed(1)}s`)
   } catch (err) {
+    runSp.fail(`Task ${task.id} failed`)
     await runSession.fail(err instanceof Error ? err.message : String(err))
     console.error(c.red(`Run failed: ${err}`))
     process.exit(1)
@@ -607,8 +612,12 @@ Options:
   type JobResult = { skill: string; model: string; adapter: string; gaps: number; guard: boolean; durationMs: number; error?: string }
   const results: JobResult[] = []
   let completed = 0
+  const isMultiJob = jobs.length > 1
 
   const pool = createSlotPool(concurrency)
+  const compileProgress = isMultiJob
+    ? createProgressSpinner("Compiling", jobs.length)
+    : { tick() {}, stop() {} }
 
   await Promise.allSettled(jobs.map(async (job) => {
     const slot = await pool.acquire()
@@ -623,7 +632,7 @@ Options:
         harness: job.adapter,
         passes,
         dryRun,
-      }, provider)
+      }, provider, { showSpinner: !isMultiJob })
 
       if (!dryRun) {
         await writeVariant(result)
@@ -631,7 +640,8 @@ Options:
 
       completed++
       const guardStr = result.guardPassed ? "PASS" : "FAIL"
-      console.log(`  [${completed}/${jobs.length}] ${label}: ${result.pass1.gaps.length} gaps, guard=${guardStr}, ${(result.durationMs / 1000).toFixed(1)}s`)
+      spinnerLog(`  [${completed}/${jobs.length}] ${label}: ${result.pass1.gaps.length} gaps, guard=${guardStr}, ${(result.durationMs / 1000).toFixed(1)}s`)
+      compileProgress.tick(`Compiled ${jobs.length} job(s)`)
 
       results.push({
         skill: job.skill.name, model: job.model, adapter: job.adapter,
@@ -640,7 +650,8 @@ Options:
     } catch (err) {
       completed++
       const msg = err instanceof Error ? err.message : String(err)
-      console.error(c.red(`  [${completed}/${jobs.length}] ${job.skill.name} × ${job.model} × ${job.adapter}: FAILED: ${msg.slice(0, 200)}`))
+      spinnerLog(c.red(`  [${completed}/${jobs.length}] ${job.skill.name} × ${job.model} × ${job.adapter}: FAILED: ${msg.slice(0, 200)}`))
+      compileProgress.tick()
       results.push({
         skill: job.skill.name, model: job.model, adapter: job.adapter,
         gaps: 0, guard: false, durationMs: 0, error: msg,
@@ -649,6 +660,7 @@ Options:
       pool.release(slot)
     }
   }))
+  compileProgress.stop()
 
   // ---------------------------------------------------------------------------
   // Summary

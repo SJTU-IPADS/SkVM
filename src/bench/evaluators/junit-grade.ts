@@ -380,9 +380,10 @@ export const junitGrade: CustomEvaluator = {
       }
     }, payload.timeoutMs)
 
-    const exitCode = await proc.exited
-    clearTimeout(timer)
-    const stderr = await new Response(proc.stderr).text()
+    const [exitCode, stderr] = await Promise.all([
+      proc.exited.then((code) => { clearTimeout(timer); return code }),
+      new Response(proc.stderr).text(),
+    ])
     if (stderr) log.debug(`bun test stderr: ${stderr.slice(0, 500)}`)
 
     if (timedOut) {

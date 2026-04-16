@@ -1,4 +1,4 @@
-import { mkdir, copyFile, readdir } from "node:fs/promises"
+import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, SkillMode } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
@@ -208,8 +208,8 @@ export async function resolveHermesCmd(): Promise<string[]> {
 export class HermesAdapter implements AgentAdapter {
   readonly name = "hermes"
   private model = ""
-  private maxSteps = TASK_FILE_DEFAULTS.maxSteps
-  private timeoutMs = TASK_FILE_DEFAULTS.timeoutMs
+  private maxSteps: number = TASK_FILE_DEFAULTS.maxSteps
+  private timeoutMs: number = TASK_FILE_DEFAULTS.timeoutMs
   private cmdPrefix: string[] = []
   private repoDir: string | undefined
 
@@ -229,7 +229,6 @@ export class HermesAdapter implements AgentAdapter {
     skillContent?: string
     skillMode?: SkillMode
     skillMeta?: { name: string; description: string }
-    skillBundleDir?: string
     taskId?: string
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
@@ -251,25 +250,7 @@ export class HermesAdapter implements AgentAdapter {
         const skillDir = path.join(hermesHome, "skills", skillName)
         await mkdir(skillDir, { recursive: true })
         await Bun.write(path.join(skillDir, "SKILL.md"), task.skillContent)
-        if (task.skillBundleDir) {
-          const entries = await readdir(task.skillBundleDir, { withFileTypes: true })
-          for (const entry of entries) {
-            if (entry.isFile() && !entry.name.endsWith(".md")) {
-              await copyFile(path.join(task.skillBundleDir, entry.name), path.join(skillDir, entry.name))
-            }
-          }
-        }
         skillLoaded = false
-      }
-
-      // Copy bundle files to workDir for inject mode
-      if (skillMode === "inject" && task.skillBundleDir) {
-        const entries = await readdir(task.skillBundleDir, { withFileTypes: true })
-        for (const entry of entries) {
-          if (entry.isFile() && !entry.name.endsWith(".md")) {
-            await copyFile(path.join(task.skillBundleDir, entry.name), path.join(task.workDir, entry.name))
-          }
-        }
       }
     }
 
@@ -509,10 +490,10 @@ export async function runCommandWithEnv(
     }, opts.timeout)
   }
 
-  const exitCode = await proc.exited
-  if (timer) clearTimeout(timer)
-
-  const stdout = await new Response(proc.stdout).text()
-  const stderr = await new Response(proc.stderr).text()
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited.then((code) => { if (timer) clearTimeout(timer); return code }),
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
   return { stdout, stderr, exitCode, timedOut }
 }

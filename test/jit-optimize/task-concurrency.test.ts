@@ -6,6 +6,8 @@ import { runTasksForRound } from "../../src/jit-optimize/loop.ts"
 import type { RunnableTask } from "../../src/jit-optimize/task-source.ts"
 import type { AgentAdapter, RunResult } from "../../src/core/types.ts"
 import { Pool } from "../../src/core/concurrency.ts"
+import { loadSkill } from "../../src/core/skill-loader.ts"
+import type { ResolvedSkill } from "../../src/core/skill-loader.ts"
 
 // Factory returning N distinct adapter instances wired to a shared
 // barrier state. Each adapter.run() increments a shared `inFlight`
@@ -97,11 +99,12 @@ function createRecordingAdapter(order: string[]): AgentAdapter {
   }
 }
 
-async function withSkillDir(fn: (dir: string) => Promise<void>) {
+async function withSkill(fn: (skill: ResolvedSkill) => Promise<void>) {
   const skillDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-skill-"))
   try {
     await writeFile(path.join(skillDir, "SKILL.md"), "# test skill\n")
-    await fn(skillDir)
+    const skill = await loadSkill(skillDir)
+    await fn(skill)
   } finally {
     await rm(skillDir, { recursive: true, force: true })
   }
@@ -131,7 +134,7 @@ async function waitUntil(predicate: () => boolean, label: string, timeoutMs = 20
 
 describe("runTasksForRound adapterPool concurrency bound", () => {
   test("1-instance pool keeps in-flight at 1", async () => {
-    await withSkillDir(async (skillDir) => {
+    await withSkill(async (skill) => {
       const logDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
       try {
         const barrier = createBarrierPool(1)
@@ -140,7 +143,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
 
         const runPromise = runTasksForRound({
           tasks,
-          skillDir,
+          skill,
           runsPerTask: 1,
           adapterPool,
           adapterConfig: { model: "mock", maxSteps: 30, timeoutMs: 60_000 },
@@ -169,7 +172,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
   })
 
   test("3-instance pool with 5 tasks caps in-flight at 3", async () => {
-    await withSkillDir(async (skillDir) => {
+    await withSkill(async (skill) => {
       const logDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
       try {
         const barrier = createBarrierPool(3)
@@ -178,7 +181,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
 
         const runPromise = runTasksForRound({
           tasks,
-          skillDir,
+          skill,
           runsPerTask: 1,
           adapterPool,
           adapterConfig: { model: "mock", maxSteps: 30, timeoutMs: 60_000 },
@@ -216,7 +219,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
   })
 
   test("evidence order is preserved under reversed completion", async () => {
-    await withSkillDir(async (skillDir) => {
+    await withSkill(async (skill) => {
       const logDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
       try {
         const barrier = createBarrierPool(3)
@@ -225,7 +228,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
 
         const runPromise = runTasksForRound({
           tasks,
-          skillDir,
+          skill,
           runsPerTask: 1,
           adapterPool,
           adapterConfig: { model: "mock", maxSteps: 30, timeoutMs: 60_000 },
@@ -248,7 +251,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
   })
 
   test("two runTasksForRound calls sharing one adapterPool are globally capped", async () => {
-    await withSkillDir(async (skillDir) => {
+    await withSkill(async (skill) => {
       const logDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
       try {
         // 2-instance barrier pool mimics runBoth's train+test sharing one pool.
@@ -260,7 +263,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
         const both = Promise.all([
           runTasksForRound({
             tasks: trainTasks,
-            skillDir,
+            skill,
             runsPerTask: 1,
             adapterPool,
             adapterConfig: { model: "mock", maxSteps: 30, timeoutMs: 60_000 },
@@ -270,7 +273,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
           }),
           runTasksForRound({
             tasks: testTasks,
-            skillDir,
+            skill,
             runsPerTask: 1,
             adapterPool,
             adapterConfig: { model: "mock", maxSteps: 30, timeoutMs: 60_000 },
@@ -305,7 +308,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
   })
 
   test("1-instance pool + runsPerTask=2 preserves (task × run) order", async () => {
-    await withSkillDir(async (skillDir) => {
+    await withSkill(async (skill) => {
       const logDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
       try {
         const order: string[] = []
@@ -314,7 +317,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
 
         const evidences = await runTasksForRound({
           tasks,
-          skillDir,
+          skill,
           runsPerTask: 2,
           adapterPool: new Pool([adapter]),
           adapterConfig: { model: "mock", maxSteps: 30, timeoutMs: 60_000 },

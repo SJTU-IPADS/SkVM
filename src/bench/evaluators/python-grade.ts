@@ -195,9 +195,11 @@ export const pythonGrade: CustomEvaluator = {
         stderr: "pipe",
       })
 
-      await proc.exited
-      const stdout = await new Response(proc.stdout).text()
-      const stderr = await new Response(proc.stderr).text()
+      const [, stdout, stderr] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ])
       if (stderr) log.debug(`Grade stderr: ${stderr.slice(0, 500)}`)
 
       // Grade functions may print diagnostic output (e.g. unittest print()

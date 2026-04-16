@@ -17,9 +17,15 @@
     ]
   },
 
-  "_headlessAgentComment": "Optional. Controls how jit-optimize / jit-boost spawn their headless agent (currently always opencode). `modelPrefix` is prepended to the --model argument passed to opencode, unless the model id already starts with it (idempotent). Default `\"openrouter/\"` preserves pre-registry behavior. Set to `\"anthropic/\"` to route headless agent runs through opencode's native Anthropic provider, or `\"\"` (empty string) to pass fully-qualified ids straight through. Note: this namespace is opencode's, not SkVM's `providers.routes` namespace — they are two distinct naming systems.",
+  "_headlessAgentComment": "Optional. Controls how jit-optimize / jit-boost spawn their headless agent (currently always opencode). `modelPrefix` is prepended to the --model argument passed to opencode, unless the model id already starts with it (idempotent). Default `\"openrouter/\"` preserves pre-registry behavior. Set to `\"anthropic/\"` to route headless agent runs through opencode's native Anthropic provider, or `\"\"` (empty string) to pass fully-qualified ids straight through. Note: this namespace is opencode's, not SkVM's `providers.routes` namespace — they are two distinct naming systems. `providerOverride` injects OPENCODE_CONFIG_CONTENT into the subprocess to register a custom OpenAI-compatible provider without modifying the user's global opencode config. The provider `name` must match the first segment of `modelPrefix`.",
   "headlessAgent": {
     "driver": "opencode",
-    "modelPrefix": "openrouter/"
+    "modelPrefix": "openrouter/",
+    "_providerOverrideComment": "Uncomment to route headless agent through a custom OpenAI-compatible endpoint instead of OpenRouter. Set modelPrefix to match the provider name (e.g. \"custom/\").",
+    "_providerOverrideExample": {
+      "name": "custom",
+      "baseUrl": "http://localhost:8000/v1",
+      "apiKeyEnv": "CUSTOM_API_KEY"
+    }
   }
 }

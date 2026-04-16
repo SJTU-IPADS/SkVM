@@ -425,9 +425,11 @@ async function executeTemplate(
       })
     }
 
-    const exitCode = await proc.exited
-    const stdout = await new Response(proc.stdout as ReadableStream).text()
-    const stderr = await new Response(proc.stderr as ReadableStream).text()
+    const [exitCode, stdout, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout as ReadableStream).text(),
+      new Response(proc.stderr as ReadableStream).text(),
+    ])
     const durationMs = performance.now() - start
 
     return {

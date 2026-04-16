@@ -390,8 +390,8 @@ When you finish, leave \`./tasks-out/task-0/\`, \`./tasks-out/task-1/\`, ... on 
 `
 
 /**
- * Render the task-gen user prompt. `stern` prepends a retry preamble used on
- * the second attempt. Exported for unit testing.
+ * Render the task-gen user prompt. `stern` prepends a retry preamble used
+ * when the previous attempt yielded zero valid tasks. Exported for unit testing.
  */
 export function buildTaskGenPrompt(
   count: number,
@@ -769,12 +769,26 @@ function repointFixturesDirs(
   )
 }
 
+/** Maximum number of retry attempts when the first attempt produces fewer
+ *  tasks than requested. Each retry asks only for the remaining shortfall
+ *  and carries the prompts of already-accepted tasks so the agent avoids
+ *  generating duplicates. */
+const TASK_GEN_MAX_RETRIES = 3
+
 /**
  * Generate `count` synthetic tasks by running a headless agent inside a temp
  * workspace. On success returns up to `count` `RunnableTask`s whose
- * `fixturesDir` points into the proposal tree. Retries once with a sterner
- * prompt on first failure and throws loudly on second failure — silent
- * empty returns were a known footgun in the previous implementation.
+ * `fixturesDir` points into the proposal tree.
+ *
+ * When the first attempt yields fewer than `count` valid tasks (e.g. because
+ * the provider dropped mid-session), up to {@link TASK_GEN_MAX_RETRIES}
+ * follow-up attempts are made. Each retry requests only the shortfall and
+ * includes the prompts of already-accepted tasks so the agent produces
+ * genuinely different scenarios. Tasks accumulated across retries are
+ * re-indexed to `task-0 … task-(n-1)` so downstream code sees a contiguous
+ * sequence.
+ *
+ * Throws when all attempts together yield 0 valid tasks.
  */
 export async function resolveSyntheticTasks(
   count: number,
@@ -790,12 +804,11 @@ export async function resolveSyntheticTasks(
   }
 
   const runAttempt = async (
-    attemptLabel: "first" | "retry",
+    runLabel: string,
+    requestCount: number,
     prompt: string,
   ): Promise<Attempt> => {
     const { workspace, tasksOutDir } = await prepareTaskGenWorkspace(context.skillDir)
-    const runLabel =
-      attemptLabel === "first" ? context.runLabel : `${context.runLabel}-retry`
     try {
       let run
       try {
@@ -825,7 +838,9 @@ export async function resolveSyntheticTasks(
         calls: 1,
       }
 
-      const { tasks: loaded, dropped } = await loadGeneratedTasks(tasksOutDir, { count })
+      const { tasks: loaded, dropped } = await loadGeneratedTasks(tasksOutDir, {
+        count: requestCount,
+      })
       for (const d of dropped) {
         log.warn(`task-gen (${runLabel}): dropped ${d.id}: ${d.reason}`)
       }
@@ -838,36 +853,71 @@ export async function resolveSyntheticTasks(
       )
       return { tasks: repointFixturesDirs(loaded, destTasks), cost }
     } finally {
-      // `tasks-out` is already out of the workspace (renamed into the
-      // proposal tree); remove whatever parent remains.
       await removeWorkspace(workspace).catch(() => {
         /* best effort */
       })
     }
   }
 
-  const first = await runAttempt("first", buildTaskGenPrompt(count, priorPrompts, false))
-  if (first.tasks.length > 0) {
-    return { tasks: first.tasks, genCost: first.cost }
+  const accumulated: RunnableTask[] = []
+  let totalCost: CostSlice & { calls: number } = { ...emptyCostSlice(), calls: 0 }
+  const allPriorPrompts = [...priorPrompts]
+  let prevYieldedZero = false
+
+  for (let attempt = 0; attempt <= TASK_GEN_MAX_RETRIES; attempt++) {
+    const remaining = count - accumulated.length
+    if (remaining <= 0) break
+
+    const isFirst = attempt === 0
+    const runLabel = isFirst
+      ? context.runLabel
+      : `${context.runLabel}-retry-${attempt}`
+
+    // Stern preamble only when the previous attempt yielded zero valid tasks.
+    const prompt = buildTaskGenPrompt(remaining, allPriorPrompts, prevYieldedZero)
+
+    const result = await runAttempt(runLabel, remaining, prompt)
+    totalCost = addCostSlice(totalCost, result.cost)
+
+    if (result.tasks.length > 0) {
+      prevYieldedZero = false
+      const offset = accumulated.length
+      for (const [i, task] of result.tasks.entries()) {
+        allPriorPrompts.push(task.prompt)
+        accumulated.push({ ...task, id: `task-${offset + i}` })
+      }
+
+      if (accumulated.length >= count) break
+
+      log.info(
+        `task-gen: attempt ${attempt + 1} produced ${result.tasks.length}/${remaining} task(s), ` +
+          `${accumulated.length}/${count} total — retrying for remainder`,
+      )
+    } else {
+      prevYieldedZero = true
+      const reason = result.error
+        ? `failed with ${result.error.name}: ${errMsg(result.error)}`
+        : "produced 0 valid tasks"
+      log.warn(
+        `task-gen: attempt ${attempt + 1} ${reason}` +
+          (attempt < TASK_GEN_MAX_RETRIES ? "; retrying" : ""),
+      )
+    }
   }
-  log.warn(
-    first.error
-      ? `task-gen: first attempt failed with ${first.error.name}: ${errMsg(first.error)}; retrying once`
-      : "task-gen: first attempt produced 0 valid tasks; retrying once with stern prompt",
-  )
 
-  const second = await runAttempt("retry", buildTaskGenPrompt(count, priorPrompts, true))
-  const genCost = addCostSlice(first.cost, second.cost)
-
-  if (second.tasks.length > 0) {
-    log.warn(`task-gen: retry produced ${second.tasks.length} task(s); first attempt recovered`)
-    return { tasks: second.tasks, genCost }
+  if (accumulated.length === 0) {
+    throw new Error(
+      `synthetic task generation failed: 0 valid tasks after ${TASK_GEN_MAX_RETRIES + 1} attempt(s)`,
+    )
   }
 
-  const suffix = second.error
-    ? `retry failed with ${second.error.name}: ${errMsg(second.error)}`
-    : "retry produced 0 valid tasks"
-  throw new Error(`synthetic task generation failed after retry: ${suffix}`)
+  if (accumulated.length < count) {
+    log.warn(
+      `task-gen: wanted ${count} task(s) but only ${accumulated.length} survived after all retries`,
+    )
+  }
+
+  return { tasks: accumulated, genCost: totalCost }
 }
 
 // ---------------------------------------------------------------------------

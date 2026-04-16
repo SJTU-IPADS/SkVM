@@ -7,6 +7,8 @@ import type { RunnableTask } from "../../src/jit-optimize/task-source.ts"
 import type { AgentAdapter, RunResult } from "../../src/core/types.ts"
 import { emptyTokenUsage } from "../../src/core/types.ts"
 import { Pool } from "../../src/core/concurrency.ts"
+import { loadSkill } from "../../src/core/skill-loader.ts"
+import type { ResolvedSkill } from "../../src/core/skill-loader.ts"
 
 // Mock adapter that fakes a timeout-killed run with residual workDir output —
 // the exact shape that recreated the original false-positive in subprocess
@@ -57,11 +59,12 @@ function createOkMockAdapter(): AgentAdapter {
   }
 }
 
-async function withSkillDir(fn: (dir: string) => Promise<void>) {
+async function withSkill(fn: (skill: ResolvedSkill) => Promise<void>) {
   const skillDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-test-"))
   try {
     await writeFile(path.join(skillDir, "SKILL.md"), "# test skill\n")
-    await fn(skillDir)
+    const skill = await loadSkill(skillDir)
+    await fn(skill)
   } finally {
     await rm(skillDir, { recursive: true, force: true })
   }
@@ -69,7 +72,7 @@ async function withSkillDir(fn: (dir: string) => Promise<void>) {
 
 describe("jit-optimize runTasksForRound runStatus gate (sweep G1)", () => {
   test("tainted adapter run produces infra-tainted Evidence, no eval", async () => {
-    await withSkillDir(async (skillDir) => {
+    await withSkill(async (skill) => {
       const logDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
       try {
         const task: RunnableTask = {
@@ -83,7 +86,7 @@ describe("jit-optimize runTasksForRound runStatus gate (sweep G1)", () => {
 
         const evidences = await runTasksForRound({
           tasks: [task],
-          skillDir,
+          skill,
           runsPerTask: 1,
           adapterPool: new Pool([createTaintedMockAdapter()]),
           adapterConfig: { model: "test", maxSteps: 30, timeoutMs: 60_000 },
@@ -115,7 +118,7 @@ describe("jit-optimize runTasksForRound runStatus gate (sweep G1)", () => {
   })
 
   test("ok adapter run produces normal Evidence with criteria from evaluateAll", async () => {
-    await withSkillDir(async (skillDir) => {
+    await withSkill(async (skill) => {
       const logDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
       try {
         const task: RunnableTask = {
@@ -129,7 +132,7 @@ describe("jit-optimize runTasksForRound runStatus gate (sweep G1)", () => {
 
         const evidences = await runTasksForRound({
           tasks: [task],
-          skillDir,
+          skill,
           runsPerTask: 1,
           adapterPool: new Pool([createOkMockAdapter()]),
           adapterConfig: { model: "test", maxSteps: 30, timeoutMs: 60_000 },

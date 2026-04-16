@@ -6,6 +6,7 @@ import { emptyTokenUsage, addTokenUsage } from "../core/types.ts"
 import { copyDirRecursive } from "../core/fs-utils.ts"
 import { AOT_COMPILE_DIR, toPassTag, safeModelName, getCompileLogDir } from "../core/config.ts"
 import { createLogger } from "../core/logger.ts"
+import { createSpinner, type Spinner } from "../core/spinner.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { LoggingProvider } from "../core/logging-provider.ts"
 import type { CompileOptions, CompilationResult, Pass1Result, Pass2Result, Pass3Result } from "./types.ts"
@@ -33,6 +34,7 @@ function extractSkillName(_skillContent: string, skillPath: string): string {
 export async function compileSkill(
   opts: CompileOptions,
   provider: LLMProvider,
+  options?: { showSpinner?: boolean },
 ): Promise<CompilationResult> {
   const startMs = performance.now()
   const passes = opts.passes ?? [1, 2, 3]
@@ -88,14 +90,23 @@ export async function compileSkill(
     tokens: emptyTokenUsage(),
   }
 
+  const showSpinner = options?.showSpinner !== false
+
   if (passes.includes(1)) {
-    log.info("Pass 1: Capability-Based Compilation")
-    const p1Log = new ConversationLog(path.join(compileLogDir, "pass1.jsonl"))
-    const p1Provider = new LoggingProvider(provider, p1Log)
-    pass1 = await runPass1(opts.skillContent, opts.tcp, p1Provider, workDir, opts.failureContext)
-    await p1Log.finalize()
-    compiledSkill = pass1.compiledSkill
-    totalTokens = addTokenUsage(totalTokens, pass1.tokens)
+    const sp = showSpinner ? createSpinner("Compiling — Pass 1: capability analysis...") : null
+    if (!sp) log.info("Pass 1: Capability-Based Compilation")
+    try {
+      const p1Log = new ConversationLog(path.join(compileLogDir, "pass1.jsonl"))
+      const p1Provider = new LoggingProvider(provider, p1Log)
+      pass1 = await runPass1(opts.skillContent, opts.tcp, p1Provider, workDir, opts.failureContext)
+      await p1Log.finalize()
+      compiledSkill = pass1.compiledSkill
+      totalTokens = addTokenUsage(totalTokens, pass1.tokens)
+      if (sp) sp.succeed(`Pass 1: ${pass1.scr.purposes.length} purposes, ${pass1.gaps.length} gaps`)
+    } catch (err) {
+      sp?.fail("Pass 1: failed")
+      throw err
+    }
     log.info(`  SCR: ${pass1.scr.purposes.length} purposes`)
     log.info(`  Gaps: ${pass1.gaps.length}`)
   }
@@ -113,11 +124,21 @@ export async function compileSkill(
   }
 
   if (passes.includes(2)) {
-    log.info("Pass 2: Environment Binding")
-    const p2Log = new ConversationLog(path.join(compileLogDir, "pass2.jsonl"))
-    const p2Provider = new LoggingProvider(provider, p2Log)
-    pass2 = await runPass2(compiledSkill, workDir, p2Provider)
-    await p2Log.finalize()
+    const sp = showSpinner ? createSpinner("Compiling — Pass 2: environment binding...") : null
+    if (!sp) log.info("Pass 2: Environment Binding")
+    try {
+      const p2Log = new ConversationLog(path.join(compileLogDir, "pass2.jsonl"))
+      const p2Provider = new LoggingProvider(provider, p2Log)
+      pass2 = await runPass2(compiledSkill, workDir, p2Provider)
+      await p2Log.finalize()
+      if (sp) {
+        const missing = [...pass2.presenceResults.entries()].filter(([_, v]) => !v).length
+        sp.succeed(`Pass 2: ${pass2.dependencies.length} deps, ${missing} missing`)
+      }
+    } catch (err) {
+      sp?.fail("Pass 2: failed")
+      throw err
+    }
     log.info(`  Dependencies: ${pass2.dependencies.length}`)
     const missing = [...pass2.presenceResults.entries()].filter(([_, v]) => !v).length
     log.info(`  Missing: ${missing}`)
@@ -129,18 +150,25 @@ export async function compileSkill(
   }
 
   if (passes.includes(3)) {
-    log.info("Pass 3: Parallel Opportunity Detection")
-    const p3Log = new ConversationLog(path.join(compileLogDir, "pass3.jsonl"))
-    const p3Provider = new LoggingProvider(provider, p3Log)
-    pass3 = await runPass3(compiledSkill, pass1.scr, opts.tcp, p3Provider)
-    await p3Log.finalize()
-    const parallelismSection = generateParallelismSection(pass3.dag)
-    if (parallelismSection) {
-      compiledSkill += parallelismSection
+    const sp = showSpinner ? createSpinner("Compiling — Pass 3: parallel extraction...") : null
+    if (!sp) log.info("Pass 3: Parallel Opportunity Detection")
+    try {
+      const p3Log = new ConversationLog(path.join(compileLogDir, "pass3.jsonl"))
+      const p3Provider = new LoggingProvider(provider, p3Log)
+      pass3 = await runPass3(compiledSkill, pass1.scr, opts.tcp, p3Provider)
+      await p3Log.finalize()
+      const parallelismSection = generateParallelismSection(pass3.dag)
+      if (parallelismSection) {
+        compiledSkill += parallelismSection
+      }
+      if (sp) sp.succeed(`Pass 3: ${pass3.dag.steps.length} DAG nodes, ${pass3.dag.parallelism.length} groups`)
+    } catch (err) {
+      sp?.fail("Pass 3: failed")
+      throw err
     }
     log.info(`  DAG nodes: ${pass3.dag.steps.length}`)
     log.info(`  Parallel groups: ${pass3.dag.parallelism.length}`)
-    log.info(`  Guidance injected: ${parallelismSection ? "yes" : "no"}`)
+    log.info(`  Guidance injected: ${pass3.dag.parallelism.length > 0 ? "yes" : "no"}`)
   }
 
   // Guard

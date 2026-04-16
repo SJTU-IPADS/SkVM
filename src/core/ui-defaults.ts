@@ -35,6 +35,10 @@ export const BENCH_CONFIG_DEFAULTS = {
 export const HEADLESS_AGENT_DEFAULTS = {
   driver: "opencode",
   modelPrefix: "openrouter/",
+  /** Conservative context window default for custom OpenAI-compatible endpoints. */
+  contextLimit: 128_000,
+  /** Conservative output token default for custom OpenAI-compatible endpoints. */
+  outputLimit: 16_384,
 } as const
 
 /**

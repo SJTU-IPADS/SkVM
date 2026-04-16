@@ -75,11 +75,11 @@ async function runCommand(
     }, opts.timeout)
   }
 
-  const exitCode = await proc.exited
-  if (timer) clearTimeout(timer)
-
-  const stdout = await new Response(proc.stdout).text()
-  const stderr = await new Response(proc.stderr).text()
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited.then((code) => { if (timer) clearTimeout(timer); return code }),
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
   return { stdout, stderr, exitCode, timedOut }
 }
 
@@ -656,7 +656,7 @@ const openclawPool = new OpenClawPool()
 export class OpenClawAdapter implements AgentAdapter {
   readonly name = "openclaw"
   private model = ""
-  private timeoutMs = TASK_FILE_DEFAULTS.timeoutMs
+  private timeoutMs: number = TASK_FILE_DEFAULTS.timeoutMs
 
   async setup(config: AdapterConfig): Promise<void> {
     this.model = config.model
@@ -672,7 +672,6 @@ export class OpenClawAdapter implements AgentAdapter {
     skillContent?: string
     skillMode?: SkillMode
     skillMeta?: { name: string; description: string }
-    skillBundleDir?: string
     taskId?: string
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
@@ -701,7 +700,6 @@ export class OpenClawAdapter implements AgentAdapter {
       skillContent?: string
       skillMode?: SkillMode
       skillMeta?: { name: string; description: string }
-      skillBundleDir?: string
       taskId?: string
       convLog?: import("../core/conversation-logger.ts").ConversationLog
       timeoutMs?: number
@@ -750,15 +748,6 @@ export class OpenClawAdapter implements AgentAdapter {
         } catch { /* no existing file */ }
         const separator = existing ? "\n\n" : ""
         await Bun.write(bootstrapPath, existing + separator + task.skillContent)
-        // Copy bundle files to workspace root
-        if (task.skillBundleDir) {
-          const entries = await readdir(task.skillBundleDir, { withFileTypes: true })
-          for (const entry of entries) {
-            if (entry.isFile() && !entry.name.endsWith(".md")) {
-              await copyFile(path.join(task.skillBundleDir, entry.name), path.join(ws, entry.name))
-            }
-          }
-        }
         skillLoaded = false
       } else {
         // Discover mode: copy to skills/<name>/
@@ -766,14 +755,6 @@ export class OpenClawAdapter implements AgentAdapter {
         const skillDir = path.join(ws, "skills", skillName)
         await mkdir(skillDir, { recursive: true })
         await Bun.write(path.join(skillDir, "SKILL.md"), task.skillContent)
-        if (task.skillBundleDir) {
-          const entries = await readdir(task.skillBundleDir, { withFileTypes: true })
-          for (const entry of entries) {
-            if (entry.isFile() && !entry.name.endsWith(".md")) {
-              await copyFile(path.join(task.skillBundleDir, entry.name), path.join(skillDir, entry.name))
-            }
-          }
-        }
         skillLoaded = false
       }
     }
