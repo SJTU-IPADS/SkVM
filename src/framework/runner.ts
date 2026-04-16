@@ -18,7 +18,6 @@ export interface RunOptions {
   skillContent?: string
   skillMode?: SkillMode
   skillMeta?: { name: string; description: string }
-  skillBundleDir?: string
   keepWorkDir?: boolean
   /** If provided, use this directory instead of creating a new temp dir */
   workDir?: string
@@ -66,7 +65,6 @@ export async function runTask(opts: RunOptions): Promise<TestResult> {
       skillContent,
       skillMode: opts.skillMode,
       skillMeta: opts.skillMeta,
-      skillBundleDir: opts.skillBundleDir,
       taskId: task.id,
       convLog: opts.convLog,
       timeoutMs: task.timeoutMs,

@@ -467,7 +467,6 @@ export interface AgentAdapter {
     skillContent?: string
     skillMode?: SkillMode
     skillMeta?: { name: string; description: string }
-    skillBundleDir?: string
     taskId?: string
     convLog?: ConversationLog
     /** Per-task timeout override (ms). Falls back to adapter setup timeout. */

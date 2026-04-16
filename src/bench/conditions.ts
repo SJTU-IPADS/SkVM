@@ -10,7 +10,7 @@ import { evaluateAll } from "../framework/evaluator.ts"
 import { compileSkill, writeVariant } from "../compiler/index.ts"
 import { AOT_COMPILE_DIR, toPassTag, safeModelName } from "../core/config.ts"
 import type { BenchTask, BenchCondition, ConditionResult, JitRunReport, EvalDetail } from "./types.ts"
-import { contentHash } from "../core/skill-loader.ts"
+import { contentHash, copySkillBundle } from "../core/skill-loader.ts"
 import type { ResolvedSkill } from "../core/skill-loader.ts"
 import { createLogger } from "../core/logger.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
@@ -58,18 +58,6 @@ async function prepareWorkDir(task: BenchTask): Promise<string> {
   }
 
   return workDir
-}
-
-/** Copy skill bundle files (scripts, templates) into workDir so the agent can use them */
-async function copySkillBundle(skill: ResolvedSkill, workDir: string): Promise<void> {
-  if (skill.bundleFiles.length === 0) return
-  for (const relPath of skill.bundleFiles) {
-    const src = path.join(skill.skillDir, relPath)
-    const dest = path.join(workDir, relPath)
-    await mkdir(path.dirname(dest), { recursive: true })
-    await copyFile(src, dest)
-  }
-  log.debug(`Copied ${skill.bundleFiles.length} skill bundle files to workDir`)
 }
 
 /** Copy bundle files for multiple skills */

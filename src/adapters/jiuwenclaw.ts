@@ -1,4 +1,4 @@
-import { mkdir, copyFile, readdir, writeFile, unlink } from "node:fs/promises"
+import { mkdir, copyFile, writeFile, unlink } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import net from "node:net"
@@ -349,7 +349,6 @@ export class JiuwenClawAdapter implements AgentAdapter {
     skillContent?: string
     skillMode?: SkillMode
     skillMeta?: { name: string; description: string }
-    skillBundleDir?: string
     taskId?: string
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
@@ -362,16 +361,6 @@ export class JiuwenClawAdapter implements AgentAdapter {
       // Both modes use prompt prepend for v1 (jiuwenclaw has no well-known skill path for CLI mode)
       prompt += task.skillContent + "\n\n---\n\n"
       skillLoaded = false
-
-      // Copy bundle files to workDir
-      if (task.skillBundleDir) {
-        const entries = await readdir(task.skillBundleDir, { withFileTypes: true })
-        for (const entry of entries) {
-          if (entry.isFile() && !entry.name.endsWith(".md")) {
-            await copyFile(path.join(task.skillBundleDir, entry.name), path.join(task.workDir, entry.name))
-          }
-        }
-      }
     }
 
     prompt += task.prompt

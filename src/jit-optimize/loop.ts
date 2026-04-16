@@ -51,6 +51,7 @@ import {
 } from "./evidence.ts"
 import { removeWorkspace } from "./workspace.ts"
 import { copySkillDir } from "../core/fs-utils.ts"
+import { loadSkill, copySkillBundle, type ResolvedSkill } from "../core/skill-loader.ts"
 import { createProposal, finalizeProposal } from "../proposals/storage.ts"
 import { createProviderForModel } from "../providers/registry.ts"
 import { isProviderError } from "../providers/errors.ts"
@@ -345,6 +346,7 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
     judgeAcc: CostSlice & { calls: number },
   ): Promise<RoundEvidences> => {
     const roundEvalConfig = makeRoundEvalConfig(judgeAcc)
+    const skillForRun = await loadSkill(skillDirForRun)
     // The shared adapterPool doubles as the concurrency limiter: when
     // testIsSeparate, train and test both drain the same pool via
     // Promise.all, so the union of in-flight runs never exceeds
@@ -352,7 +354,7 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
     const runSet = (tasks: RunnableTask[], setLabel: "train" | "test") =>
       runTasksForRound({
         tasks,
-        skillDir: skillDirForRun,
+        skill: skillForRun,
         runsPerTask,
         adapterPool,
         adapterConfig,
@@ -387,9 +389,10 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
     roundLabel: string,
     judgeAcc: CostSlice & { calls: number },
   ): Promise<Evidence[]> => {
+    const skillForRun = await loadSkill(skillDirForRun)
     const trainEv = await runTasksForRound({
       tasks: currentTrainTasks,
-      skillDir: skillDirForRun,
+      skill: skillForRun,
       runsPerTask,
       adapterPool,
       adapterConfig,
@@ -1107,7 +1110,8 @@ async function runLogOnly(
 
 export interface RunTasksParams {
   tasks: RunnableTask[]
-  skillDir: string
+  /** Resolved skill — used to read skillContent and copy bundle files into each run's workDir. */
+  skill: ResolvedSkill
   runsPerTask: number
   /**
    * Pool of adapter instances. Each (task, runIdx) job checks out its
@@ -1132,10 +1136,10 @@ export interface RunTasksParams {
 // Exported for unit tests of the runStatus gate (sweep G1) and task
 // concurrency. Production callers go through `runLoop`.
 export async function runTasksForRound(params: RunTasksParams): Promise<Evidence[]> {
-  const { tasks, skillDir, runsPerTask, adapterPool, adapterConfig, evalConfig, logDir, setLabel } = params
+  const { tasks, skill, runsPerTask, adapterPool, adapterConfig, evalConfig, logDir, setLabel } = params
   await mkdir(logDir, { recursive: true })
 
-  const skillContent = await Bun.file(path.join(skillDir, "SKILL.md")).text()
+  const skillContent = skill.skillContent
 
   // Stable output index per (task, runIdx) pair lets concurrent jobs fill
   // `evidences` by slot while preserving input order — downstream pass/avg
@@ -1153,6 +1157,7 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
   const runOne = async (job: Job, adapter: AgentAdapter): Promise<void> => {
     const { task, runIdx: r, outIdx } = job
     const runWorkDir = await createRunWorkDir(task)
+    await copySkillBundle(skill, runWorkDir)
     try {
       const convLogPath = path.join(logDir, `${task.id}-run${r}.jsonl`)
       const convLog = new ConversationLog(convLogPath)
@@ -1162,7 +1167,6 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
         prompt: task.prompt,
         workDir: runWorkDir,
         skillContent,
-        skillBundleDir: skillDir,
         convLog,
         timeoutMs: adapterConfig.timeoutMs,
       })

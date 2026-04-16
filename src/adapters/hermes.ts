@@ -1,4 +1,4 @@
-import { mkdir, copyFile, readdir } from "node:fs/promises"
+import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, SkillMode } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
@@ -229,7 +229,6 @@ export class HermesAdapter implements AgentAdapter {
     skillContent?: string
     skillMode?: SkillMode
     skillMeta?: { name: string; description: string }
-    skillBundleDir?: string
     taskId?: string
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
@@ -251,25 +250,7 @@ export class HermesAdapter implements AgentAdapter {
         const skillDir = path.join(hermesHome, "skills", skillName)
         await mkdir(skillDir, { recursive: true })
         await Bun.write(path.join(skillDir, "SKILL.md"), task.skillContent)
-        if (task.skillBundleDir) {
-          const entries = await readdir(task.skillBundleDir, { withFileTypes: true })
-          for (const entry of entries) {
-            if (entry.isFile() && !entry.name.endsWith(".md")) {
-              await copyFile(path.join(task.skillBundleDir, entry.name), path.join(skillDir, entry.name))
-            }
-          }
-        }
         skillLoaded = false
-      }
-
-      // Copy bundle files to workDir for inject mode
-      if (skillMode === "inject" && task.skillBundleDir) {
-        const entries = await readdir(task.skillBundleDir, { withFileTypes: true })
-        for (const entry of entries) {
-          if (entry.isFile() && !entry.name.endsWith(".md")) {
-            await copyFile(path.join(task.skillBundleDir, entry.name), path.join(task.workDir, entry.name))
-          }
-        }
       }
     }
 
