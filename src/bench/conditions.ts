@@ -518,7 +518,7 @@ export async function runAOTVariant(
         model: adapterConfig.model,
         harness,
         passes,
-      }, compilerProvider)
+      }, compilerProvider, { showSpinner: false })
       compiledContent = result.compiledSkill
       await writeVariant(result)
     } catch (err) {

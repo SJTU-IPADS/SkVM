@@ -59,6 +59,7 @@ import { type AdapterName, createAdapter } from "../adapters/registry.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { createLogger } from "../core/logger.ts"
+import { createSpinner } from "../core/spinner.ts"
 import { Pool } from "../core/concurrency.ts"
 
 const log = createLogger("jit-optimize-loop")
@@ -231,12 +232,26 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
   // Resolve train + test tasks once (stable across rounds).
   // Cost of synthesizing tasks (if any) is the "setup cost" — it's attributed
   // to the session, not to any round.
-  const resolved = await resolveTrainTestTasks(config.taskSource, {
-    skillDir,
-    optimizerModel,
-    proposalDir: proposal.dir,
-    runLabel: "run-0",
-  })
+  const taskResSp = createSpinner(
+    config.taskSource.kind === "synthetic-task"
+      ? "Generating synthetic tasks..."
+      : "Resolving tasks...",
+  )
+  let resolved: Awaited<ReturnType<typeof resolveTrainTestTasks>>
+  try {
+    resolved = await resolveTrainTestTasks(config.taskSource, {
+      skillDir,
+      optimizerModel,
+      proposalDir: proposal.dir,
+      runLabel: "run-0",
+    })
+    taskResSp.succeed(
+      `Resolved ${resolved.train.length} train + ${resolved.test.length} test task(s)`,
+    )
+  } catch (err) {
+    taskResSp.fail("Task resolution failed")
+    throw err
+  }
   const { test: testTasks, testIsSeparate } = resolved
   // `currentTrainTasks` is mutable because the synthetic-task source can
   // swap in a fresh train probe between rounds (problem-2 no-edit → regen
@@ -409,6 +424,8 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
   const round0Dir = path.join(proposal.dir, "round-0")
   await copySkillDir(skillDir, round0Dir)
 
+  const baselineSp = createSpinner("Round 0 (baseline) — evaluating original skill...")
+
   try {
     const round0 = await runBoth(skillDir, "round-0", round0JudgeCost)
     const round0TrainScored = scoreEvidences(round0.train)
@@ -443,9 +460,11 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
       historyEntry: null,
     })
     roundTrainEvidences.push(round0.train)
+    baselineSp.succeed(`Round 0 (baseline): train=${round0TrainScore?.toFixed(3) ?? "n/a"}${testIsSeparate ? ` test=${round0TestScore?.toFixed(3) ?? "n/a"}` : ""}`)
     logRoundLine(0, round0TrainScore, testIsSeparate ? round0TestScore : null, null, null, true)
   } catch (err) {
     if (err instanceof InfraBlockedRoundError) {
+      baselineSp.fail("Round 0 (baseline): infra-blocked")
       log.warn(
         `Round 0 baseline evidence is entirely infra-tainted: ${err.reason}. ` +
         `Finalizing proposal with status=infra-blocked and skipping optimization.`,
@@ -481,6 +500,7 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
         evalJudge: round0JudgeCost,
       }))
     } else {
+      baselineSp.fail("Round 0 (baseline): failed")
       throw err
     }
   }
@@ -500,20 +520,28 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
     for (let round = 1; round <= rounds; round++) {
       log.info(`\n=== Round ${round}/${rounds} ===`)
 
+      const roundOptSp = createSpinner(`Round ${round}/${rounds} — optimizing skill...`)
       const prevTrainEvidences = roundTrainEvidences[round - 1]!
       const optimizerLogDir = path.join(proposal.dir, `round-${round}-optimizer-logs`)
-      const optimizeResult = await runOptimizer(
-        {
-          skillDir: currentSkillDir,
-          evidences: prevTrainEvidences,
-          history: history.length > 0 ? history : undefined,
-        },
-        {
-          model: optimizerModel,
-          logDir: optimizerLogDir,
-          timeoutMs: 600_000,
-        },
-      )
+      let optimizeResult: Awaited<ReturnType<typeof runOptimizer>>
+      try {
+        optimizeResult = await runOptimizer(
+          {
+            skillDir: currentSkillDir,
+            evidences: prevTrainEvidences,
+            history: history.length > 0 ? history : undefined,
+          },
+          {
+            model: optimizerModel,
+            logDir: optimizerLogDir,
+            timeoutMs: 600_000,
+          },
+        )
+        roundOptSp.succeed(`Round ${round}/${rounds} — optimizer: ${optimizeResult.changed ? `${optimizeResult.actualChangedFiles.length} file(s) changed` : "no changes"}`)
+      } catch (err) {
+        roundOptSp.fail(`Round ${round}/${rounds} — optimizer failed`)
+        throw err
+      }
 
       const historyEntry: HistoryEntry = {
         timestamp: new Date().toISOString(),
@@ -765,9 +793,12 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
 
       const roundJudgeCost: CostSlice & { calls: number } = { ...emptyCostSlice(), calls: 0 }
       let newEvidences: RoundEvidences
+      const roundEvSp = createSpinner(`Round ${round}/${rounds} — collecting evidence...`)
       try {
         newEvidences = await runBoth(roundDir, `round-${round}`, roundJudgeCost)
+        roundEvSp.succeed(`Round ${round}/${rounds} — evidence collected`)
       } catch (err) {
+        roundEvSp.fail(`Round ${round}/${rounds} — evidence collection failed`)
         if (err instanceof InfraBlockedRoundError) {
           log.warn(
             `Round ${round}: all evidence infra-tainted while evaluating the optimizer's edit: ${err.reason}. ` +
@@ -982,15 +1013,23 @@ async function runLogOnly(
   }
   log.info(`Loaded ${preEvidences.length} evidence(s) from execution log(s)`)
 
+  const logOptSp = createSpinner("Optimizing skill from execution logs...")
   const optimizerLogDir = path.join(proposal.dir, "round-1-optimizer-logs")
-  const optimizeResult = await runOptimizer(
-    { skillDir, evidences: preEvidences },
-    {
-      model: config.optimizer.model,
-      logDir: optimizerLogDir,
-      timeoutMs: 600_000,
-    },
-  )
+  let optimizeResult: Awaited<ReturnType<typeof runOptimizer>>
+  try {
+    optimizeResult = await runOptimizer(
+      { skillDir, evidences: preEvidences },
+      {
+        model: config.optimizer.model,
+        logDir: optimizerLogDir,
+        timeoutMs: 600_000,
+      },
+    )
+    logOptSp.succeed(`Optimizer: ${optimizeResult.changed ? `${optimizeResult.actualChangedFiles.length} file(s) changed` : "no changes"}`)
+  } catch (err) {
+    logOptSp.fail("Optimizer failed")
+    throw err
+  }
 
   // Persist round 0 (original) and round 1 (optimized)
   const round0Dir = path.join(proposal.dir, "round-0")

@@ -8,6 +8,7 @@ import type { FailureReport } from "./failure-diagnostics.ts"
 import type { FailureReportsSidecar } from "./cache.ts"
 import { evaluate } from "../framework/evaluator.ts"
 import { createLogger, formatLogMsg, appendLogLine } from "../core/logger.ts"
+import { createProgressSpinner } from "../core/spinner.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { buildFailureDiagnostics } from "./failure-diagnostics.ts"
 import { Pool, createAsyncMutex } from "../core/concurrency.ts"
@@ -243,6 +244,8 @@ export async function profileTarget(opts: {
   concurrency?: number
   /** Factory to create adapter instances for parallel mode. Called with pool index. */
   adapterFactory?: (index: number) => Promise<AgentAdapter>
+  /** Whether to show a spinner for progress (default: true, disabled in multi-job). */
+  showSpinner?: boolean
 }): Promise<{ tcp: TCP; failureReports: FailureReportsSidecar }> {
   const config = opts.config ?? DEFAULT_CONFIG
   const log = createTeeLogger(opts.logFile)
@@ -337,6 +340,10 @@ export async function profileTarget(opts: {
     isPartial: true,
   })
 
+  const progress = opts.showSpinner !== false
+    ? createProgressSpinner("Profiling", pendingGens.length)
+    : { tick() {}, stop() {} }
+
   if (concurrency > 1 && opts.adapterFactory && pendingGens.length > 1) {
     // ---- Parallel path ----
     const poolSize = Math.min(concurrency, pendingGens.length)
@@ -351,6 +358,7 @@ export async function profileTarget(opts: {
       for (const a of poolAdapters) {
         try { await a.teardown() } catch { /* ignore */ }
       }
+      progress.stop()
       throw err
     }
 
@@ -367,12 +375,14 @@ export async function profileTarget(opts: {
 
         await withLock(async () => {
           recordResult(gen, result)
+          progress.tick(`Profiled ${pendingGens.length} primitives`)
           if (opts.onPrimitiveComplete) {
             await opts.onPrimitiveComplete(buildPartialTcp())
           }
         })
       } catch (err) {
         log.error(`${gen.primitiveId}: ERROR - ${err}`)
+        progress.tick()
       } finally {
         pool.release(adapter)
       }
@@ -390,6 +400,7 @@ export async function profileTarget(opts: {
       log.info(`Profiling ${gen.primitiveId}...`)
       const result = await profilePrimitive(gen, opts.adapter, config, log, opts.convLogDir)
       recordResult(gen, result)
+      progress.tick(`Profiled ${pendingGens.length} primitives`)
 
       if (opts.onPrimitiveComplete) {
         await opts.onPrimitiveComplete(buildPartialTcp())

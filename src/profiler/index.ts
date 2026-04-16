@@ -10,6 +10,7 @@ import type { FailureReportsSidecar } from "./cache.ts"
 import type { FailureReport } from "./failure-diagnostics.ts"
 import { detectInversions } from "./calibrator.ts"
 import { createLogger } from "../core/logger.ts"
+import { createProgressSpinner } from "../core/spinner.ts"
 import { runScheduled, createAsyncMutex, type WorkItem, type RunnerHandle } from "../core/concurrency.ts"
 
 const log = createLogger("profiler")
@@ -35,6 +36,8 @@ export interface ProfileOptions {
   concurrency?: number
   /** Factory to create adapter instances for parallel mode. Called with pool index. */
   adapterFactory?: (index: number) => Promise<AgentAdapter>
+  /** Whether to show a spinner for progress (default: true, disabled in multi-job). */
+  showSpinner?: boolean
 }
 
 /**
@@ -108,6 +111,7 @@ export async function profile(opts: ProfileOptions): Promise<TCP> {
     onPrimitiveComplete: (partialTcp) => savePartialProfile(partialTcp),
     concurrency: opts.concurrency,
     adapterFactory: opts.adapterFactory,
+    showSpinner: opts.showSpinner,
   })
 
   // Check for inversions
@@ -273,6 +277,7 @@ export async function profileMulti(opts: ProfileMultiOptions): Promise<{
 
   const withLock = createAsyncMutex()
   const failures: Array<{ model: string; harness: string; error: string }> = []
+  const multiProgress = createProgressSpinner("Profiling", allItems.length)
 
   await runScheduled({
     concurrency: opts.concurrency,
@@ -292,6 +297,7 @@ export async function profileMulti(opts: ProfileMultiOptions): Promise<{
 
       await withLock(async () => {
         recordPrimitiveResult(acc, generator, result)
+        multiProgress.tick(`Profiled ${allItems.length} primitives across ${opts.jobs.length} jobs`)
 
         // Incremental checkpoint
         const partialTcp = buildTcpFromAccumulator(acc, true)
@@ -302,6 +308,7 @@ export async function profileMulti(opts: ProfileMultiOptions): Promise<{
       const msg = err instanceof Error ? err.message : String(err)
       log.error(`${item.model}--${item.adapter} ${item.payload.generator.primitiveId}: ${msg}`)
       failures.push({ model: item.model, harness: item.adapter, error: msg })
+      multiProgress.tick()
     },
   })
 

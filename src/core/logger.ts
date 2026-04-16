@@ -38,6 +38,18 @@ export function shouldUseColor(flag?: { noColor?: boolean }): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Spinner hooks (set by spinner.ts to avoid circular imports)
+// ---------------------------------------------------------------------------
+
+type SpinnerHooks = { pause: () => void; resume: () => void }
+let spinnerHooks: SpinnerHooks | null = null
+
+/** Register pause/resume hooks so log output clears/redraws the active spinner. */
+export function setSpinnerHooks(hooks: SpinnerHooks | null): void {
+  spinnerHooks = hooks
+}
+
+// ---------------------------------------------------------------------------
 // Logger
 // ---------------------------------------------------------------------------
 
@@ -84,16 +96,32 @@ export function appendLogLine(logFile: string | null | undefined, line: string) 
 export function createLogger(component: string) {
   return {
     debug(msg: string) {
-      if (shouldLog("debug")) console.log(formatLogMsg("debug", component, msg))
+      if (shouldLog("debug")) {
+        spinnerHooks?.pause()
+        console.log(formatLogMsg("debug", component, msg))
+        spinnerHooks?.resume()
+      }
     },
     info(msg: string) {
-      if (shouldLog("info")) console.log(formatLogMsg("info", component, msg))
+      if (shouldLog("info")) {
+        spinnerHooks?.pause()
+        console.log(formatLogMsg("info", component, msg))
+        spinnerHooks?.resume()
+      }
     },
     warn(msg: string) {
-      if (shouldLog("warn")) console.warn(formatLogMsg("warn", component, msg))
+      if (shouldLog("warn")) {
+        spinnerHooks?.pause()
+        console.warn(formatLogMsg("warn", component, msg))
+        spinnerHooks?.resume()
+      }
     },
     error(msg: string) {
-      if (shouldLog("error")) console.error(formatLogMsg("error", component, msg))
+      if (shouldLog("error")) {
+        spinnerHooks?.pause()
+        console.error(formatLogMsg("error", component, msg))
+        spinnerHooks?.resume()
+      }
     },
   }
 }
