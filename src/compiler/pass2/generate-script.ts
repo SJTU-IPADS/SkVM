@@ -4,9 +4,9 @@ import { createLogger } from "../../core/logger.ts"
 import type { PlatformContext } from "./platform.ts"
 import type { InstallPolicy } from "./install-policy.ts"
 
-const log = createLogger("pass2:script")
+import TEMPLATE from "./env-binding-template.sh" with { type: "text" }
 
-const TEMPLATE = await Bun.file(new URL("./env-binding-template.sh", import.meta.url)).text()
+const log = createLogger("pass2:script")
 
 const EMPTY_SCRIPT = `#!/bin/bash\n# No dependencies detected\nexit 0\n`
 

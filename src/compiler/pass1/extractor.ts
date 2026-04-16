@@ -6,10 +6,11 @@ import type { CompilerLLMCall } from "../types.ts"
 import { extractStructured } from "../../providers/structured.ts"
 import { ALL_PRIMITIVE_IDS } from "../../core/primitives.ts"
 import { createLogger } from "../../core/logger.ts"
+import scrTemplateObj from "./scr-template.json"
 
 const log = createLogger("extractor")
 
-const scrTemplate = await Bun.file(new URL("./scr-template.json", import.meta.url)).text()
+const scrTemplate = JSON.stringify(scrTemplateObj, null, 2)
 
 /**
  * Extract SCR (Skill Capability Requirement) from a skill document using LLM.
