@@ -442,9 +442,32 @@ export type ProvidersConfig = z.infer<typeof ProvidersConfigSchema>
 export const HeadlessAgentDriverSchema = z.enum(["opencode"])
 export type HeadlessAgentDriverName = z.infer<typeof HeadlessAgentDriverSchema>
 
+/**
+ * Override for the opencode subprocess provider. Parallel to `ProviderRoute`
+ * (which routes SkVM's in-process LLM calls) but targets the opencode
+ * subprocess via OPENCODE_CONFIG_CONTENT injection.
+ */
+export const ProviderOverrideSchema = z.object({
+  name: z.string(),
+  baseUrl: z.string(),
+  apiKeyEnv: z.string().optional(),
+  /** Takes precedence over apiKeyEnv. */
+  apiKey: z.string().optional(),
+  contextLimit: z.number().optional(),
+  outputLimit: z.number().optional(),
+})
+export type ProviderOverride = z.infer<typeof ProviderOverrideSchema>
+
 export const HeadlessAgentConfigSchema = z.object({
   driver: HeadlessAgentDriverSchema.default(HEADLESS_AGENT_DEFAULTS.driver),
   modelPrefix: z.string().default(HEADLESS_AGENT_DEFAULTS.modelPrefix),
+  /**
+   * When set, skvm injects OPENCODE_CONFIG_CONTENT into the opencode subprocess
+   * to register a custom OpenAI-compatible provider. This avoids modifying the
+   * user's global opencode config. The provider `name` must match the first
+   * segment of `modelPrefix` (e.g. modelPrefix="custom/" → name="custom").
+   */
+  providerOverride: ProviderOverrideSchema.optional(),
 })
 export type HeadlessAgentConfig = z.infer<typeof HeadlessAgentConfigSchema>
 

@@ -23,11 +23,81 @@ import {
   eventsToRunResult,
   resolveOpenCodeCmd,
 } from "../adapters/opencode.ts"
-import type { TokenUsage } from "./types.ts"
+import { stripRoutingPrefix } from "../providers/registry.ts"
+import type { TokenUsage, ProviderOverride } from "./types.ts"
 import { getHeadlessAgentConfig } from "./config.ts"
+import { HEADLESS_AGENT_DEFAULTS } from "./ui-defaults.ts"
 import { createLogger } from "./logger.ts"
 
 const log = createLogger("headless-agent")
+
+/**
+ * Build an OPENCODE_CONFIG_CONTENT JSON string that registers a custom
+ * OpenAI-compatible provider so the opencode subprocess can reach an
+ * endpoint that isn't in models.dev. Not exported — tightly coupled to
+ * opencode's config schema and only used by `runOpenCodeDriver`.
+ */
+function buildOpenCodeConfigContent(
+  override: ProviderOverride,
+  modelId: string,
+): string {
+  const apiKey =
+    override.apiKey
+    ?? (override.apiKeyEnv ? process.env[override.apiKeyEnv] : undefined)
+    // Empty string is intentional: allows auth-free local endpoints (vLLM
+    // without --api-key). opencode will still send the Authorization header
+    // but the server can ignore it.
+    ?? ""
+
+  if (!apiKey) {
+    log.warn(
+      `providerOverride: no API key found (apiKeyEnv=${override.apiKeyEnv ?? "(unset)"}). ` +
+      `The opencode subprocess may fail to authenticate.`,
+    )
+  }
+
+  const injected: Record<string, unknown> = {
+    provider: {
+      [override.name]: {
+        // Explicit npm package so opencode knows which SDK adapter to use
+        // for a provider ID that doesn't exist in models.dev.
+        npm: "@ai-sdk/openai-compatible",
+        options: {
+          apiKey,
+          baseURL: override.baseUrl,
+        },
+        models: {
+          [modelId]: {
+            limit: {
+              context: override.contextLimit ?? HEADLESS_AGENT_DEFAULTS.contextLimit,
+              output: override.outputLimit ?? HEADLESS_AGENT_DEFAULTS.outputLimit,
+            },
+          },
+        },
+      },
+    },
+  }
+
+  // Merge with any pre-existing OPENCODE_CONFIG_CONTENT from the parent
+  // environment (CI wrappers, plugin configs, etc.) so we don't clobber it.
+  const existing = process.env.OPENCODE_CONFIG_CONTENT
+  if (existing) {
+    try {
+      const parsed = JSON.parse(existing) as Record<string, unknown>
+      // Shallow-merge top-level keys; deep-merge the provider map so both
+      // the inherited providers and our injected one coexist.
+      const mergedProviders = {
+        ...((parsed.provider as Record<string, unknown>) ?? {}),
+        ...((injected.provider as Record<string, unknown>) ?? {}),
+      }
+      return JSON.stringify({ ...parsed, ...injected, provider: mergedProviders })
+    } catch {
+      log.warn("existing OPENCODE_CONFIG_CONTENT is not valid JSON; overwriting")
+    }
+  }
+
+  return JSON.stringify(injected)
+}
 
 /**
  * Thrown when a headless-agent driver subprocess fails (non-zero exit or
@@ -151,7 +221,8 @@ async function runOpenCodeDriver(
 ): Promise<HeadlessAgentRunResult> {
   const cwd = path.resolve(opts.cwd)
   const resolved = await resolveOpenCodeCmd()
-  const model = applyHeadlessModelPrefix(opts.model)
+  const config = getHeadlessAgentConfig()
+  const model = prefixModel(opts.model, config.modelPrefix)
 
   const cmd = [
     ...resolved.cmd,
@@ -166,8 +237,20 @@ async function runOpenCodeDriver(
 
   log.debug(`spawn: ${cmd.slice(0, 3).join(" ")} ... (cwd=${cwd})`)
 
-  const env = Object.keys(resolved.env).length > 0
-    ? { ...process.env, ...resolved.env }
+  // Build env overlay: start with opencode resolution env (XDG isolation for
+  // bundled builds), then layer on OPENCODE_CONFIG_CONTENT when a
+  // providerOverride is configured.
+  const envOverlay: Record<string, string> = { ...resolved.env }
+
+  if (config.providerOverride) {
+    const modelIdInProvider = stripRoutingPrefix(model)
+    const content = buildOpenCodeConfigContent(config.providerOverride, modelIdInProvider)
+    envOverlay.OPENCODE_CONFIG_CONTENT = content
+    log.info(`injecting OPENCODE_CONFIG_CONTENT for provider "${config.providerOverride.name}" (model=${modelIdInProvider})`)
+  }
+
+  const env = Object.keys(envOverlay).length > 0
+    ? { ...process.env, ...envOverlay }
     : process.env
 
   const start = Date.now()
