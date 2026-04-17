@@ -88,6 +88,8 @@ This is the quickest way to make an OpenClaw environment self-host the SkVM tool
 
 ## Quick Start
 
+If you are running SkVM from the source tree instead of an installed binary, use `bun run skvm` in the examples below.
+
 Set your API key:
 
 ```bash

@@ -88,6 +88,8 @@ curl -fsSL https://skillvm.ai/skills/skvm-jit/adapter-skill-paths.md -o ~/.openc
 
 ## 快速开始
 
+如果你是直接从源码仓库运行 SkVM，而不是使用已经安装好的二进制，那么下面的命令示例请把 `skvm` 替换为 `bun run skvm`。
+
 先配置 API Key：
 
 ```bash
