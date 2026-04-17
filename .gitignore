@@ -43,3 +43,5 @@ skvm-logs/
 # skvm local config (paths to dev checkouts of external adapters);
 # see skvm.config.example.json for the committed template.
 skvm.config.json
+
+.worktree
