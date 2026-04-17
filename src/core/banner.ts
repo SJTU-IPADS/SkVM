@@ -33,7 +33,7 @@ export function describeModelRoute(modelId: string): string {
 /** Human-readable label for an adapter and its binary source. */
 export function describeAdapter(name: string): string {
   if (name === "bare-agent") return `${name} ${c.dim("(built-in)")}`
-  const repoDir = getAdapterRepoDir(name as "opencode" | "openclaw" | "hermes" | "jiuwenclaw")
+  const repoDir = getAdapterRepoDir(name as "opencode" | "openclaw" | "hermes" | "jiuwenclaw" | "pi")
   if (repoDir) return `${name} ${c.dim(`(${shortenPath(repoDir)})`)}`
   return `${name} ${c.dim("(not configured)")}`
 }
