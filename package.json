@@ -1,6 +1,6 @@
 {
   "name": "@ipads-skvm/skvm",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "SkVM — compile and run LLM agent skills across heterogeneous models and harnesses",
   "keywords": [
     "llm",
