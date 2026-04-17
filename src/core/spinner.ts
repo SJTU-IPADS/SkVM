@@ -54,7 +54,7 @@ function truecolor(text: string, r: number, g: number, b: number): string {
 
 const isTTY = process.stdout?.isTTY === true
 
-function formatElapsed(ms: number): string {
+export function formatElapsed(ms: number): string {
   const s = Math.floor(ms / 1000)
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)

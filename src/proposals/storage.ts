@@ -143,8 +143,10 @@ function makeProposalId(harness: string, targetModel: string, skillName: string,
 }
 
 function tsString(d: Date = new Date()): string {
-  const pad = (n: number) => n.toString().padStart(2, "0")
-  return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`
+  const pad = (n: number, w = 2) => n.toString().padStart(w, "0")
+  return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}`
+       + `T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`
+       + `${pad(d.getUTCMilliseconds(), 3)}Z`
 }
 
 // ---------------------------------------------------------------------------
@@ -153,12 +155,30 @@ function tsString(d: Date = new Date()): string {
 // ---------------------------------------------------------------------------
 
 export async function createProposal(opts: CreateProposalOptions): Promise<CreateProposalResult> {
-  const timestamp = tsString()
-  const dir = path.join(
-    skillProposalsDir(opts.harness, opts.targetModel, opts.skillName),
-    timestamp,
-  )
-  await mkdir(dir, { recursive: true })
+  // Collision-safe directory creation: tsString gives ms precision, but
+  // concurrent detached workers can still hit the same ms. mkdir without
+  // `recursive` lets EEXIST surface; we retry with -1, -2, ... suffix so
+  // each worker ends up with a distinct dir.
+  const parentDir = skillProposalsDir(opts.harness, opts.targetModel, opts.skillName)
+  await mkdir(parentDir, { recursive: true })
+  const baseTimestamp = tsString()
+  let timestamp = baseTimestamp
+  let dir = path.join(parentDir, timestamp)
+  let suffix = 0
+  while (true) {
+    try {
+      await mkdir(dir)
+      break
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err
+      suffix += 1
+      if (suffix > 100) {
+        throw new Error(`createProposal: ${suffix - 1} consecutive timestamp collisions in ${parentDir}`)
+      }
+      timestamp = `${baseTimestamp}-${suffix}`
+      dir = path.join(parentDir, timestamp)
+    }
+  }
 
   // Copy original skill folder to proposal/original/
   await copySkillDir(opts.skillDir, path.join(dir, "original"))

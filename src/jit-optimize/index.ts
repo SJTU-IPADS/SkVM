@@ -40,9 +40,12 @@ const log = createLogger("jit-optimize")
  * console.log(result.proposalId, result.bestRound, result.bestRoundReason)
  * ```
  */
-export async function jitOptimize(config: JitOptimizeConfig): Promise<JitOptimizeResult> {
+export async function jitOptimize(
+  config: JitOptimizeConfig,
+  opts?: import("./loop.ts").RunLoopOptions,
+): Promise<JitOptimizeResult> {
   log.info(`jit-optimize: source=${config.taskSource.kind} rounds=${config.loop?.rounds ?? 1}`)
-  return runLoop(config)
+  return runLoop(config, opts)
 }
 
 // ---------------------------------------------------------------------------

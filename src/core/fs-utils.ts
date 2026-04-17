@@ -45,3 +45,31 @@ export async function copySkillDir(src: string, dest: string): Promise<void> {
     skip: (name) => SKILL_BUNDLE_EXCLUDED.has(name),
   })
 }
+
+const LOG_TAIL_CHUNK_BYTES = 64 * 1024
+
+/**
+ * Read the last `n` lines of a (possibly large) log file.
+ *
+ * Returns null when the file is missing or empty. Reads at most
+ * LOG_TAIL_CHUNK_BYTES from the end of the file — sufficient for dozens of
+ * typical log lines; a single line longer than the chunk is clipped at
+ * chunk start, which is acceptable for diagnostic tailing.
+ *
+ * The trailing newline (if present) does not count as its own empty line,
+ * and the first line of the chunk is dropped when we started mid-file so
+ * we never emit a half line.
+ */
+export async function readLastLines(filePath: string, n: number): Promise<string | null> {
+  const file = Bun.file(filePath)
+  if (!(await file.exists())) return null
+  const size = file.size
+  if (size === 0) return null
+  const start = Math.max(0, size - LOG_TAIL_CHUNK_BYTES)
+  const text = await file.slice(start).text()
+  const lines = text.split("\n")
+  const first = start > 0 ? 1 : 0
+  const last = lines[lines.length - 1] === "" ? lines.length - 1 : lines.length
+  if (last <= first) return null
+  return lines.slice(Math.max(first, last - n), last).join("\n")
+}

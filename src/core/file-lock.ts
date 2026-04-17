@@ -212,7 +212,7 @@ function readLockPayload(file: string): LockPayload | null {
   return null
 }
 
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false
   try {
     process.kill(pid, 0)

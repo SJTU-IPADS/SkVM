@@ -52,7 +52,7 @@ import {
 import { removeWorkspace } from "./workspace.ts"
 import { copySkillDir } from "../core/fs-utils.ts"
 import { loadSkill, copySkillBundle, type ResolvedSkill } from "../core/skill-loader.ts"
-import { createProposal, finalizeProposal } from "../proposals/storage.ts"
+import { createProposal, finalizeProposal, type CreateProposalResult } from "../proposals/storage.ts"
 import { createProviderForModel } from "../providers/registry.ts"
 import { isProviderError } from "../providers/errors.ts"
 import { isHeadlessAgentError } from "../core/headless-agent.ts"
@@ -158,7 +158,23 @@ interface RoundEvidences {
 // Main entry
 // ---------------------------------------------------------------------------
 
-export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeResult> {
+/**
+ * Options accepted by `runLoop` callers that bypass parts of its setup.
+ *
+ * `proposal` — when provided, runLoop uses this CreateProposalResult instead
+ * of calling `createProposal()` itself. Used by the detached worker, which
+ * must allocate the proposal id BEFORE handing control to runLoop so it can
+ * report the id back to its parent process via IPC. Sync CLI and bench
+ * library callers omit this and let runLoop create the proposal as before.
+ */
+export interface RunLoopOptions {
+  proposal?: CreateProposalResult
+}
+
+export async function runLoop(
+  config: JitOptimizeConfig,
+  opts: RunLoopOptions = {},
+): Promise<JitOptimizeResult> {
   const rounds = config.loop?.rounds ?? 1
   const runsPerTask = config.loop?.runsPerTask ?? 1
   const requestedTaskConcurrency = Math.max(1, config.loop?.taskConcurrency ?? 1)
@@ -180,7 +196,7 @@ export async function runLoop(config: JitOptimizeConfig): Promise<JitOptimizeRes
   const targetModel = config.targetAdapter.model
   const harness = config.targetAdapter.harness
 
-  const proposal = await createProposal({
+  const proposal = opts.proposal ?? await createProposal({
     skillName,
     skillDir,
     harness,

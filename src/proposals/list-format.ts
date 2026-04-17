@@ -12,6 +12,8 @@ import type { LoadedProposal } from "./storage.ts"
 import { summarizeProposal } from "./summary.ts"
 import type { ProposalSummaryView } from "./summary.ts"
 import { ANSI } from "../core/logger.ts"
+import { formatElapsed } from "../core/spinner.ts"
+import type { RunStatus } from "../jit-optimize/run-status.ts"
 
 export interface ListRow {
   id: string
@@ -95,6 +97,28 @@ function formatStatus(status: string, color: boolean): string {
     case "rejected": return paint(padded, ANSI.red, color)
     case "infra-blocked": return paint(padded, ANSI.gray, color)
     default: return padded
+  }
+}
+
+/**
+ * One-line header describing the execution phase of a detached run.
+ * Returns null for proposals that lack a run-status.json (sync / legacy).
+ */
+export function formatRunPhaseLine(
+  run: RunStatus | null,
+  proposalDir: string,
+  color: boolean,
+): string | null {
+  if (run === null) return null
+  const start = Date.parse(run.startedAt)
+  const ageSuffix = Number.isNaN(start) ? "" : ` (${formatElapsed(Date.now() - start)} ago)`
+  switch (run.phase) {
+    case "running":
+      return paint(`run: RUNNING  pid=${run.pid}, started ${run.startedAt}${ageSuffix}`, ANSI.yellow, color)
+    case "done":
+      return paint(`run: DONE  finished ${run.finishedAt}`, ANSI.green, color)
+    case "failed":
+      return paint(`run: FAILED  finished ${run.finishedAt} — see ${proposalDir}/run.log`, ANSI.red, color)
   }
 }
 

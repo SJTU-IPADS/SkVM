@@ -32,6 +32,18 @@ function parseFlags(args: string[]): Record<string, string> {
 }
 
 async function main() {
+  // Hidden subcommand for `skvm jit-optimize --detach`. Spawned by the
+  // parent CLI with stdio: ignore + IPC channel; takes a JSON-stringified
+  // WorkerInput as argv[3]. Not listed in --help on purpose. The string
+  // literal here must match detach.ts's JIT_OPTIMIZE_WORKER_SUBCOMMAND —
+  // we inline the comparison to avoid importing detach.ts on the common
+  // non-worker path.
+  if (process.argv[2] === "__jit-optimize-worker") {
+    const { runDetachWorker } = await import("./jit-optimize/detach.ts")
+    await runDetachWorker(process.argv[3] ?? "")
+    return
+  }
+
   const flags = parseFlags(args.slice(1))
 
   if (flags.verbose) setLogLevel("debug")
@@ -1188,8 +1200,24 @@ Proposals root: $SKVM_PROPOSALS_DIR or ~/.skvm/proposals by default.`)
     const id = positional[0]
     if (!id) { console.error("Usage: skvm proposals show <id>"); process.exit(1) }
     const p = await loadProposal(id)
-    const { renderShowSummary } = await import("./proposals/list-format.ts")
+    const proposalDir = proposalDirFromId(id)
+    const { renderShowSummary, formatRunPhaseLine } = await import("./proposals/list-format.ts")
+    const { selfHealRunStatus } = await import("./jit-optimize/run-status.ts")
     const color = shouldUseColor({ noColor: flags["no-color"] === "true" })
+
+    // selfHealRunStatus rewrites phase=running → phase=failed when the
+    // worker pid is gone, so a stale "running" never misleads the reader.
+    const run = await selfHealRunStatus(proposalDir)
+    const phaseLine = formatRunPhaseLine(run, proposalDir, color)
+    if (phaseLine !== null) {
+      console.log(phaseLine)
+      if (run?.phase === "failed" && run.error) {
+        // First line of the error lives here; full trace is in run.log.
+        const firstLine = run.error.split("\n")[0]?.trim() ?? ""
+        if (firstLine) console.log(`     ${firstLine}`)
+      }
+    }
+
     console.log(`# ${id}`)
     console.log(`status: ${p.meta.status}`)
     console.log(`optimizer-model: ${p.meta.optimizerModel}`)
@@ -1205,6 +1233,20 @@ Proposals root: $SKVM_PROPOSALS_DIR or ~/.skvm/proposals by default.`)
       console.log("")
       console.log("--- analysis.md ---")
       console.log(p.analysis)
+    }
+    // Tail run.log when the worker is mid-flight or has failed — gives
+    // the reader recent context that the structured fields above can't
+    // (current-round progress, the error's surrounding log lines).
+    // Skipped on done because finalized meta + rounds table already cover it.
+    if (run !== null && (run.phase === "running" || run.phase === "failed")) {
+      const { readLastLines } = await import("./core/fs-utils.ts")
+      const pathMod = await import("node:path")
+      const tail = await readLastLines(pathMod.join(proposalDir, "run.log"), 20)
+      if (tail !== null) {
+        console.log("")
+        console.log(`--- run.log (last 20 lines) ---`)
+        console.log(tail)
+      }
     }
     return
   }
@@ -1376,6 +1418,15 @@ Delivery (writes to the proposals tree):
 Batch mode:
   --skill-list=<file>        One skill path per line
   --concurrency=<n>          Parallel jobs (default: ${CLI_DEFAULTS.concurrency})
+
+Detached invocation:
+  --detach                   Spawn a background worker and return as soon as
+                             it reports its proposal id (~100-300 ms). The
+                             optimization runs in the background; use
+                             'skvm proposals show <id>' to track progress
+                             and 'skvm proposals list' to enumerate
+                             detached runs. Single-skill only: not
+                             compatible with --skill-list / batch mode.
 `)
     process.exit(0)
   }
@@ -1462,6 +1513,39 @@ Batch mode:
     loop: { rounds, runsPerTask, taskConcurrency, convergence, baseline },
     delivery: { keepAllRounds, autoApply },
   })
+
+  // Detached invocation: parent forks a worker, awaits a `ready` handshake
+  // that carries the proposal id, and exits. The optimization keeps running
+  // in the background; users watch with `skvm proposals show <id>`.
+  //
+  // Single-skill only by design. Detached workers are independent background
+  // processes — once the parent exits, there is no one left to enforce the
+  // `--concurrency` cap, so detaching a batch would silently fan out N
+  // workers regardless of what the user asked for. Users who need
+  // concurrency-limited batches should use sync mode.
+  const detach = flags.detach === "true" || flags.detach === ""
+  if (detach) {
+    if (skillDirs.length > 1) {
+      console.error(
+        "jit-optimize: --detach is incompatible with --skill-list / multi-skill batches " +
+        "(detached workers outlive the parent and cannot be throttled by --concurrency). " +
+        "Re-run without --detach, or invoke `skvm jit-optimize --detach ...` once per skill.",
+      )
+      process.exit(1)
+    }
+    const { spawnDetachedJitOptimize } = await import("./jit-optimize/detach.ts")
+    const skillDir = skillDirs[0]!
+    const skillName = deriveSkillName(skillDir)
+    const code = await spawnDetachedJitOptimize({
+      skillName,
+      workerInput: {
+        config: buildConfig(skillDir),
+        lockKey: { harness: targetAdapter.harness, targetModel: tModel, skillName },
+        source: stripSuffix(taskSource.kind),
+      },
+    })
+    process.exit(code)
+  }
 
   // Single skill
   if (skillDirs.length === 1) {

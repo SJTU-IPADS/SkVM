@@ -76,13 +76,15 @@ Only include entries that matter for diagnosing the skill's quality. Redact secr
 ## Step 3: Run jit-optimize
 
 ```bash
-skvm jit-optimize \
+skvm jit-optimize --detach \
   --skill=<skill-directory> \
   --task-source=log \
   --logs=<path-to-report.json-or-conv-log.jsonl> \
   --target-model=<id-the-task-ran-on> \
   --optimizer-model=z-ai/glm-5.1
 ```
+
+`--detach` is what lets this skill stay snappy. Without it the optimizer runs in-process and blocks the agent for the full optimization pass (often a minute or more); with it the CLI returns in well under a second after spawning a background worker. Always pass it from this skill.
 
 Required parameters:
 
@@ -103,18 +105,19 @@ Optional:
 - `--synthetic-count`, `--synthetic-test-count` — these belong to `--task-source=synthetic`
 - `--runs-per-task`, `--convergence`, `--baseline` — the log mode does not rerun the task, so there is no loop to configure
 
-The command runs synchronously (seconds to a minute). Stdout ends with a block like:
+With `--detach`, the CLI returns in well under a second. Stdout ends with a block like:
 
 ```
 Proposal: <harness>/<safeTargetModel>/<skill>/<timestamp>
 Proposal dir: <absolute-path>
-Best round: <N> — <reason>
-Rounds: <count>
+Detached; watch with 'skvm proposals show <id>'
 ```
 
-**Capture the id from the line starting with `Proposal: ` only** — everything after `Proposal: ` up to the newline is the id. Do not parse `Proposal dir:`, `Best round:`, or `Rounds:`. Note the middle segment is `safeTargetModel` (derived from `--target-model`), not the optimizer model.
+The optimization continues in a background worker process; its progress is recorded in `<proposal-dir>/run-status.json` (`phase: queued | running | done | failed`) and detailed log output goes to `<proposal-dir>/run.log`. Both are surfaced when the user runs `skvm proposals show <id>`.
 
-If you want fire-and-forget, wrap the invocation in `(skvm jit-optimize ... &)` in your shell. There is no built-in `--async` flag.
+**Capture the id from the line starting with `Proposal: ` only** — everything after `Proposal: ` up to the newline is the id. Do not parse `Proposal dir:` or the `Detached; watch with` line. Note the middle segment is `safeTargetModel` (derived from `--target-model`), not the optimizer model.
+
+If `skvm jit-optimize` exits **non-zero** with no `Proposal:` line, the worker failed before it could allocate a proposal id. Read the stderr message and stop — do not retry blindly. The most common cause is `another optimization is in progress for <skill>`, which means a prior detach for the same skill+model is still running.
 
 ## Step 4: Report the proposal id
 
@@ -130,8 +133,10 @@ Do **not** accept or deploy the proposal yourself unless the user explicitly ask
 - Never edit the skill directory directly. Proposals are stored under `$SKVM_PROPOSALS_DIR` (default `~/.skvm/proposals/`); only `skvm proposals accept` writes back into the skill.
 - If `skvm` is not on PATH, report it to the user and stop — do not install anything. If `skvm jit-optimize` fails with "opencode not found", tell the user to re-run the skvm installer (`curl -fsSL https://skillvm.ai/install.sh | sh` or `npm i -g @ipads-skvm/skvm`) rather than installing opencode yourself. skvm bundles its own private opencode copy and manages it through the installer.
 - One report per task. Don't batch multiple unrelated tasks into a single report.
-- `OPENROUTER_API_KEY` must be set in the environment for the optimizer to run. If it is missing, `skvm jit-optimize` will fail; tell the user and stop.
+- `OPENROUTER_API_KEY` must be set in the environment for the optimizer to run. If it is missing, the background worker will fail and `skvm proposals show <id>` will display `run: FAILED` with the reason. The parent CLI cannot detect this in advance because the API key is only used inside the detached worker.
 
 ## Reference: what happens on the skvm side
 
-The optimizer agent spawned by `skvm jit-optimize` reads your report, inspects the skill folder, diagnoses a root cause, and edits files in a temp workspace (SKILL.md and/or bundle files). The edited folder is snapshotted as `round-1/` inside the proposal. `round-0/` is a copy of the original skill. The user can later diff the two with `skvm proposals show <id>` or reject the proposal if the root cause looks wrong. Proposals are keyed by `(harness, target-model, skill-name)`, which is why `--target-model` is required even in log mode.
+`skvm jit-optimize --detach` validates the flags, then forks a background worker that does all the heavy work (creating the proposal directory, acquiring a per-skill lock, running the optimizer agent, snapshotting rounds). Once the worker has the lock and a proposal id, it tells the parent over an IPC channel; the parent prints `Proposal: <id>` and exits. The worker keeps running independently and writes its phase to `<proposal>/run-status.json` (`queued → running → done | failed`) so `skvm proposals show <id>` can report progress at any time.
+
+The optimizer agent reads your report, inspects the skill folder, diagnoses a root cause, and edits files in a temp workspace (SKILL.md and/or bundle files). The edited folder is snapshotted as `round-1/` inside the proposal. `round-0/` is a copy of the original skill. The user can later diff the two with `skvm proposals show <id>` or reject the proposal if the root cause looks wrong. Proposals are keyed by `(harness, target-model, skill-name)`, which is why `--target-model` is required even in log mode and why concurrent detached runs for the same triple are rejected with a clean error rather than left to clobber each other.

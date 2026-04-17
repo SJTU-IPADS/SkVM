@@ -367,3 +367,32 @@ describe("proposals storage — target-model keying", () => {
     }
   })
 })
+
+describe("proposals storage — concurrent createProposal", () => {
+  test("concurrent calls for the same skill produce distinct dirs", async () => {
+    const skillDir = await makeFakeSkill("concurrent")
+    try {
+      // Detach mode: multiple workers race on createProposal in the same ms.
+      // The retry-with-suffix loop must give each call a distinct directory.
+      const N = 10
+      const results = await Promise.all(
+        Array.from({ length: N }, () =>
+          storage.createProposal({
+            skillName: "concurrent",
+            skillDir,
+            harness: "bare-agent",
+            optimizerModel: "z-ai/glm-5.1",
+            targetModel: "qwen/qwen3-30b-a3b",
+            source: "test",
+          }),
+        ),
+      )
+      const dirs = new Set(results.map((r) => r.dir))
+      expect(dirs.size).toBe(N)
+      const ids = new Set(results.map((r) => r.id))
+      expect(ids.size).toBe(N)
+    } finally {
+      await rm(skillDir, { recursive: true, force: true })
+    }
+  })
+})
