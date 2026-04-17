@@ -59,8 +59,8 @@ export const CLI_DEFAULTS = {
   // jit-optimize knobs (intentionally different from bench)
   jitOptimizeRunsPerTask: 2,
   jitOptimizeTaskConcurrency: 1,
-  syntheticTrainCount: 3,
-  syntheticTestCount: 2,
+  syntheticTrainCount: 2,
+  syntheticTestCount: 1,
   // AOT-compile / pipeline
   compilerPasses: [1] as readonly number[],
   // Profile

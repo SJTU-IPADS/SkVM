@@ -168,16 +168,15 @@ The optimizer LLM derives training and held-out tasks directly from the skill, t
 skvm jit-optimize \
   --skill=path/to/skill-dir \
   --task-source=synthetic \
-  --synthetic-count=3 \
-  --synthetic-test-count=2 \
+  --task-concurrency=3 \
   --optimizer-model=anthropic/claude-sonnet-4.6 \
   --target-model=qwen/qwen3-30b-a3b-instruct-2507 \
-  --rounds=3
+  --rounds=1
 ```
 
 Synthetic-specific flags:
-- `--synthetic-count=<n>` — training tasks to generate (default `3`)
-- `--synthetic-test-count=<n>` — held-out test tasks (default `2`)
+- `--synthetic-count=<n>` — training tasks to generate (default `2`)
+- `--synthetic-test-count=<n>` — held-out test tasks (default `1`)
 
 ### `--task-source=real`
 

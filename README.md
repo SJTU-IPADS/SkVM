@@ -88,6 +88,8 @@ This is the quickest way to make an OpenClaw environment self-host the SkVM tool
 
 ## Quick Start
 
+If you are running SkVM from the source tree instead of an installed binary, use `bun run skvm` in the examples below.
+
 Set your API key:
 
 ```bash
@@ -99,6 +101,17 @@ If you use another provider, see [docs/providers.md](docs/providers.md).
 ### 1. Profile a model's primitive capabilities
 
 Writes a target capability profile to `~/.skvm/profiles/`.
+
+If your target model + adapter pair is already covered by the pre-built profiles shipped in `skvm-data/profiles/`, you can copy the cached result into your local profile cache and skip `skvm profile` entirely:
+
+```bash
+mkdir -p ~/.skvm/profiles
+cp -R skvm-data/profiles/. ~/.skvm/profiles/
+```
+
+Currently bundled pre-built profiles:
+
+- Example bundled targets include `qwen/qwen3.5-35b-a3b`, `deepseek/deepseek-v3.2`, `anthropic/claude-opus-4.6`, and others.
 
 ```bash
 skvm profile \
@@ -127,13 +140,16 @@ Compiled variants are written under `~/.skvm/proposals/aot-compile/<adapter>/<sa
 
 The optimizer LLM derives tasks from the skill itself, then loops edit → rerun → score.
 
+By default, synthetic mode generates 2 training tasks and 1 held-out test task.
+
 ```bash
 skvm jit-optimize \
   --skill=path/to/skill-dir \
   --task-source=synthetic \
+  --task-concurrency=3 \
   --target-adapter=bare-agent \
   --optimizer-model=anthropic/claude-sonnet-4.6 \
-  --rounds=2 \
+  --rounds=1 \
   --target-model=qwen/qwen3.5-35b-a3b
 ```
 
@@ -206,7 +222,7 @@ skvm-data/
 
 Commands that take an explicit `--skill=<path>` or `--task=<path>` do not need the submodule — they work with any directory on disk.
 
-If you want to use the pre-built profiles from `skvm-data/`, copy `skvm-data/profiles/` into your profile cache directory (default: `~/.skvm/profiles/`, or `SKVM_PROFILES_DIR` if set).
+`skvm-data/profiles/` already includes pre-built profiles for some model + adapter combinations. If the pair you need is already there, copy `skvm-data/profiles/` into your profile cache directory (default: `~/.skvm/profiles/`, or `SKVM_PROFILES_DIR` if set) and you can skip running `skvm profile` for that target. See the profile list in the profiling section above for the currently bundled combinations.
 
 ```bash
 mkdir -p ~/.skvm/profiles
