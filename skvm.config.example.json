@@ -4,7 +4,8 @@
     "opencode": "<path-to-local-opencode-checkout-or-unset>",
     "openclaw": "<path-to-local-openclaw-checkout-or-unset>",
     "hermes": "<path-to-local-hermes-checkout-or-unset>",
-    "jiuwenclaw": "<path-to-local-jiuwenclaw-checkout-or-unset>"
+    "jiuwenclaw": "<path-to-local-jiuwenclaw-checkout-or-unset>",
+    "pi": "<path-to-local-pi-checkout-or-unset>"
   },
 
   "_providersComment": "Optional. Routes SkVM's direct LLMProvider calls (compiler, bench judge, framework LLM-judge, jit-optimize eval, jit-boost candidate parsing, bare-agent adapter) from a model id to a concrete backend. Routes are matched top-to-bottom against the model id; the first glob (literal + * wildcard) match wins. If omitted or no route matches, SkVM falls back to OpenRouter with OPENROUTER_API_KEY so existing setups work unchanged. `apiKeyEnv` names an env var — keys themselves are never baked into this file.",

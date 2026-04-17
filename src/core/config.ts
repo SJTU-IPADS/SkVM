@@ -210,6 +210,7 @@ interface SkVMConfig {
     openclaw?: string
     hermes?: string
     jiuwenclaw?: string
+    pi?: string
   }
   proposalsDir?: string
   providers?: unknown
@@ -262,7 +263,7 @@ export function getHeadlessAgentConfig(): HeadlessAgentConfig {
   return _headlessAgentConfigCache
 }
 
-export function getAdapterRepoDir(adapter: "opencode" | "openclaw" | "hermes" | "jiuwenclaw"): string | undefined {
+export function getAdapterRepoDir(adapter: "opencode" | "openclaw" | "hermes" | "jiuwenclaw" | "pi"): string | undefined {
   const config = getProjectConfig()
   const raw = config.adapters?.[adapter]
   if (!raw) return undefined

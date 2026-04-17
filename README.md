@@ -67,6 +67,12 @@ cp -r ~/.local/share/skvm/skills/skvm-general ~/.openclaw/workspace/skills/
 # Hermes Agent
 cp -r ~/.local/share/skvm/skills/skvm-jit ~/.hermes/skills/
 cp -r ~/.local/share/skvm/skills/skvm-general ~/.hermes/skills/
+
+# pi Agent
+mkdir -p ~/.pi/skills/skvm-jit
+mkdir -p ~/.pi/skills/skvm-general
+cp -r ~/.local/share/skvm/skills/skvm-jit/* ~/.pi/skills/skvm-jit/
+cp -r ~/.local/share/skvm/skills/skvm-general/* ~/.pi/skills/skvm-general/
 ```
 
 - `skvm-jit` — post-task JIT optimization skill for submitting conversation logs to `skvm jit-optimize`
