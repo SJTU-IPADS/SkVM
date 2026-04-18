@@ -267,11 +267,10 @@ export interface OpenclawModelEntry {
 }
 
 export interface OpenclawProviderEntry {
-  name: string
-  baseUrl?: string
+  baseUrl: string
+  api: string
   apiKey?: string
-  api?: string
-  models?: OpenclawModelEntry[]
+  models: OpenclawModelEntry[]
 }
 
 // Pricing placeholder — not to be confused with `emptyTokenUsage()` which
@@ -290,27 +289,37 @@ function buildDefaultModelEntry(bareId: string): OpenclawModelEntry {
   }
 }
 
+/**
+ * Emit the single `models.providers` entry for the active model's prefix.
+ * Shape matches openclaw's `ModelProviderSchema` at
+ * `src/config/zod-schema.core.ts:250-263`: `{baseUrl, api, apiKey?, models[]}`.
+ * `baseUrl` is required (min 1 char) and `models[]` is required — we can't
+ * emit auth-only blocks for other routes.
+ */
 export function renderOpenclawProviderEntries(
   routes: readonly ProviderRoute[],
   model: string,
 ): Record<string, OpenclawProviderEntry> {
   const activePrefix = routingPrefix(model)
   const bareModel = stripRoutingPrefix(model)
-  const providers: Record<string, OpenclawProviderEntry> = {}
-  for (const route of routes) {
-    const providerId = routingPrefix(route.match)
-    if (!providerId || providers[providerId]) continue
-    const resolvedKey = resolveRouteApiKey(route) ?? route.apiKeyEnv ?? ""
-    const baseUrl = route.baseUrl ?? defaultBaseUrl(route.kind)
-    providers[providerId] = {
-      name: providerId,
-      api: route.kind === "anthropic" ? "anthropic-messages" : "openai-completions",
-      ...(baseUrl ? { baseUrl } : {}),
-      ...(resolvedKey ? { apiKey: resolvedKey } : {}),
-      ...(providerId === activePrefix ? { models: [buildDefaultModelEntry(bareModel)] } : {}),
-    }
+  const route = routes.find((r) => routingPrefix(r.match) === activePrefix)
+  if (!route) return {}
+  const baseUrl = route.baseUrl ?? defaultBaseUrl(route.kind)
+  if (!baseUrl) {
+    throw new Error(
+      `openclaw (managed): route "${route.match}" (kind=${route.kind}) is missing baseUrl; ` +
+      `add it to providers.routes in skvm.config.json.`,
+    )
   }
-  return providers
+  const resolvedKey = resolveRouteApiKey(route) ?? route.apiKeyEnv ?? ""
+  return {
+    [activePrefix]: {
+      api: route.kind === "anthropic" ? "anthropic-messages" : "openai-completions",
+      baseUrl,
+      ...(resolvedKey ? { apiKey: resolvedKey } : {}),
+      models: [buildDefaultModelEntry(bareModel)],
+    },
+  }
 }
 
 function defaultBaseUrl(kind: ProviderRoute["kind"]): string | undefined {
