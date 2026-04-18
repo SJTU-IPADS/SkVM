@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises"
+import { existsSync } from "node:fs"
 import path from "node:path"
 import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, TokenUsage, SkillMode } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
@@ -336,8 +337,59 @@ export async function resolveHeadlessOpenCodeCmd(): Promise<OpenCodeResolution> 
 }
 
 const HOME = process.env.HOME ?? ""
-const USER_OPENCODE_CONFIG = path.join(HOME, ".config", "opencode")
-const USER_OPENCODE_DATA = path.join(HOME, ".local", "share", "opencode")
+
+/** Directories / candidate config filenames opencode itself walks — see
+ *  `packages/opencode/src/config/config.ts:1106,1255,1348`. Global layer tries
+ *  all three; legacy `~/.opencode/` only the first two. */
+const OPENCODE_CONFIG_FILENAMES_GLOBAL = ["opencode.jsonc", "opencode.json", "config.json"] as const
+const OPENCODE_CONFIG_FILENAMES_LEGACY = ["opencode.jsonc", "opencode.json"] as const
+
+function userOpencodeHome(): string {
+  return process.env.OPENCODE_TEST_HOME ?? HOME
+}
+
+function userOpencodeConfigDir(): string {
+  const xdg = process.env.XDG_CONFIG_HOME?.trim()
+  return path.join(xdg || path.join(userOpencodeHome(), ".config"), "opencode")
+}
+
+function userOpencodeDataDir(): string {
+  const xdg = process.env.XDG_DATA_HOME?.trim()
+  return path.join(xdg || path.join(userOpencodeHome(), ".local", "share"), "opencode")
+}
+
+/**
+ * Resolve the active opencode user config file, mirroring opencode's own
+ * precedence. Returns the first file that exists, or `null` if none do.
+ *
+ * Priority: `$OPENCODE_CONFIG` (explicit file) → `$OPENCODE_CONFIG_DIR`
+ * → XDG global dir → legacy `~/.opencode/`. Project-local `.opencode/` is
+ * intentionally excluded — skvm sandboxes disable project config to keep
+ * runs reproducible (see OPENCODE_DISABLE_PROJECT_CONFIG below).
+ */
+export function resolveUserOpencodeConfigFile(): string | null {
+  const explicit = process.env.OPENCODE_CONFIG?.trim()
+  if (explicit) {
+    if (existsSync(explicit)) return explicit
+    log.warn(`OPENCODE_CONFIG="${explicit}" does not exist; falling back to XDG resolution.`)
+  }
+  const explicitDir = process.env.OPENCODE_CONFIG_DIR?.trim()
+  if (explicitDir) {
+    for (const name of OPENCODE_CONFIG_FILENAMES_LEGACY) {
+      const p = path.join(explicitDir, name)
+      if (existsSync(p)) return p
+    }
+  }
+  for (const name of OPENCODE_CONFIG_FILENAMES_GLOBAL) {
+    const p = path.join(userOpencodeConfigDir(), name)
+    if (existsSync(p)) return p
+  }
+  for (const name of OPENCODE_CONFIG_FILENAMES_LEGACY) {
+    const p = path.join(userOpencodeHome(), ".opencode", name)
+    if (existsSync(p)) return p
+  }
+  return null
+}
 
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = "opencode"
@@ -359,14 +411,16 @@ export class OpenCodeAdapter implements AgentAdapter {
     this.nativeAgent = config.nativeAgent ?? settings.nativeAgent ?? "build"
     this.extraCliArgs = config.extraCliArgs ?? settings.extraCliArgs ?? []
 
-    // Fail-fast: native mode needs an opencode.jsonc the user can resolve the
-    // model against; managed needs a providers.routes entry that matches.
+    // Fail-fast: native mode needs a user config opencode would itself load;
+    // managed needs a providers.routes entry that matches.
+    let userConfigFile: string | null = null
     if (this.mode === "native") {
-      const jsoncPath = path.join(USER_OPENCODE_CONFIG, "opencode.jsonc")
-      if (!(await Bun.file(jsoncPath).exists())) {
+      userConfigFile = resolveUserOpencodeConfigFile()
+      if (!userConfigFile) {
         throw new Error(
-          `opencode (native): ${jsoncPath} not found. Either run opencode's own setup, ` +
-          `or switch to --adapter-config=managed.`,
+          `opencode (native): no opencode.{jsonc,json} / config.json found in any of: ` +
+          `OPENCODE_CONFIG, OPENCODE_CONFIG_DIR, ${userOpencodeConfigDir()}, ${userOpencodeHome()}/.opencode. ` +
+          `Run opencode's own setup first, or switch to --adapter-config=managed.`,
         )
       }
     } else {
@@ -397,6 +451,12 @@ export class OpenCodeAdapter implements AgentAdapter {
     ensureDir(cacheDir)
     ensureDir(stateDir)
 
+    // Empty managed-config dir inside the sandbox so opencode's
+    // system-managed config layer (macOS /Library/Application Support,
+    // Linux /etc) never leaks into skvm runs.
+    const managedEmpty = path.join(root, "managed-empty")
+    ensureDir(managedEmpty)
+
     const envOverlay: Record<string, string> = {
       ...resolved.env,
       ...envForRoute(config.model),
@@ -404,23 +464,24 @@ export class OpenCodeAdapter implements AgentAdapter {
       XDG_DATA_HOME: path.join(root, "data"),
       XDG_CACHE_HOME: path.join(root, "cache"),
       XDG_STATE_HOME: path.join(root, "state"),
+      // Disable `.opencode/` walk-up from the task workdir — it'd pull
+      // per-repo config into bench runs and break reproducibility.
+      OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+      OPENCODE_TEST_MANAGED_CONFIG_DIR: managedEmpty,
     }
 
     if (this.mode === "native") {
-      // Copy opencode.jsonc + auth.json, symlink agent/rules/skills
-      copyFileIfExists(
-        path.join(USER_OPENCODE_CONFIG, "opencode.jsonc"),
-        path.join(cfgDir, "opencode.jsonc"),
-      )
-      symlinkIfExists(path.join(USER_OPENCODE_CONFIG, "agent"), path.join(cfgDir, "agent"))
-      symlinkIfExists(path.join(USER_OPENCODE_CONFIG, "rules"), path.join(cfgDir, "rules"))
-      symlinkIfExists(path.join(USER_OPENCODE_CONFIG, "skills"), path.join(cfgDir, "skills"))
-      // auth.json is always COPIED so an OAuth refresh from the sandbox
-      // doesn't overwrite the user's real credentials.
-      copyFileIfExists(
-        path.join(USER_OPENCODE_DATA, "auth.json"),
-        path.join(dataDir, "auth.json"),
-      )
+      const srcConfig = userConfigFile!
+      // Preserve the user's extension so opencode finds the same file in
+      // the sandbox (.json vs .jsonc vs config.json all valid).
+      copyFileIfExists(srcConfig, path.join(cfgDir, path.basename(srcConfig)))
+      const srcCfgDir = userOpencodeConfigDir()
+      symlinkIfExists(path.join(srcCfgDir, "agent"), path.join(cfgDir, "agent"))
+      symlinkIfExists(path.join(srcCfgDir, "rules"), path.join(cfgDir, "rules"))
+      symlinkIfExists(path.join(srcCfgDir, "skills"), path.join(cfgDir, "skills"))
+      // auth.json is copied (not symlinked) so an OAuth refresh from the
+      // sandbox doesn't overwrite the user's real credentials.
+      copyFileIfExists(path.join(userOpencodeDataDir(), "auth.json"), path.join(dataDir, "auth.json"))
     } else {
       // Managed: empty sandbox. For openai-compatible routes, inject a
       // synthesized provider via OPENCODE_CONFIG_CONTENT so opencode doesn't

@@ -37,6 +37,7 @@ import {
 import type { ProviderKind, AdapterConfigMode } from "../core/types.ts"
 import { ALL_ADAPTERS, type AdapterName } from "../adapters/registry.ts"
 import { resolveUserHermesDir as resolveHermesProfileDir } from "../adapters/hermes.ts"
+import { resolveUserOpencodeConfigFile as resolveOpencodeConfigFile } from "../adapters/opencode.ts"
 import { shortenPath } from "../core/banner.ts"
 
 const EXAMPLE_PATH = path.join(PROJECT_ROOT, "skvm.config.example.json")
@@ -859,10 +860,10 @@ async function runDoctor(): Promise<void> {
         : { status: "fail", label: `openclaw native source agent "${srcAgent}"`, detail: `${shortenPath(modelsJson)} missing — native mode will error` },
       )
     } else if (a === "opencode") {
-      const cfg = expandHome("~/.config/opencode/opencode.jsonc")
-      results.push(existsSync(cfg)
+      const cfg = resolveOpencodeConfigFile()
+      results.push(cfg
         ? { status: "ok", label: `opencode native config`, detail: shortenPath(cfg) }
-        : { status: "fail", label: `opencode native config`, detail: `${shortenPath(cfg)} missing — native mode will error` },
+        : { status: "fail", label: `opencode native config`, detail: `no opencode.{jsonc,json} / config.json in XDG_CONFIG_HOME, OPENCODE_CONFIG*, or ~/.opencode — native mode will error` },
       )
     } else if (a === "hermes") {
       const cfg = path.join(resolveHermesProfileDir(), "config.yaml")
