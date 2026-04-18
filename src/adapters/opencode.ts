@@ -338,11 +338,19 @@ export async function resolveHeadlessOpenCodeCmd(): Promise<OpenCodeResolution> 
 
 const HOME = process.env.HOME ?? ""
 
-/** Directories / candidate config filenames opencode itself walks — see
- *  `packages/opencode/src/config/config.ts:1106,1255,1348`. Global layer tries
- *  all three; legacy `~/.opencode/` only the first two. */
-const OPENCODE_CONFIG_FILENAMES_GLOBAL = ["opencode.jsonc", "opencode.json", "config.json"] as const
-const OPENCODE_CONFIG_FILENAMES_LEGACY = ["opencode.jsonc", "opencode.json"] as const
+// Per opencode `packages/opencode/src/config/config.ts:1106,1255,1348`:
+// global user config honors three filenames; explicit-dir and legacy home
+// only honor two (no `config.json`).
+const OPENCODE_CONFIG_FILENAMES_FULL = ["opencode.jsonc", "opencode.json", "config.json"] as const
+const OPENCODE_CONFIG_FILENAMES_SHORT = ["opencode.jsonc", "opencode.json"] as const
+
+function firstExisting(dir: string, names: readonly string[]): string | null {
+  for (const n of names) {
+    const p = path.join(dir, n)
+    if (existsSync(p)) return p
+  }
+  return null
+}
 
 function userOpencodeHome(): string {
   return process.env.OPENCODE_TEST_HOME ?? HOME
@@ -360,12 +368,9 @@ function userOpencodeDataDir(): string {
 
 /**
  * Resolve the active opencode user config file, mirroring opencode's own
- * precedence. Returns the first file that exists, or `null` if none do.
- *
- * Priority: `$OPENCODE_CONFIG` (explicit file) → `$OPENCODE_CONFIG_DIR`
- * → XDG global dir → legacy `~/.opencode/`. Project-local `.opencode/` is
- * intentionally excluded — skvm sandboxes disable project config to keep
- * runs reproducible (see OPENCODE_DISABLE_PROJECT_CONFIG below).
+ * precedence. Priority: `$OPENCODE_CONFIG` → `$OPENCODE_CONFIG_DIR` → XDG
+ * global → legacy `~/.opencode/`. Explicit-path-but-missing logs a warning
+ * and falls through; returns null if nothing is found.
  */
 export function resolveUserOpencodeConfigFile(): string | null {
   const explicit = process.env.OPENCODE_CONFIG?.trim()
@@ -375,20 +380,12 @@ export function resolveUserOpencodeConfigFile(): string | null {
   }
   const explicitDir = process.env.OPENCODE_CONFIG_DIR?.trim()
   if (explicitDir) {
-    for (const name of OPENCODE_CONFIG_FILENAMES_LEGACY) {
-      const p = path.join(explicitDir, name)
-      if (existsSync(p)) return p
-    }
+    const hit = firstExisting(explicitDir, OPENCODE_CONFIG_FILENAMES_SHORT)
+    if (hit) return hit
   }
-  for (const name of OPENCODE_CONFIG_FILENAMES_GLOBAL) {
-    const p = path.join(userOpencodeConfigDir(), name)
-    if (existsSync(p)) return p
-  }
-  for (const name of OPENCODE_CONFIG_FILENAMES_LEGACY) {
-    const p = path.join(userOpencodeHome(), ".opencode", name)
-    if (existsSync(p)) return p
-  }
-  return null
+  const globalHit = firstExisting(userOpencodeConfigDir(), OPENCODE_CONFIG_FILENAMES_FULL)
+  if (globalHit) return globalHit
+  return firstExisting(path.join(userOpencodeHome(), ".opencode"), OPENCODE_CONFIG_FILENAMES_SHORT)
 }
 
 export class OpenCodeAdapter implements AgentAdapter {
@@ -411,20 +408,17 @@ export class OpenCodeAdapter implements AgentAdapter {
     this.nativeAgent = config.nativeAgent ?? settings.nativeAgent ?? "build"
     this.extraCliArgs = config.extraCliArgs ?? settings.extraCliArgs ?? []
 
-    // Fail-fast: native mode needs a user config opencode would itself load;
-    // managed needs a providers.routes entry that matches.
-    let userConfigFile: string | null = null
-    if (this.mode === "native") {
-      userConfigFile = resolveUserOpencodeConfigFile()
-      if (!userConfigFile) {
-        throw new Error(
-          `opencode (native): no opencode.{jsonc,json} / config.json found in any of: ` +
-          `OPENCODE_CONFIG, OPENCODE_CONFIG_DIR, ${userOpencodeConfigDir()}, ${userOpencodeHome()}/.opencode. ` +
-          `Run opencode's own setup first, or switch to --adapter-config=managed.`,
-        )
-      }
-    } else {
-      // resolveRoute throws if no match — surface as a clear setup error.
+    // Fail-fast: native needs a config opencode would itself load; managed
+    // needs a providers.routes entry matching this.model.
+    const userConfigFile = this.mode === "native" ? resolveUserOpencodeConfigFile() : null
+    if (this.mode === "native" && !userConfigFile) {
+      throw new Error(
+        `opencode (native): no opencode.{jsonc,json} / config.json found in any of: ` +
+        `OPENCODE_CONFIG, OPENCODE_CONFIG_DIR, ${userOpencodeConfigDir()}, ${userOpencodeHome()}/.opencode. ` +
+        `Run opencode's own setup first, or switch to --adapter-config=managed.`,
+      )
+    }
+    if (this.mode === "managed") {
       try {
         resolveRoute(this.model)
       } catch (err) {
@@ -470,11 +464,10 @@ export class OpenCodeAdapter implements AgentAdapter {
       OPENCODE_TEST_MANAGED_CONFIG_DIR: managedEmpty,
     }
 
-    if (this.mode === "native") {
-      const srcConfig = userConfigFile!
+    if (userConfigFile) {
       // Preserve the user's extension so opencode finds the same file in
       // the sandbox (.json vs .jsonc vs config.json all valid).
-      copyFileIfExists(srcConfig, path.join(cfgDir, path.basename(srcConfig)))
+      copyFileIfExists(userConfigFile, path.join(cfgDir, path.basename(userConfigFile)))
       const srcCfgDir = userOpencodeConfigDir()
       symlinkIfExists(path.join(srcCfgDir, "agent"), path.join(cfgDir, "agent"))
       symlinkIfExists(path.join(srcCfgDir, "rules"), path.join(cfgDir, "rules"))
