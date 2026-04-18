@@ -187,13 +187,14 @@ export function parseHermesSession(
  * Priority: custom path from skvm.config.json → globally installed `hermes`.
  */
 export async function resolveHermesCmd(): Promise<string[]> {
-  // 1. Custom path from config — run via python3 -m hermes_cli.main
+  // 1. Custom path from config — run via <python> -m hermes_cli.main
   const repoDir = getAdapterRepoDir("hermes")
   if (repoDir) {
     const mainModule = path.join(repoDir, "hermes_cli", "main.py")
     if (await Bun.file(mainModule).exists()) {
-      log.info(`Using hermes from source: ${repoDir}`)
-      return ["python3", "-m", "hermes_cli.main"]
+      const py = await resolvePython()
+      log.info(`Using hermes from source: ${repoDir} (python=${py})`)
+      return [py, "-m", "hermes_cli.main"]
     }
     throw new Error(`hermes not found at ${repoDir} (no hermes_cli/main.py)`)
   }
@@ -207,6 +208,30 @@ export async function resolveHermesCmd(): Promise<string[]> {
 
   throw new Error(
     "hermes not found. Either install it globally or set adapters.hermes in skvm.config.json",
+  )
+}
+
+/**
+ * Pick a python binary to run hermes from source. `python` is tried first:
+ * with a conda/venv activated it points at the env's interpreter (where
+ * hermes's deps live), whereas `python3` on macOS is routinely Apple's
+ * stock 3.9. Version-tagged names come last as a fallback for machines
+ * without any env activated. If hermes's actual requirements (currently
+ * >=3.11) aren't satisfied by the chosen interpreter, hermes itself will
+ * surface that clearly on first import — we don't second-guess the version.
+ */
+async function resolvePython(): Promise<string> {
+  const override = process.env.SKVM_HERMES_PYTHON?.trim()
+  const candidates = override
+    ? [override]
+    : ["python", "python3", "python3.13", "python3.12", "python3.11"]
+  for (const bin of candidates) {
+    const { exitCode } = await runCommand([bin, "--version"])
+    if (exitCode === 0) return bin
+  }
+  throw new Error(
+    `No python interpreter found. Tried: ${candidates.join(", ")}. ` +
+    `Activate a conda/venv env with python installed, or set SKVM_HERMES_PYTHON to an existing interpreter.`,
   )
 }
 
@@ -344,16 +369,20 @@ export class HermesAdapter implements AgentAdapter {
     const startMs = performance.now()
 
     // --- Build command ---
+    // hermes routes via `model.provider` in config.yaml (openrouter /
+    // anthropic / openai-compatible / ...) and passes the `-m` value
+    // verbatim to that provider's API. So strip skvm's routing prefix —
+    // openrouter expects `qwen/qwen3-...`, not `openrouter/qwen/qwen3-...`.
     const cmd = [
       ...this.cmdPrefix,
       "chat",
-      "-Q",                           // quiet mode
-      "-q", prompt,                    // single query
-      "-m", this.model,                // model
-      "-t", "terminal,file",           // toolsets
+      "-Q",
+      "-q", prompt,
+      "-m", stripRoutingPrefix(this.model),
+      "-t", "terminal,file",
       "--max-turns", String(this.maxSteps),
-      "--yolo",                        // bypass command approval
-      "--source", "tool",              // tag for separation
+      "--yolo",
+      "--source", "tool",
       ...this.extraCliArgs,
     ]
 
