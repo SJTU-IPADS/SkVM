@@ -46,6 +46,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
+    "@inquirer/core": "^11.1.8",
+    "@inquirer/prompts": "^8.4.1",
     "smol-toml": "^1.6.1",
     "yaml": "^2.8.3",
     "zod": "^3.24.0"
