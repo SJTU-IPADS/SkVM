@@ -3,8 +3,8 @@ import { mkdir, rm, copyFile, readdir } from "node:fs/promises"
 import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, SkillMode, ProviderRoute } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
-import { getAdapterRepoDir, getAdapterSettings, getProvidersConfig } from "../core/config.ts"
-import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
+import { getAdapterRepoDir, getAdapterSettings, getProvidersConfig, stripRoutingPrefix } from "../core/config.ts"
+import { HEADLESS_AGENT_DEFAULTS, TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import {
   createSandbox,
   ensureDir,
@@ -245,24 +245,57 @@ function transcriptToRunResult(
 // ---------------------------------------------------------------------------
 
 /**
- * Translate skvm `providers.routes` into openclaw models.json provider
- * entries. Openclaw's `apiKey` field accepts either a literal key or an env
- * var name — skvm resolves the key up front (env → literal) and emits a
- * single string, matching what the user's hand-written models.json looks like.
+ * Translate skvm `providers.routes` into openclaw `models.providers` entries
+ * suitable for the top-level `openclaw.json`. Every provider block must carry
+ * a non-empty `models[]` array — openclaw's resolver at
+ * `src/agents/pi-embedded-runner/model.ts:251-399 buildInlineProviderModels`
+ * iterates `entry.models ?? []` and fails with "Unknown model" when the array
+ * is empty, regardless of whether the provider block itself exists.
  *
- * Exported so the user-facing cli-config `doctor` can surface what managed
- * mode would synthesize without actually running a command.
+ * skvm knows the specific model id for this run (one model per adapter
+ * instance), so we only attach a `models[]` entry to the matching provider.
+ * Other routes still get a provider block (so cross-provider auth works if
+ * a subagent needs it), just without a model entry — openclaw won't route
+ * to them anyway.
  */
+export interface OpenclawModelEntry {
+  id: string
+  name: string
+  reasoning: boolean
+  input: string[]
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
+  contextWindow: number
+  maxTokens: number
+}
+
 export interface OpenclawProviderEntry {
   name: string
   baseUrl?: string
   apiKey?: string
   api?: string
+  models?: OpenclawModelEntry[]
+}
+
+const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+
+function buildDefaultModelEntry(bareId: string): OpenclawModelEntry {
+  return {
+    id: bareId,
+    name: bareId,
+    reasoning: false,
+    input: ["text"],
+    cost: ZERO_COST,
+    contextWindow: HEADLESS_AGENT_DEFAULTS.contextLimit,
+    maxTokens: HEADLESS_AGENT_DEFAULTS.outputLimit,
+  }
 }
 
 export function renderOpenclawProviderEntries(
   routes: readonly ProviderRoute[],
+  model: string,
 ): Record<string, OpenclawProviderEntry> {
+  const activePrefix = model.split("/")[0]
+  const bareModel = stripRoutingPrefix(model)
   const providers: Record<string, OpenclawProviderEntry> = {}
   for (const route of routes) {
     const providerId = route.match.split("/")[0]
@@ -274,6 +307,7 @@ export function renderOpenclawProviderEntries(
       api: route.kind === "anthropic" ? "anthropic-messages" : "openai-completions",
       ...(baseUrl ? { baseUrl } : {}),
       ...(resolvedKey ? { apiKey: resolvedKey } : {}),
+      ...(providerId === activePrefix ? { models: [buildDefaultModelEntry(bareModel)] } : {}),
     }
   }
   return providers
@@ -285,14 +319,6 @@ function defaultBaseUrl(kind: ProviderRoute["kind"]): string | undefined {
     case "anthropic":  return "https://api.anthropic.com/v1"
     case "openai-compatible": return undefined
   }
-}
-
-async function writeManagedModelsJson(
-  modelsJsonPath: string,
-  routes: readonly ProviderRoute[],
-): Promise<void> {
-  const providers = renderOpenclawProviderEntries(routes)
-  await Bun.write(modelsJsonPath, JSON.stringify({ providers }, null, 2))
 }
 
 // ---------------------------------------------------------------------------
@@ -438,8 +464,6 @@ class OpenclawSandboxPool {
     ensureDir(sessionsDir)
     ensureDir(workspaceDir)
 
-    const routes = getProvidersConfig().routes
-    await writeManagedModelsJson(path.join(agentDir, "models.json"), routes)
     const agent: PoolAgent = { agentId, agentDir, sessionsDir, workspaceDir }
     this.agents.push(agent)
     return agent
@@ -451,9 +475,17 @@ class OpenclawSandboxPool {
       name: a.agentId,
       workspace: a.workspaceDir,
       agentDir: a.agentDir,
-      model: this.initModel,
+      // Object form with explicit empty fallbacks prevents openclaw from
+      // cascading to the hardcoded DEFAULT_MODEL (anthropic/claude-opus-4-6)
+      // when primary resolution fails — the string form inherits
+      // agents.defaults.model.fallbacks and drowns the real error.
+      model: { primary: this.initModel, fallbacks: [] },
     }))
-    const doc = { agents: { list } }
+    const doc: Record<string, unknown> = { agents: { list } }
+    if (this.mode === "managed") {
+      const routes = getProvidersConfig().routes
+      doc.models = { providers: renderOpenclawProviderEntries(routes, this.initModel) }
+    }
     await Bun.write(path.join(root, "openclaw.json"), JSON.stringify(doc, null, 2))
   }
 
@@ -678,6 +710,12 @@ export class OpenClawAdapter implements AgentAdapter {
       "--agent", agent.agentId,
       "--session-id", sessionId,
       "--message", task.prompt,
+      // --local skips the remote-gateway connection attempt. Managed mode
+      // never has a gateway token configured; the attempt always fails with
+      // "unauthorized: gateway token missing" and falls back to embedded,
+      // polluting stderr. Native users may run their own gateway, so we
+      // only force --local in managed mode.
+      ...(pool.sandboxMode === "managed" ? ["--local"] : []),
       ...this.extraCliArgs,
     ]
 
