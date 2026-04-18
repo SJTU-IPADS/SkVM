@@ -66,6 +66,7 @@ Commands:
   proposals    List, inspect, accept, or reject proposals
   clean-jit    Remove persisted JIT artifacts for a model+adapter
   logs         List recent runs across subsystems
+  config       Configure providers, adapters, and paths (init / show / doctor)
 
 Global Options:
   --skvm-cache=<path>      Override cache root (default: ~/.skvm)
@@ -109,6 +110,11 @@ Use --help with any command for details.`)
     case "logs":
       await runLogs(flags)
       break
+    case "config": {
+      const { runConfig } = await import("./cli-config/index.ts")
+      await runConfig(args.slice(1))
+      break
+    }
     default:
       console.error(c.red(`Unknown command: ${command}`))
       process.exit(1)

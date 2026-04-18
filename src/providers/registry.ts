@@ -1,18 +1,19 @@
 import type { LLMProvider } from "./types.ts"
 import type { ProviderRoute, ProvidersConfig } from "../core/types.ts"
-import { getProvidersConfig } from "../core/config.ts"
+import { getProvidersConfig, stripRoutingPrefix } from "../core/config.ts"
 import { OpenRouterProvider } from "./openrouter.ts"
 import { AnthropicProvider } from "./anthropic.ts"
 import { OpenAICompatibleProvider } from "./openai-compatible.ts"
 import { ProviderAuthError } from "./errors.ts"
 
 /**
- * Built-in fallback route. Applied when `skvm.config.json` has no
- * `providers.routes` section (or no route matches a given model id).
- * Preserves the pre-registry "everything goes through OpenRouter" behavior.
+ * Built-in fallback route. Applied when `providers.routes` is empty or no
+ * user route matches a given model id. Catches `openrouter/...` ids without
+ * forcing the user to configure a route explicitly — other prefixes still
+ * fail loudly so typos don't silently route through OR.
  */
 const DEFAULT_ROUTE: ProviderRoute = {
-  match: "*",
+  match: "openrouter/*",
   kind: "openrouter",
   apiKeyEnv: "OPENROUTER_API_KEY",
 }
@@ -23,13 +24,32 @@ export interface ProviderOverrides {
 }
 
 /**
- * Resolve a model id to a concrete `LLMProvider`. This is the single
- * chokepoint for internal LLM calls (compiler passes, bench judging,
- * jit-optimize eval, jit-boost candidate parsing, bare-agent adapter, …).
+ * Resolve a model id to its matching `ProviderRoute`. Single chokepoint for
+ * "given a model id, what route applies?" — used by every subsystem that
+ * cares (instantiate, envForRoute, headless-agent, jiuwenclaw env writer).
  *
  * Resolution order:
- *   1. Routes from `skvm.config.json` `providers.routes`, first glob match wins.
- *   2. Built-in OpenRouter default, using `OPENROUTER_API_KEY`.
+ *   1. First user route from `providers.routes` whose glob matches.
+ *   2. Built-in `openrouter/*` default — only applies when the id actually
+ *      starts with that prefix. Typoed or unconfigured prefixes (e.g.
+ *      `ipads/gpt-4o` with no `ipads/*` route) throw, so they can't be
+ *      silently misrouted through OpenRouter.
+ */
+export function resolveRoute(modelId: string): ProviderRoute {
+  const route = findMatchingRoute(modelId, getProvidersConfig())
+  if (route) return route
+  if (globMatch(DEFAULT_ROUTE.match, modelId)) return DEFAULT_ROUTE
+  throw new Error(
+    `No providers.routes entry matches model id "${modelId}". Every CLI model id must carry ` +
+    `a <provider>/ prefix with a matching route; the built-in openrouter/* fallback only covers ` +
+    `openrouter/... ids. Configure a route in skvm.config.json or prefix the id with openrouter/.`,
+  )
+}
+
+/**
+ * Resolve a model id to a concrete `LLMProvider`. Single chokepoint for
+ * internal LLM calls (compiler passes, bench judging, jit-optimize eval,
+ * jit-boost candidate parsing, bare-agent adapter, …).
  *
  * `overrides` lets test fixtures and exceptional call sites bypass env-var
  * lookup. Never use overrides to "work around" a missing route — add a route
@@ -39,9 +59,7 @@ export function createProviderForModel(
   modelId: string,
   overrides?: ProviderOverrides,
 ): LLMProvider {
-  const config = getProvidersConfig()
-  const route = findMatchingRoute(modelId, config) ?? DEFAULT_ROUTE
-  return instantiate(modelId, route, overrides)
+  return instantiate(modelId, resolveRoute(modelId), overrides)
 }
 
 export function findMatchingRoute(
@@ -69,19 +87,51 @@ export function globMatch(pattern: string, value: string): boolean {
 }
 
 /**
- * Drop the first `/`-separated segment of a model id so the backend sees its
- * native name. SkVM's routing namespace uses `<kind-prefix>/<backend-model-id>`
- * (e.g. `openai/gpt-4o`, `self/qwen3-7b`), but the concrete SDKs (Anthropic,
- * OpenAI, vLLM, Ollama) expect just the bare tail. No-op when there's no
- * slash — handles the case where the user's config already uses a bare id.
- *
- * NOT applied to OpenRouter: its native model-id namespace already contains
- * prefixes (`qwen/qwen3-30b`, `anthropic/claude-sonnet-4.6`), and stripping
- * them would break routing at the OR layer.
+ * Resolve a route's API key as a plain string. Used by env-var injection
+ * (envForRoute) and the OPENCODE_CONFIG_CONTENT builder. Returns null when
+ * neither `apiKey` nor `apiKeyEnv` yields a usable value — callers then
+ * decide whether absence is a failure (instantiate) or just "no help"
+ * (env injection — let the spawn inherit). `instantiate` keeps its own
+ * branchy resolver because it must raise ProviderAuthError on missing keys
+ * (the jit-optimize infraError classification depends on that exception
+ * shape).
  */
-export function stripRoutingPrefix(modelId: string): string {
-  const slash = modelId.indexOf("/")
-  return slash >= 0 ? modelId.slice(slash + 1) : modelId
+export function resolveRouteApiKey(route: ProviderRoute): string | null {
+  if (route.apiKey) return route.apiKey
+  if (route.apiKeyEnv) {
+    const val = process.env[route.apiKeyEnv]
+    if (val) return val
+  }
+  return null
+}
+
+/**
+ * Standard SDK env vars to inject into adapter / headless subprocesses so
+ * they can reach the backend matched by `providers.routes` without the user
+ * also having to configure those credentials on the adapter side.
+ *
+ * Returns `{}` only when the resolved route has no usable key — in that case
+ * the spawn inherits whatever the parent shell already had set.
+ *
+ * Best-effort, NOT a full bridge: an adapter that ignores the SDK conventions
+ * (e.g. reads its own config file) won't pick these up. The skvm-managed
+ * opencode subprocess in `headless-agent` goes further and also injects
+ * OPENCODE_CONFIG_CONTENT for openai-compatible routes.
+ */
+export function envForRoute(modelId: string): Record<string, string> {
+  const route = resolveRoute(modelId)
+  const apiKey = resolveRouteApiKey(route)
+  if (!apiKey) return {}
+  switch (route.kind) {
+    case "openrouter":
+      return { OPENROUTER_API_KEY: apiKey }
+    case "anthropic":
+      return { ANTHROPIC_API_KEY: apiKey }
+    case "openai-compatible":
+      return route.baseUrl
+        ? { OPENAI_API_KEY: apiKey, OPENAI_BASE_URL: route.baseUrl }
+        : { OPENAI_API_KEY: apiKey }
+  }
 }
 
 function instantiate(
@@ -89,13 +139,17 @@ function instantiate(
   route: ProviderRoute,
   overrides: ProviderOverrides | undefined,
 ): LLMProvider {
-  // Resolve API key. A missing env var is an infra / config failure, so raise
-  // ProviderAuthError here — plain Error would bypass the jit-optimize
-  // infraError classification and show up as a normal score=0 criterion.
+  // Resolve API key. Order: explicit override → route.apiKey (stored in
+  // skvm.config.json by `skvm config init`) → env var named by route.apiKeyEnv.
+  // A missing key is an infra / config failure, so raise ProviderAuthError —
+  // plain Error would bypass the jit-optimize infraError classification and
+  // show up as a normal score=0 criterion.
   let apiKey: string
   if (overrides?.apiKey !== undefined) {
     apiKey = overrides.apiKey
-  } else {
+  } else if (route.apiKey) {
+    apiKey = route.apiKey
+  } else if (route.apiKeyEnv) {
     const val = process.env[route.apiKeyEnv]
     if (!val) {
       throw new ProviderAuthError(
@@ -104,13 +158,18 @@ function instantiate(
       )
     }
     apiKey = val
+  } else {
+    throw new ProviderAuthError(
+      `Route "${route.match}" (kind=${route.kind}) has neither apiKey nor apiKeyEnv set`,
+      route.kind,
+    )
   }
 
   switch (route.kind) {
     case "openrouter":
-      // OpenRouter's own namespace already contains prefixes like
-      // `qwen/qwen3-30b`; pass through unchanged.
-      return new OpenRouterProvider({ apiKey, model: modelId })
+      // OR's native ids use `<vendor>/<model>` — after stripping SkVM's
+      // routing prefix (`openrouter/`) we're left with exactly that shape.
+      return new OpenRouterProvider({ apiKey, model: stripRoutingPrefix(modelId) })
 
     case "anthropic":
       // Anthropic SDK expects a bare id ("claude-sonnet-4.6").

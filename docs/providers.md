@@ -1,133 +1,122 @@
 # Provider Configuration
 
-How to configure LLM providers in SkVM. Covers the built-in providers, custom OpenAI-compatible endpoints, and the headless agent (jit-optimize / jit-boost) provider override.
+How to route LLM calls in SkVM. Covers the built-in provider kinds, custom OpenAI-compatible endpoints, and which parts of skvm are skvm's responsibility vs. the user's.
 
-## Two provider systems
+## Quick start: `skvm config`
 
-SkVM has two independent provider paths because some LLM calls happen in-process while others are delegated to an opencode subprocess:
-
-| Path | Config location | Used by |
-|------|----------------|---------|
-| **`providers.routes`** | `skvm.config.json` | eval/judge, compiler, bare-agent adapter, jit-boost candidate parsing |
-| **`headlessAgent.providerOverride`** | `skvm.config.json` | jit-optimize optimizer agent, synthetic task generation (via opencode subprocess) |
-
-Both are configured in `skvm.config.json`. When using a custom endpoint, both paths need to be set up.
-
-## Environment variables
-
-| Variable | Purpose |
-|----------|---------|
-| `OPENROUTER_API_KEY` | Default fallback for all model routing |
-| `ANTHROPIC_API_KEY` | Anthropic native API (compiler, Claude models) |
-| Any custom name | Referenced via `apiKeyEnv` in route/override config |
-
-## `providers.routes` — in-process LLM calls
-
-Routes match model IDs top-to-bottom using glob patterns (`*` wildcard). The first match wins. If no route matches, SkVM falls back to OpenRouter with `OPENROUTER_API_KEY`.
-
-### Route schema
-
-```json
-{
-  "match": "<glob>",
-  "kind": "openrouter" | "anthropic" | "openai-compatible",
-  "apiKeyEnv": "<ENV_VAR_NAME>",
-  "baseUrl": "<url>"          // required for openai-compatible, ignored otherwise
-}
+```bash
+skvm config init      # interactive wizard; writes $SKVM_CACHE/skvm.config.json (chmod 0600)
+skvm config show      # print the resolved config and where each value came from
+skvm config doctor    # verify env vars, adapter checkouts, cache writability
 ```
 
-### Three provider kinds
+The wizard writes to `$SKVM_CACHE/skvm.config.json` (default `~/.skvm/skvm.config.json`) so the file persists across `npm i -g @ipads-skvm/skvm` upgrades and isn't tied to any one checkout. A legacy in-tree path at `<project>/skvm.config.json` is still read for backwards compat.
 
-#### `openrouter`
+Skip this section and read on if you'd rather edit the JSON by hand.
 
-Routes through the OpenRouter API. Model IDs are passed through unchanged (OpenRouter's namespace already uses `vendor/model` format).
+## Prefix-required convention
 
-```json
-{ "match": "*", "kind": "openrouter", "apiKeyEnv": "OPENROUTER_API_KEY" }
-```
+**Every model id you pass to skvm on the CLI is `<provider>/<model-id>`.** The `<provider>` prefix picks a route in `providers.routes`; the `<model-id>` after it is what gets sent to the backend SDK. skvm always strips the first `/`-segment before the native SDK sees the id.
 
-No `baseUrl` needed — hardcoded to the OpenRouter API.
+Examples:
+- `openrouter/qwen/qwen3-30b` → matches `openrouter/*` → OR SDK receives `qwen/qwen3-30b`
+- `openrouter/anthropic/claude-sonnet-4.6` → matches `openrouter/*` → OR SDK receives `anthropic/claude-sonnet-4.6` (OR's native format)
+- `anthropic/claude-sonnet-4.6` → matches `anthropic/*` → Anthropic SDK receives `claude-sonnet-4.6`
+- `openai/gpt-4o` → matches `openai/*` → OpenAI SDK receives `gpt-4o`
+- `ipads/gpt-4o` → matches `ipads/*` (your custom) → your endpoint receives `gpt-4o`
 
-#### `anthropic`
+Unprefixed ids error out with "no matching route". The built-in fallback is `openrouter/*` — unprefixed ids don't magically route anywhere.
 
-Routes through the Anthropic Messages API. The first `/`-segment of the model ID is stripped before sending (e.g. `anthropic/claude-sonnet-4.6` becomes `claude-sonnet-4.6`).
+## `providers.routes`
 
-```json
-{ "match": "anthropic/*", "kind": "anthropic", "apiKeyEnv": "ANTHROPIC_API_KEY" }
-```
-
-No `baseUrl` needed — hardcoded to the Anthropic API.
-
-#### `openai-compatible`
-
-Routes through any server implementing the OpenAI `/chat/completions` protocol. The first `/`-segment is stripped (e.g. `custom/gpt-4o` becomes `gpt-4o`). Requires `baseUrl`.
-
-```json
-{ "match": "custom/*", "kind": "openai-compatible", "apiKeyEnv": "CUSTOM_API_KEY", "baseUrl": "http://localhost:8000/v1" }
-```
-
-Works with: vLLM, Ollama, DeepSeek API, Together, Fireworks, SiliconFlow, Azure OpenAI, or any OpenAI-compatible proxy.
-
-### Full example
+Maps model-id prefixes to backends. Routes are matched top-to-bottom against the full id you pass; the first glob (`*` wildcard, no regex) match wins.
 
 ```json
 {
   "providers": {
     "routes": [
-      { "match": "anthropic/*", "kind": "anthropic",         "apiKeyEnv": "ANTHROPIC_API_KEY" },
-      { "match": "openai/*",    "kind": "openai-compatible", "apiKeyEnv": "OPENAI_API_KEY",   "baseUrl": "https://api.openai.com/v1" },
-      { "match": "self/*",      "kind": "openai-compatible", "apiKeyEnv": "VLLM_API_KEY",     "baseUrl": "http://localhost:8000/v1" },
-      { "match": "*",           "kind": "openrouter",        "apiKeyEnv": "OPENROUTER_API_KEY" }
+      { "match": "anthropic/*",  "kind": "anthropic",         "apiKey": "sk-ant-..." },
+      { "match": "openai/*",     "kind": "openai-compatible", "apiKey": "sk-...",          "baseUrl": "https://api.openai.com/v1" },
+      { "match": "self/*",       "kind": "openai-compatible", "apiKeyEnv": "VLLM_API_KEY", "baseUrl": "http://localhost:8000/v1" },
+      { "match": "openrouter/*", "kind": "openrouter",        "apiKeyEnv": "OPENROUTER_API_KEY" }
     ]
   }
 }
 ```
 
-Then use model IDs like `anthropic/claude-sonnet-4.6`, `openai/gpt-4o`, `self/qwen3.5-35b-a3b`, or `qwen/qwen3-30b-a3b` (falls through to OpenRouter).
+### Route schema
 
-## `headlessAgent` — opencode subprocess provider
+```jsonc
+{
+  "match": "<glob>",
+  "kind": "openrouter" | "anthropic" | "openai-compatible",
+  "apiKey": "<literal-key>",   // OR apiKeyEnv — one is required
+  "apiKeyEnv": "<ENV_VAR_NAME>",
+  "baseUrl": "<url>"           // required for openai-compatible, ignored for openrouter/anthropic
+}
+```
 
-The jit-optimize optimizer and synthetic task generator run as opencode subprocesses. These do **not** use `providers.routes` — they have their own routing via `headlessAgent`.
+**`apiKey` vs `apiKeyEnv`**
+- `apiKey`: literal value stored in `skvm.config.json`. The file is gitignored and `skvm config init` writes it with mode `0600`. Simplest path; no shell setup required.
+- `apiKeyEnv`: env var name read at runtime. Use this when keys live in direnv / 1Password / a vault / CI. `<repo>/.env` is auto-loaded at startup, so a `NAME=value` line there works without a shell `export`.
+- Both set: `apiKey` wins.
 
-### Default behavior
+### The three provider kinds
 
-Without any `headlessAgent` config, model IDs are prefixed with `openrouter/` and sent to opencode, which routes them through OpenRouter. This requires `OPENROUTER_API_KEY` to be set in opencode's config or environment.
+All three strip the first `/`-segment from the CLI id before talking to the backend SDK:
 
-```json
+| Kind | baseUrl | What the backend SDK receives | Typical use |
+|---|---|---|---|
+| `openrouter` | hardcoded `openrouter.ai/api/v1` | whatever's after `openrouter/` — OR uses `vendor/model` natively (e.g. `qwen/qwen3-30b`) | one-key multi-provider |
+| `anthropic` | hardcoded `api.anthropic.com` | bare model name (`anthropic/claude-sonnet-4.6` → `claude-sonnet-4.6`) | native Anthropic Messages |
+| `openai-compatible` | **required** | bare model name (`openai/gpt-4o` → `gpt-4o`) | OpenAI / DeepSeek / vLLM / Ollama / Together / SiliconFlow / any proxy |
+
+## Where `providers.routes` applies
+
+`providers.routes` is the single credential source, but it reaches different subsystems in different ways. Know the distinction before filing a routing bug:
+
+| Subsystem | How it uses `providers.routes` |
+|---|---|
+| **In-process LLM calls** — compiler passes, bench judges, jit-optimize eval, jit-boost candidate parsing | Full use: `instantiate()` in `providers/registry.ts` resolves the route → picks the right SDK → passes the stripped model id + key + baseUrl |
+| **`bare-agent` adapter** | Same as in-process (bare-agent IS skvm calling the SDK directly) |
+| **Headless agent** — the opencode subprocess that jit-optimize / jit-boost spawn as the optimizer | Full use: skvm looks up the route, maps the skvm model id into opencode's namespace, and for openai-compatible routes injects `OPENCODE_CONFIG_CONTENT` so opencode knows the custom endpoint — you don't touch `~/.opencode/` |
+| **External adapters** — opencode / openclaw / hermes / jiuwenclaw used as bench/profile/run **targets** | Partial: skvm injects standard SDK env vars (`OPENAI_API_KEY`/`OPENAI_BASE_URL`/`ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`) from the matched route before spawn. **The adapter's own provider/model config is the user's responsibility** (opencode.jsonc, openclaw models.json, jiuwenclaw .env). If you bench `ipads/gpt-4o` with opencode as the adapter, configure `ipads` in opencode first. |
+
+### Why the asymmetry?
+
+- The **headless agent** is a skvm implementation detail: jit-optimize happens to use opencode to drive the optimizer. Users shouldn't be forced to configure their global opencode just because jit-optimize wants to use a custom endpoint. So skvm fully manages it.
+- External **adapters** are the systems skvm is benchmarking. Leaving their config to the user is honest — skvm isn't going to paper over gaps in the user's opencode / openclaw setup by rewriting their config files behind their back.
+
+## Environment variables
+
+Only relevant when a route uses `apiKeyEnv`, or when no route exists:
+
+| Variable | Purpose |
+|----------|---------|
+| `OPENROUTER_API_KEY` | Default fallback when no route is configured |
+| `ANTHROPIC_API_KEY` | Default `apiKeyEnv` the wizard suggests for Anthropic routes |
+| `OPENAI_API_KEY`, `OPENAI_BASE_URL` | Standard SDK vars skvm auto-injects into external adapter subprocesses when the matched route is openai-compatible |
+| Any custom name | Whatever you put in `apiKeyEnv` |
+
+You can `export X=...` in your shell, or write `X=...` lines to `<repo>/.env` — the latter is auto-loaded at startup.
+
+## `headlessAgent` — minimal
+
+```jsonc
 {
   "headlessAgent": {
     "driver": "opencode",
-    "modelPrefix": "openrouter/"
+    "opencodePath": "/custom/path/to/opencode"   // optional
   }
 }
 ```
 
-### Schema
+| Field | Default | Purpose |
+|---|---|---|
+| `driver` | `"opencode"` | Agent backend (only opencode today) |
+| `opencodePath` | — | Explicit binary for the headless tuner (falls through to bundled → global when unset) |
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `driver` | `"opencode"` | `"opencode"` | Agent backend (only opencode is currently supported) |
-| `modelPrefix` | `string` | `"openrouter/"` | Prepended to model IDs before passing to opencode |
-| `providerOverride` | object | — | Injects a custom provider into the opencode subprocess |
-
-### `providerOverride` schema
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | `string` | yes | Provider name in opencode's namespace. Must match the first segment of `modelPrefix`. |
-| `baseUrl` | `string` | yes | OpenAI-compatible endpoint URL |
-| `apiKeyEnv` | `string` | no | Environment variable name holding the API key |
-| `apiKey` | `string` | no | Direct API key value (takes precedence over `apiKeyEnv`) |
-| `contextLimit` | `number` | no | Max context window tokens (default: 128,000) |
-| `outputLimit` | `number` | no | Max output/completion tokens (default: 16,384) |
-
-When `providerOverride` is set, SkVM:
-
-1. Builds an opencode config JSON with the provider definition (including `npm: "@ai-sdk/openai-compatible"` and model entry)
-2. Merges it with any pre-existing `OPENCODE_CONFIG_CONTENT` from the environment
-3. Injects the result as `OPENCODE_CONFIG_CONTENT` into the opencode subprocess
-
-This does **not** modify your global opencode config (`~/.opencode/opencode.jsonc`).
+There is **no** `providerOverride` / `modelPrefix` — those were legacy. Credentials and endpoints come from `providers.routes` based on whatever model id you pass to `--optimizer-model=`.
 
 ## Recipes
 
@@ -137,152 +126,89 @@ This does **not** modify your global opencode config (`~/.opencode/opencode.json
 export OPENROUTER_API_KEY=sk-or-...
 ```
 
-No `skvm.config.json` changes needed.
-
-### Use a local vLLM server
+No `skvm.config.json` changes needed — the built-in fallback route is `openrouter/*`. Model ids are written as `openrouter/<vendor>/<model>`:
 
 ```bash
-export VLLM_API_KEY=token-xyz    # or any placeholder if auth is disabled
+skvm profile --model=openrouter/qwen/qwen3-30b-a3b --adapter=bare-agent
+skvm bench --model=openrouter/anthropic/claude-sonnet-4.6 --adapter=bare-agent
 ```
+
+### Use a local vLLM server
 
 ```json
 {
   "providers": {
     "routes": [
-      { "match": "self/*", "kind": "openai-compatible", "apiKeyEnv": "VLLM_API_KEY", "baseUrl": "http://localhost:8000/v1" },
-      { "match": "*",      "kind": "openrouter",        "apiKeyEnv": "OPENROUTER_API_KEY" }
+      { "match": "self/*",       "kind": "openai-compatible", "apiKeyEnv": "VLLM_API_KEY", "baseUrl": "http://localhost:8000/v1" },
+      { "match": "openrouter/*", "kind": "openrouter",        "apiKeyEnv": "OPENROUTER_API_KEY" }
     ]
-  },
-  "headlessAgent": {
-    "modelPrefix": "self/",
-    "providerOverride": {
-      "name": "self",
-      "baseUrl": "http://localhost:8000/v1",
-      "apiKeyEnv": "VLLM_API_KEY"
-    }
   }
 }
 ```
 
 ```bash
+export VLLM_API_KEY=token-xyz    # or any placeholder if auth is disabled
 skvm jit-optimize --skill=path/to/skill \
   --optimizer-model=self/qwen3.5-35b-a3b \
   --target-model=self/qwen3.5-35b-a3b \
   --task-source=synthetic
 ```
 
-### Use a shared OpenAI-compatible proxy
+The optimizer works without touching opencode's global config — skvm injects `OPENCODE_CONFIG_CONTENT` for the `self/*` route. The target (also `self/*` via opencode adapter) needs `self` configured in `~/.opencode/opencode.jsonc` — otherwise opencode won't know what `self/qwen3.5-35b-a3b` means.
 
-```bash
-export PROXY_KEY=sk-xxx
-```
+### Mix: Anthropic compiler + custom target
 
 ```json
 {
   "providers": {
     "routes": [
-      { "match": "proxy/*", "kind": "openai-compatible", "apiKeyEnv": "PROXY_KEY", "baseUrl": "http://my-proxy:3006/v1" },
-      { "match": "*",       "kind": "openrouter",        "apiKeyEnv": "OPENROUTER_API_KEY" }
+      { "match": "anthropic/*",  "kind": "anthropic",         "apiKey": "sk-ant-..." },
+      { "match": "self/*",       "kind": "openai-compatible", "apiKeyEnv": "VLLM_API_KEY", "baseUrl": "http://localhost:8000/v1" },
+      { "match": "openrouter/*", "kind": "openrouter",        "apiKeyEnv": "OPENROUTER_API_KEY" }
     ]
-  },
-  "headlessAgent": {
-    "modelPrefix": "proxy/",
-    "providerOverride": {
-      "name": "proxy",
-      "baseUrl": "http://my-proxy:3006/v1",
-      "apiKeyEnv": "PROXY_KEY"
-    }
   }
 }
 ```
 
 ```bash
-# Optimizer through proxy, target through proxy
-skvm jit-optimize --optimizer-model=proxy/gpt-4o --target-model=proxy/gpt-4o ...
+# aot-compile: compiler default is openrouter/anthropic/claude-sonnet-4.6 (MODEL_DEFAULTS);
+# override to the native route if you want direct Anthropic billing:
+skvm aot-compile --skill=path/to/skill --model=self/my-model --compiler-model=anthropic/claude-sonnet-4.6
 
-# Optimizer through proxy, target through OpenRouter
-skvm jit-optimize --optimizer-model=proxy/gpt-4o --target-model=qwen/qwen3-30b-a3b ...
-```
-
-### Mix providers: Anthropic compiler + custom target
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export VLLM_API_KEY=token-xyz
-```
-
-```json
-{
-  "providers": {
-    "routes": [
-      { "match": "anthropic/*", "kind": "anthropic",         "apiKeyEnv": "ANTHROPIC_API_KEY" },
-      { "match": "self/*",      "kind": "openai-compatible", "apiKeyEnv": "VLLM_API_KEY", "baseUrl": "http://localhost:8000/v1" },
-      { "match": "*",           "kind": "openrouter",        "apiKeyEnv": "OPENROUTER_API_KEY" }
-    ]
-  },
-  "headlessAgent": {
-    "modelPrefix": "self/",
-    "providerOverride": {
-      "name": "self",
-      "baseUrl": "http://localhost:8000/v1",
-      "apiKeyEnv": "VLLM_API_KEY"
-    }
-  }
-}
-```
-
-```bash
-# AOT-compile uses Anthropic as compiler, self-hosted as target
-skvm aot-compile --skill=path/to/skill --model=self/my-model
-
-# jit-optimize: optimizer through self-hosted, target through self-hosted
+# jit-optimize: optimizer + target through self-hosted
 skvm jit-optimize --optimizer-model=self/my-model --target-model=self/my-model ...
-```
-
-### Override output token limit
-
-If your endpoint supports more than 16,384 output tokens:
-
-```json
-{
-  "headlessAgent": {
-    "modelPrefix": "self/",
-    "providerOverride": {
-      "name": "self",
-      "baseUrl": "http://localhost:8000/v1",
-      "apiKeyEnv": "VLLM_API_KEY",
-      "outputLimit": 32768,
-      "contextLimit": 131072
-    }
-  }
-}
 ```
 
 ## Troubleshooting
 
+### `Route "openrouter/*" requires env var OPENROUTER_API_KEY, which is not set`
+
+You passed an unprefixed CLI id (e.g. `--model=qwen/qwen3-30b`) and the built-in `openrouter/*` fallback doesn't match it — so the real error is "no route matched". Add the `openrouter/` prefix (`--model=openrouter/qwen/qwen3-30b`) or add an explicit route for whatever prefix you're using.
+
 ### `Route "..." requires env var X, which is not set`
 
-The matched route's `apiKeyEnv` points to an unset environment variable. Export it:
+The matched route uses `apiKeyEnv` but the variable isn't defined. Either export it, write it to `<repo>/.env`, or switch the route to use a literal `apiKey`.
 
-```bash
-export X=your-key-here
-```
+### `Route "..." has neither apiKey nor apiKeyEnv set`
 
-### `max_tokens is too large`
+Schema guard — a route needs one of the two. Re-run `skvm config init` or add the field manually.
 
-Your endpoint's max output token limit is lower than the default (16,384). Set `outputLimit` in `providerOverride` to match your server's limit.
+### My CLI scripts used unprefixed ids like `qwen/qwen3-30b` — now they error out
 
-### opencode subprocess errors with `ModelNotFoundError`
+This is the prefix-required convention. Every CLI id now needs a `<provider>/` prefix. Migrate: `qwen/qwen3-30b` → `openrouter/qwen/qwen3-30b`, `anthropic/claude-sonnet-4.6` stays the same (it's already prefixed by `anthropic`), etc. Disk artifacts like `skvm-data/profiles/` are unchanged — `safeModelName()` strips the routing prefix before slugifying, so `openrouter/anthropic/claude-opus-4.6` and the old `anthropic/claude-opus-4.6` both produce the same `anthropic--claude-opus-4.6/` directory.
 
-The model ID isn't registered in opencode's models.dev database and no `providerOverride` is configured. Add a `providerOverride` to `headlessAgent` — this automatically registers the model in the opencode subprocess.
+### Bench / profile fails: adapter can't resolve model id
 
-### `providerOverride` works but `providers.routes` calls fail (or vice versa)
+Example: `skvm bench --adapter=opencode --model=ipads/gpt-4o` fails with opencode reporting an unknown provider. skvm only injects *credentials* into the adapter subprocess — the adapter needs to know about the provider prefix itself. Add `ipads` to `~/.opencode/opencode.jsonc` (for opencode), to your openclaw `models.json`, or to jiuwenclaw's `.env.template` before running. skvm's `providers.routes` does not rewrite those files.
 
-These are two independent systems. Check that **both** are configured for your custom endpoint. The banner at startup shows the resolved route for each model:
+### jit-optimize works for `ipads/*` but bench doesn't (with the same model id)
 
-```
-Optimizer  custom/gpt-4o via openai-compatible (http://localhost:8000/v1)
-Target     custom/gpt-4o via openai-compatible (http://localhost:8000/v1) / bare-agent (built-in)
-```
+Expected asymmetry — see "Where providers.routes applies" above. The headless agent (jit-optimize's optimizer) is skvm-managed; the adapter (bench's target) is user-managed.
 
-If the route shows `via openrouter` when you expected your custom endpoint, your `providers.routes` glob doesn't match the model ID.
+### `max_tokens is too large` from the headless agent
+
+skvm's built-in `contextLimit` / `outputLimit` defaults (128K / 16K) are too generous for your endpoint. Edit `src/core/ui-defaults.ts` `HEADLESS_AGENT_DEFAULTS` or lower the limits on your endpoint's side.
+
+### Legacy `headlessAgent.providerOverride` / `modelPrefix` still in your config
+
+These fields used to configure the headless agent separately. They're gone — skvm ignores them but `skvm config show` / `doctor` will print a yellow warning. Re-run `skvm config init` to clean the file up.

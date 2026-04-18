@@ -5,10 +5,11 @@ import net from "node:net"
 import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, SkillMode } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
-import { getAdapterRepoDir } from "../core/config.ts"
+import { getAdapterRepoDir, stripRoutingPrefix } from "../core/config.ts"
 import { acquireFileLock, releaseFileLock } from "../core/file-lock.ts"
 import { runCommandWithEnv } from "./hermes.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
+import { resolveRoute, resolveRouteApiKey } from "../providers/registry.ts"
 
 const log = createLogger("jiuwenclaw")
 
@@ -711,14 +712,19 @@ export class JiuwenClawAdapter implements AgentAdapter {
  * Build a deterministic minimal .env for the sidecar. SkVM benchmarks must be
  * reproducible across users, so we **clobber** the user's `.env` rather than
  * merging — the same skill × model run on a different machine has to see the
- * same toolset. Concretely:
+ * same toolset.
  *
- * - The four routing keys point at the SkVM-controlled OpenRouter endpoint
- *   and the run's target model.
- * - `BROWSER_RUNTIME_MCP_ENABLED=0` defensively disables jiuwenclaw's browser
- *   runtime / Playwright MCP integration. The stock jiuwenclaw `.env.template`
- *   ships with this flag set to `1`, which would otherwise change the agent's
- *   available toolset (and try to spawn a Playwright runtime on port 8940).
+ * `API_BASE` / `API_KEY` come from the route that matches the model id (or
+ * the OpenRouter default when nothing matches). Anthropic-kind routes can't
+ * be driven from this env shape — jiuwenclaw expects an OpenAI-format
+ * `/chat/completions` endpoint at `API_BASE`, while Anthropic speaks
+ * `/messages`. The route's `baseUrl` is still used if set; downstream calls
+ * will surface the protocol mismatch loudly.
+ *
+ * `BROWSER_RUNTIME_MCP_ENABLED=0` defensively disables jiuwenclaw's browser
+ * runtime / Playwright MCP integration — the stock `.env.template` ships with
+ * this on, which would otherwise change the agent's available toolset (and
+ * try to spawn a Playwright runtime on port 8940).
  *
  * Other optional credentials (`SERPER_API_KEY`, `JINA_API_KEY`, `VISION_*`,
  * `AUDIO_*`, …) are intentionally **not preserved**. If a future skill needs
@@ -729,11 +735,28 @@ export class JiuwenClawAdapter implements AgentAdapter {
  * not lost — only suppressed for the duration of the run.
  */
 function renderJiuwenEnv(model: string, apiKey: string | undefined): string {
-  const key = apiKey ?? process.env.OPENROUTER_API_KEY ?? ""
+  const route = resolveRoute(model)
+  // jiuwenclaw's sidecar .env shape is OpenAI-only — it calls
+  // `<API_BASE>/chat/completions` with `Authorization: Bearer`. Anthropic's
+  // native API speaks /messages with `x-api-key`, so even with a valid
+  // anthropic/* route there's no way to make jiuwenclaw drive it. Reject
+  // up front so the user gets a clear config error instead of a mystery
+  // HTTP failure from the sidecar.
+  if (route.kind === "anthropic") {
+    throw new Error(
+      `jiuwenclaw adapter can't use the "${route.match}" route (kind=anthropic): ` +
+      `jiuwenclaw's .env is OpenAI-format and Anthropic's API is incompatible. ` +
+      `For "${model}", route it through an openrouter/* or openai-compatible ` +
+      `route, or run this model on a different adapter.`,
+    )
+  }
+  const resolvedKey = apiKey ?? resolveRouteApiKey(route) ?? ""
+  const baseUrl = route.baseUrl ?? "https://openrouter.ai/api/v1"
+  const modelName = stripRoutingPrefix(model)
   return [
-    `API_BASE="https://openrouter.ai/api/v1"`,
-    `API_KEY="${key}"`,
-    `MODEL_NAME="${model}"`,
+    `API_BASE="${baseUrl}"`,
+    `API_KEY="${resolvedKey}"`,
+    `MODEL_NAME="${modelName}"`,
     `MODEL_PROVIDER=OpenAI`,
     `BROWSER_RUNTIME_MCP_ENABLED=0`,
     ``,

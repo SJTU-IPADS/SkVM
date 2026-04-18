@@ -31,10 +31,11 @@ export const BENCH_CONFIG_DEFAULTS = {
   models: [] as readonly string[],
 } as const
 
-/** `skvm.config.json` headlessAgent section. */
+/** `skvm.config.json` headlessAgent section, plus conservative token limits
+ *  used when the headless driver registers a custom OpenAI-compatible
+ *  provider via OPENCODE_CONFIG_CONTENT (derived from providers.routes). */
 export const HEADLESS_AGENT_DEFAULTS = {
   driver: "opencode",
-  modelPrefix: "openrouter/",
   /** Conservative context window default for custom OpenAI-compatible endpoints. */
   contextLimit: 128_000,
   /** Conservative output token default for custom OpenAI-compatible endpoints. */
@@ -76,11 +77,15 @@ export const CLI_DEFAULTS = {
 } as const
 
 /**
- * Default model ids. Project convention: always use dot form
- * (`claude-sonnet-4.6`) — never dash form (`claude-sonnet-4-6`) —
- * across CLI defaults, provider fallbacks, pricing keys, and comments.
+ * Default model ids. Every CLI-level model id carries a `<provider>/` prefix
+ * per the prefix-required convention, so these defaults route to OpenRouter
+ * (the easiest zero-setup path). Users with an Anthropic-native route set up
+ * can override these on the CLI to `anthropic/claude-sonnet-4.6`.
+ * Project convention: always use dot form (`claude-sonnet-4.6`) — never dash
+ * form (`claude-sonnet-4-6`) — across CLI defaults, provider fallbacks,
+ * pricing keys, and comments.
  */
 export const MODEL_DEFAULTS = {
-  judge: "anthropic/claude-sonnet-4.6",
-  compiler: "anthropic/claude-sonnet-4.6",
+  judge: "openrouter/anthropic/claude-sonnet-4.6",
+  compiler: "openrouter/anthropic/claude-sonnet-4.6",
 } as const

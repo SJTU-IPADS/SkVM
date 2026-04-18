@@ -4,6 +4,7 @@ import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, Skill
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir } from "../core/config.ts"
+import { envForRoute } from "../providers/registry.ts"
 import { runCommand } from "./opencode.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 
@@ -277,8 +278,12 @@ export class HermesAdapter implements AgentAdapter {
       cmd.push("-s", skillName)
     }
 
-    // Build env with PYTHONPATH for source installs
-    const env: Record<string, string | undefined> = { ...process.env }
+    // Build env with PYTHONPATH for source installs. Also inject standard SDK
+    // env vars from the matched providers.routes entry so hermes can reach
+    // the configured backend without the user also exporting them manually.
+    // (hermes must still be configured on its own side to know about any
+    // non-default provider prefixes — skvm just passes the creds.)
+    const env: Record<string, string | undefined> = { ...process.env, ...envForRoute(this.model) }
     if (this.repoDir) {
       env.PYTHONPATH = this.repoDir + (env.PYTHONPATH ? `:${env.PYTHONPATH}` : "")
     }

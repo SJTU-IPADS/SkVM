@@ -13,6 +13,11 @@
  * process, run a prompt inside a directory, produce structured output) can
  * be added as a new driver without touching callers.
  *
+ * The headless agent is a skvm implementation detail — callers just supply a
+ * SkVM-namespace model id (e.g. `ipads/gpt-4o`) and the driver derives
+ * everything else from `providers.routes`. Users never configure the driver's
+ * provider side directly; that's what separates this from the adapter path.
+ *
  * Callers (jit-optimize, jit-boost) should import only from this module, not
  * directly from adapter-specific files, so the abstraction stays intact.
  */
@@ -23,54 +28,68 @@ import {
   eventsToRunResult,
   resolveHeadlessOpenCodeCmd,
 } from "../adapters/opencode.ts"
-import { stripRoutingPrefix } from "../providers/registry.ts"
-import type { TokenUsage, ProviderOverride } from "./types.ts"
-import { getHeadlessAgentConfig } from "./config.ts"
+import { resolveRoute, resolveRouteApiKey } from "../providers/registry.ts"
+import type { ProviderRoute } from "./types.ts"
+import type { TokenUsage } from "./types.ts"
+import { assertNoLegacyHeadlessFields, stripRoutingPrefix } from "./config.ts"
 import { HEADLESS_AGENT_DEFAULTS } from "./ui-defaults.ts"
 import { createLogger } from "./logger.ts"
 
 const log = createLogger("headless-agent")
 
 /**
- * Build an OPENCODE_CONFIG_CONTENT JSON string that registers a custom
- * OpenAI-compatible provider so the opencode subprocess can reach an
- * endpoint that isn't in models.dev. Not exported — tightly coupled to
- * opencode's config schema and only used by `runOpenCodeDriver`.
+ * Build an OPENCODE_CONFIG_CONTENT JSON string that registers a route's
+ * OpenAI-compatible endpoint as a provider inside the opencode subprocess.
+ * Only needed for `kind: "openai-compatible"` routes — opencode ships with
+ * openrouter and anthropic built in.
+ *
+ * `bareModelId` is the model's name within the registered provider — i.e.
+ * the route's match prefix already stripped (e.g. for skvm id `ipads/gpt-4o`
+ * matched by `ipads/*`, this is `gpt-4o`).
  */
-function buildOpenCodeConfigContent(
-  override: ProviderOverride,
-  modelId: string,
-): string {
-  const apiKey =
-    override.apiKey
-    ?? (override.apiKeyEnv ? process.env[override.apiKeyEnv] : undefined)
-    // Empty string is intentional: allows auth-free local endpoints (vLLM
-    // without --api-key). opencode will still send the Authorization header
-    // but the server can ignore it.
-    ?? ""
+function buildOpenCodeConfigContent(route: ProviderRoute, bareModelId: string): string {
+  if (route.kind !== "openai-compatible") {
+    throw new Error(`buildOpenCodeConfigContent: unexpected route kind ${route.kind}`)
+  }
+  if (!route.baseUrl) {
+    throw new Error(`buildOpenCodeConfigContent: route ${route.match} is missing baseUrl`)
+  }
 
+  // Empty string is intentional: allows auth-free local endpoints (vLLM
+  // without --api-key). opencode will still send the Authorization header
+  // but the server can ignore it.
+  const apiKey = resolveRouteApiKey(route) ?? ""
   if (!apiKey) {
     log.warn(
-      `providerOverride: no API key found (apiKeyEnv=${override.apiKeyEnv ?? "(unset)"}). ` +
-      `The opencode subprocess may fail to authenticate.`,
+      `route "${route.match}" has no resolved API key — the opencode subprocess may fail to authenticate.`,
     )
+  }
+
+  // The provider name in opencode's namespace is the first `/`-segment of
+  // the route's match glob (e.g. `ipads/*` → `ipads`, `openai/gpt-4o-mini`
+  // → `openai`). Taking just the first segment handles narrow matches like
+  // single-model globs where the full pattern would yield an invalid
+  // opencode provider id.
+  const providerName = route.match.split("/")[0]
+  if (!providerName) {
+    throw new Error(`buildOpenCodeConfigContent: route match "${route.match}" has no leading prefix`)
   }
 
   const injected: Record<string, unknown> = {
     provider: {
-      [override.name]: {
+      [providerName]: {
         // Explicit npm package so opencode knows which SDK adapter to use
         // for a provider ID that doesn't exist in models.dev.
         npm: "@ai-sdk/openai-compatible",
         options: {
           apiKey,
-          baseURL: override.baseUrl,
+          baseURL: route.baseUrl,
         },
         models: {
-          [modelId]: {
+          [bareModelId]: {
             limit: {
-              context: override.contextLimit ?? HEADLESS_AGENT_DEFAULTS.contextLimit,
-              output: override.outputLimit ?? HEADLESS_AGENT_DEFAULTS.outputLimit,
+              context: HEADLESS_AGENT_DEFAULTS.contextLimit,
+              output: HEADLESS_AGENT_DEFAULTS.outputLimit,
             },
           },
         },
@@ -134,13 +153,10 @@ export interface HeadlessAgentRunOptions {
   /** The prompt given to the agent. */
   prompt: string
   /**
-   * LLM model id to pass to the driver. This is a string in the *driver's*
-   * namespace, not the SkVM `LLMProvider` namespace. For opencode, if the id
-   * does not already start with the `headlessAgent.modelPrefix` configured
-   * in `skvm.config.json` (default `"openrouter/"`), the prefix is prepended
-   * before spawn. Users who want to route to opencode's Anthropic / local
-   * providers should set `modelPrefix` accordingly (or to `""` for fully
-   * qualified ids).
+   * SkVM-namespace model id (e.g. `anthropic/claude-sonnet-4.6`,
+   * `ipads/gpt-4o`, `qwen/qwen3-30b`). The driver derives the
+   * opencode-namespace model id + any provider registration from the
+   * matching `providers.routes` entry.
    */
   model: string
   /** Optional kill timeout. */
@@ -187,29 +203,17 @@ const DEFAULT_DRIVER: HeadlessAgentDriver = "opencode"
 export async function runHeadlessAgent(
   opts: HeadlessAgentRunOptions,
 ): Promise<HeadlessAgentRunResult> {
+  // Fail loudly if the user upgraded from the old schema without migrating.
+  // Otherwise the deprecated headlessAgent fields get silently ignored and
+  // the caller sees a confusing "No providers.routes entry matches …" error
+  // for a route they thought they'd already configured.
+  assertNoLegacyHeadlessFields()
+
   const driver = opts.driver ?? DEFAULT_DRIVER
   if (driver === "opencode") {
     return runOpenCodeDriver(opts)
   }
   throw new Error(`Unknown headless agent driver: ${driver}`)
-}
-
-/**
- * Apply `headlessAgent.modelPrefix` from config to a model id for driver spawn.
- */
-export function applyHeadlessModelPrefix(model: string): string {
-  return prefixModel(model, getHeadlessAgentConfig().modelPrefix)
-}
-
-/**
- * Pure prefix-joining helper, exposed for tests. Idempotent — if `model`
- * already starts with `prefix`, returns it unchanged. Empty prefix means
- * pass-through (fully qualified driver-namespace ids).
- */
-export function prefixModel(model: string, prefix: string): string {
-  if (!prefix) return model
-  if (model.startsWith(prefix)) return model
-  return `${prefix}${model}`
 }
 
 // ---------------------------------------------------------------------------
@@ -221,32 +225,40 @@ async function runOpenCodeDriver(
 ): Promise<HeadlessAgentRunResult> {
   const cwd = path.resolve(opts.cwd)
   const resolved = await resolveHeadlessOpenCodeCmd()
-  const config = getHeadlessAgentConfig()
-  const model = prefixModel(opts.model, config.modelPrefix)
+
+  // opts.model already carries a `<provider>/` prefix; opencode uses the same
+  // `<provider>/<model>` shape, so the id passes through unchanged.
+  const route = resolveRoute(opts.model)
+  const apiKey = resolveRouteApiKey(route)
 
   const cmd = [
     ...resolved.cmd,
     "run",
     `IMPORTANT: Do not ask clarifying questions. Proceed directly.\n\n${opts.prompt}`,
     "--dir", cwd,
-    "--model", model,
+    "--model", opts.model,
     "--agent", "build",
     "--pure",
     "--format", "json",
   ]
 
-  log.debug(`spawn: ${cmd.slice(0, 3).join(" ")} ... (cwd=${cwd})`)
+  log.debug(`spawn: ${cmd.slice(0, 3).join(" ")} ... (cwd=${cwd}, route=${route.match}, model=${opts.model})`)
 
-  // Build env overlay: start with opencode resolution env (XDG isolation for
-  // bundled builds), then layer on OPENCODE_CONFIG_CONTENT when a
-  // providerOverride is configured.
+  // Env overlay: start with opencode's own resolution env (XDG isolation for
+  // bundled builds), then layer on standard SDK env vars derived from the
+  // matched route so opencode's built-in providers pick up the right creds.
   const envOverlay: Record<string, string> = { ...resolved.env }
+  if (apiKey) {
+    if (route.kind === "openrouter") envOverlay.OPENROUTER_API_KEY = apiKey
+    else if (route.kind === "anthropic") envOverlay.ANTHROPIC_API_KEY = apiKey
+  }
 
-  if (config.providerOverride) {
-    const modelIdInProvider = stripRoutingPrefix(model)
-    const content = buildOpenCodeConfigContent(config.providerOverride, modelIdInProvider)
-    envOverlay.OPENCODE_CONFIG_CONTENT = content
-    log.info(`injecting OPENCODE_CONFIG_CONTENT for provider "${config.providerOverride.name}" (model=${modelIdInProvider})`)
+  // For openai-compatible routes, register the endpoint as an opencode
+  // provider via OPENCODE_CONFIG_CONTENT so opencode knows how to reach it
+  // without the user also configuring their global opencode.
+  if (route.kind === "openai-compatible") {
+    envOverlay.OPENCODE_CONFIG_CONTENT = buildOpenCodeConfigContent(route, stripRoutingPrefix(opts.model))
+    log.info(`injecting OPENCODE_CONFIG_CONTENT for route "${route.match}" (model=${opts.model})`)
   }
 
   const env = Object.keys(envOverlay).length > 0

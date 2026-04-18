@@ -4,6 +4,7 @@ import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, Token
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getHeadlessAgentConfig, expandHome } from "../core/config.ts"
+import { envForRoute } from "../providers/registry.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 
 const log = createLogger("opencode")
@@ -326,20 +327,6 @@ export async function resolveHeadlessOpenCodeCmd(): Promise<OpenCodeResolution> 
   return _headlessCache
 }
 
-/**
- * Translate model ID to opencode format.
- *
- * Bench config model IDs are all in OpenRouter format (e.g., `anthropic/claude-haiku-4.5`,
- * `qwen/qwen3.5-9b`). OpenCode routes these through its openrouter provider as
- * `openrouter/anthropic/claude-haiku-4.5`.
- *
- * If the model already starts with `openrouter/`, pass through as-is.
- */
-export function toOpenCodeModel(model: string): string {
-  if (model.startsWith("openrouter/")) return model
-  return `openrouter/${model}`
-}
-
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = "opencode"
   private model = ""
@@ -348,13 +335,19 @@ export class OpenCodeAdapter implements AgentAdapter {
   private envOverlay: Record<string, string> = {}
 
   async setup(config: AdapterConfig): Promise<void> {
-    this.model = toOpenCodeModel(config.model)
+    // Model id is passed to opencode verbatim. The user is responsible for
+    // configuring opencode (globally, via ~/.opencode/opencode.jsonc) to
+    // know about any non-default provider prefix they use. skvm injects
+    // standard SDK env vars so the common case (openrouter/anthropic/openai)
+    // works without extra setup — but custom prefixes like `ipads/` need
+    // opencode-side config.
+    this.model = config.model
     this.timeoutMs = config.timeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs
     const resolved = await resolveAdapterOpenCodeCmd()
     this.cmdPrefix = resolved.cmd
-    this.envOverlay = resolved.env
+    this.envOverlay = { ...resolved.env, ...envForRoute(config.model) }
     log.info(`opencode command: ${this.cmdPrefix.join(" ")}`)
-    log.info(`opencode model: ${this.model} (from ${config.model})`)
+    log.info(`opencode model: ${this.model}`)
   }
 
   async run(task: {

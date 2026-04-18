@@ -315,23 +315,16 @@ class OpenClawPool {
     this.cmdPrefix = await resolveOpenClawCmd()
     log.info(`openclaw command: ${this.cmdPrefix.join(" ")}`)
 
-    // Read and cache main agent's models.json as template
+    // Read and cache main agent's models.json as template. Whatever provider
+    // blocks are defined there are what each skvm-spawned agent will see —
+    // skvm no longer patches openrouter in automatically. If you want to
+    // bench a new provider prefix (e.g. `ipads/*`), add it to your openclaw
+    // models.json first. See docs/providers.md.
     const mainModelsPath = path.join(OPENCLAW_DIR, "agents", "main", "agent", "models.json")
     try {
       this.modelsTemplate = JSON.parse(await Bun.file(mainModelsPath).text())
     } catch {
       this.modelsTemplate = { providers: {} }
-    }
-
-    // Ensure openrouter provider exists in template
-    const providers = (this.modelsTemplate.providers ?? {}) as Record<string, Record<string, unknown>>
-    if (!providers.openrouter) {
-      providers.openrouter = {
-        baseUrl: "https://openrouter.ai/api/v1",
-        api: "openai-completions",
-        models: [],
-        apiKey: "OPENROUTER_API_KEY",
-      }
     }
 
     // Provision initial agents and register in openclaw.json (under config lock)
@@ -465,11 +458,14 @@ class OpenClawPool {
     // Write models.json only if it doesn't exist yet
     const modelsJsonPath = path.join(agentDir, "models.json")
     if (!await Bun.file(modelsJsonPath).exists()) {
-      const agentModelsJson = this.buildModelsJson(this.modelsTemplate, model)
+      const agentModelsJson = this.buildModelsJson(this.modelsTemplate)
       await Bun.write(modelsJsonPath, JSON.stringify(agentModelsJson, null, 2))
     }
 
-    // Register in openclaw.json if not already present
+    // Register in openclaw.json if not already present. Model id is passed
+    // verbatim; if openclaw can't resolve its `<provider>/<model>` prefix
+    // against the providers in models.json, that's a user-side openclaw
+    // config gap, not something skvm should paper over.
     let registered = false
     if (!agentsList.find((a) => a.id === agentId)) {
       agentsList.push({
@@ -477,7 +473,7 @@ class OpenClawPool {
         name: agentId,
         workspace: workspaceDir,
         agentDir,
-        model: `openrouter/${model}`,
+        model,
       })
       registered = true
     }
@@ -576,35 +572,37 @@ class OpenClawPool {
   // Model management (per-agent, only when holding run.lock)
   // -------------------------------------------------------------------------
 
-  /** Ensure agent is configured for the requested model. Only writes if needed. */
+  /**
+   * Ensure agent is configured for the requested model. Only touches
+   * openclaw.json's per-agent `model` entry (so bench sweeps can swap the
+   * agent to a new model between runs). Per-agent `models.json` is a clone
+   * of the user's main template — skvm doesn't register models or
+   * providers there; the user is expected to have the needed entries
+   * configured in openclaw's main models.json (see docs/providers.md).
+   */
   private async ensureAgentModel(agent: PoolAgent, model: string): Promise<void> {
-    // 1. Check if model already in agent's models.json
+    // Keep per-agent models.json in sync with the user's main template. The
+    // `~/.openclaw/agents/skvm-*` dirs persist across runs, so if we only
+    // wrote on first creation a user who adds a new provider to their main
+    // template would never see it take effect in existing agents.
     const modelsJsonPath = path.join(agent.agentDir, "models.json")
-    let needsModelsWrite = false
+    const expectedContent = JSON.stringify(this.modelsTemplate, null, 2)
+    let currentContent: string | null = null
     try {
-      const current = JSON.parse(await Bun.file(modelsJsonPath).text())
-      const orModels = ((current.providers?.openrouter?.models) ?? []) as { id: string }[]
-      if (!orModels.some(m => m.id === model)) {
-        needsModelsWrite = true
-      }
-    } catch {
-      needsModelsWrite = true
+      currentContent = await Bun.file(modelsJsonPath).text()
+    } catch { /* missing — will be written below */ }
+    if (currentContent !== expectedContent) {
+      await Bun.write(modelsJsonPath, expectedContent)
     }
 
-    if (needsModelsWrite) {
-      const updated = this.buildModelsJson(this.modelsTemplate, model)
-      await Bun.write(modelsJsonPath, JSON.stringify(updated, null, 2))
-    }
-
-    // 2. Ensure openclaw.json model field is correct
     const openclawConfigPath = path.join(OPENCLAW_DIR, "openclaw.json")
     await withConfigLock(async () => {
       try {
         const config = JSON.parse(await Bun.file(openclawConfigPath).text())
         const agentsList = (config.agents?.list ?? []) as Record<string, unknown>[]
         const entry = agentsList.find((a) => a.id === agent.agentId)
-        if (entry && entry.model !== `openrouter/${model}`) {
-          entry.model = `openrouter/${model}`
+        if (entry && entry.model !== model) {
+          entry.model = model
           await Bun.write(openclawConfigPath, JSON.stringify(config, null, 2))
         }
       } catch (err) {
@@ -615,34 +613,14 @@ class OpenClawPool {
     log.debug(`${agent.agentId} configured for model ${model}`)
   }
 
-  private buildModelsJson(template: Record<string, unknown>, model: string): Record<string, unknown> {
-    const result = JSON.parse(JSON.stringify(template)) // deep clone
-    const providers = (result.providers ?? {}) as Record<string, Record<string, unknown>>
-
-    if (!providers.openrouter) {
-      providers.openrouter = {
-        baseUrl: "https://openrouter.ai/api/v1",
-        api: "openai-completions",
-        models: [],
-        apiKey: "OPENROUTER_API_KEY",
-      }
-    }
-
-    const orModels = (providers.openrouter.models ?? []) as { id: string }[]
-    if (!orModels.some(m => m.id === model)) {
-      orModels.push({
-        id: model,
-        name: model,
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200000,
-        maxTokens: 8192,
-      } as any)
-    }
-    providers.openrouter.models = orModels
-    result.providers = providers
-    return result
+  /**
+   * Deep-clone the user's models.json template for per-agent writing.
+   * skvm intentionally does NOT inject provider blocks or register models —
+   * whatever the user has in their openclaw main config is what each spawned
+   * agent sees. See docs/providers.md for the matching expectations.
+   */
+  private buildModelsJson(template: Record<string, unknown>): Record<string, unknown> {
+    return JSON.parse(JSON.stringify(template))
   }
 }
 

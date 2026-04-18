@@ -1,4 +1,5 @@
 import path from "node:path"
+import { existsSync } from "node:fs"
 import {
   ProvidersConfigSchema,
   HeadlessAgentConfigSchema,
@@ -108,20 +109,41 @@ export const SKVM_SKILLS_DIR = path.join(SKVM_DATA_DIR, "skills")
 export const SKVM_TASKS_DIR = path.join(SKVM_DATA_DIR, "tasks")
 
 // ---------------------------------------------------------------------------
-// Model name sanitization
+// Model id helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Sanitize a model ID for use in filesystem paths.
- * Replaces `/` with `--` and `:` with `_`.
- * e.g. "anthropic/claude-sonnet-4.6" → "anthropic--claude-sonnet-4.6"
- * e.g. "meta/llama-3.1:free" → "meta--llama-3.1_free"
+ * Drop the first `/`-separated segment of a SkVM model id. SkVM's CLI-facing
+ * namespace is `<provider>/<backend-model-id>` (e.g. `openai/gpt-4o`,
+ * `openrouter/anthropic/claude-sonnet-4.6`, `self/qwen3-7b`); the backend
+ * provider SDKs expect just the trailing part:
  *
- * Reject `.` / `..` / empty input. Model ids flow into many path
- * constructions (variantDir, proposals tree, per-model log dirs); a
- * dot-segment id would escape those roots via `path.join`. Not
- * reachable through standard OpenRouter ids today, but the guard is a
- * single regex check and prevents a category of bugs at the source.
+ *   openai/gpt-4o             → gpt-4o                      (OpenAI SDK)
+ *   openrouter/anthropic/...  → anthropic/claude-sonnet-4.6 (OpenRouter native)
+ *   anthropic/claude-sonnet-4 → claude-sonnet-4             (Anthropic SDK)
+ *
+ * No-op when there's no slash (pre-stripped or malformed id).
+ */
+export function stripRoutingPrefix(modelId: string): string {
+  const slash = modelId.indexOf("/")
+  return slash >= 0 ? modelId.slice(slash + 1) : modelId
+}
+
+/**
+ * Sanitize a model ID for use in filesystem paths. One CLI id = one slug
+ * (no provider-prefix stripping): `openai/gpt-4o` and `ipads/gpt-4o` deliberately
+ * produce different slugs because their routing paths aren't equivalent —
+ * different baseUrls, credentials, proxy behavior, rate limits — and the
+ * artifacts we're keying off these slugs (profiles, AOT/JIT proposals, logs)
+ * capture those observable differences. Users wanting explicit equivalence
+ * can symlink dirs after the fact.
+ *
+ * Replaces `/` with `--` and `:` with `_`. Rejects `.` / `..` / empty —
+ * model ids flow into many path constructions (variantDir, proposals tree,
+ * per-model log dirs); a dot-segment id would escape those roots via
+ * `path.join`. Not reachable through standard provider ids today, but the
+ * guard is a single regex check and prevents a category of bugs at the
+ * source.
  */
 export function safeModelName(model: string): string {
   const replaced = model.replace(/\//g, "--").replace(/:/g, "_")
@@ -218,17 +240,78 @@ interface SkVMConfig {
 
 let _configCache: SkVMConfig | undefined
 
+/** Always the cache-dir location — where `skvm config init` writes. */
+export const CONFIG_WRITE_PATH = path.join(SKVM_CACHE, "skvm.config.json")
+
+let _configPath: string | undefined
+
+/**
+ * Resolved on-disk path for `skvm.config.json`. Lazy + memoized so that
+ * commands which never read the config (e.g. `--version`) skip the existsSync
+ * syscalls.
+ *
+ * Resolution order:
+ *   1. $SKVM_CACHE/skvm.config.json           ← preferred (~/.skvm/skvm.config.json)
+ *   2. <PROJECT_ROOT>/skvm.config.json        ← legacy fallback for in-tree dev
+ *
+ * If neither exists, returns the cache-dir path so error messages and `show`
+ * point at where a future `init` will write.
+ */
+export function getConfigPath(): string {
+  if (_configPath) return _configPath
+  if (existsSync(CONFIG_WRITE_PATH)) return _configPath = CONFIG_WRITE_PATH
+  const legacy = path.join(PROJECT_ROOT, "skvm.config.json")
+  if (existsSync(legacy)) return _configPath = legacy
+  return _configPath = CONFIG_WRITE_PATH
+}
+
 export function getProjectConfig(): SkVMConfig {
   if (_configCache) return _configCache
-  const configPath = path.join(PROJECT_ROOT, "skvm.config.json")
   try {
     // Bun supports synchronous JSON import via require
-    const raw = require(configPath)
+    const raw = require(getConfigPath())
     _configCache = raw as SkVMConfig
   } catch {
     _configCache = {}
   }
   return _configCache!
+}
+
+/**
+ * Names of deprecated `headlessAgent` fields present in the on-disk config.
+ * The schema dropped these when headless-agent routing became driven by
+ * `providers.routes`, but old config files may still carry them — see
+ * `warnLegacyHeadlessFields` in cli-config (info-level surfacing) and
+ * `assertNoLegacyHeadlessFields` (hard-fail before jit-optimize /
+ * jit-boost misroute through the new fallback).
+ */
+export function detectLegacyHeadlessFields(): string[] {
+  const ha = getProjectConfig().headlessAgent as Record<string, unknown> | undefined
+  if (!ha) return []
+  const legacy: string[] = []
+  if (ha.providerOverride !== undefined) legacy.push("providerOverride")
+  if (ha.modelPrefix !== undefined) legacy.push("modelPrefix")
+  return legacy
+}
+
+/**
+ * Throw a migration-guidance error when the on-disk config still has the
+ * deprecated `headlessAgent` override fields. Called from the hot path of
+ * every headless-agent spawn so users who upgraded without running
+ * `skvm config init` see an actionable message instead of a downstream
+ * "No providers.routes entry matches …" that hides the real cause.
+ */
+export function assertNoLegacyHeadlessFields(): void {
+  const fields = detectLegacyHeadlessFields()
+  if (fields.length === 0) return
+  const fieldList = fields.map(f => `headlessAgent.${f}`).join(", ")
+  throw new Error(
+    `${fieldList} is no longer supported. The headless agent now derives ` +
+    `credentials and endpoints from providers.routes automatically. Re-run ` +
+    `\`skvm config init\` to migrate (the wizard will drop the legacy fields and, ` +
+    `if needed, help you add a matching route), or remove those fields by hand ` +
+    `and add a providers.routes entry for your optimizer model prefix.`,
+  )
 }
 
 let _providersConfigCache: ProvidersConfig | undefined

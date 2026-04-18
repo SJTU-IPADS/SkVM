@@ -425,9 +425,23 @@ export type ProviderKind = z.infer<typeof ProviderKindSchema>
 export const ProviderRouteSchema = z.object({
   match: z.string(),
   kind: ProviderKindSchema,
-  apiKeyEnv: z.string(),
+  /**
+   * Direct API key value. Stored in skvm.config.json (gitignored). Takes
+   * precedence over apiKeyEnv when both are set. The wizard writes this by
+   * default so users don't have to also export an env var.
+   */
+  apiKey: z.string().optional(),
+  /**
+   * Name of an env var holding the API key. Read at runtime from process.env
+   * (env-bootstrap.ts also auto-loads <repo>/.env). Use this when you'd
+   * rather not have the key live in a config file (e.g. direnv, vault).
+   */
+  apiKeyEnv: z.string().optional(),
   baseUrl: z.string().optional(),
-})
+}).refine(
+  r => r.apiKey !== undefined || r.apiKeyEnv !== undefined,
+  { message: "route requires either apiKey or apiKeyEnv" },
+)
 export type ProviderRoute = z.infer<typeof ProviderRouteSchema>
 
 export const ProvidersConfigSchema = z.object({
@@ -443,38 +457,22 @@ export const HeadlessAgentDriverSchema = z.enum(["opencode"])
 export type HeadlessAgentDriverName = z.infer<typeof HeadlessAgentDriverSchema>
 
 /**
- * Override for the opencode subprocess provider. Parallel to `ProviderRoute`
- * (which routes SkVM's in-process LLM calls) but targets the opencode
- * subprocess via OPENCODE_CONFIG_CONTENT injection.
+ * Headless agent = the opencode subprocess skvm spawns internally for
+ * jit-optimize / jit-boost. Unlike the adapter path (where the user owns
+ * provider config), this is a skvm implementation detail — the driver
+ * resolves credentials and endpoints by looking up `providers.routes` for
+ * whatever model id the caller passed. So this section is intentionally
+ * minimal: it only controls the driver choice and an optional explicit
+ * binary path. No `providerOverride` / `modelPrefix` — those are legacy.
  */
-export const ProviderOverrideSchema = z.object({
-  name: z.string(),
-  baseUrl: z.string(),
-  apiKeyEnv: z.string().optional(),
-  /** Takes precedence over apiKeyEnv. */
-  apiKey: z.string().optional(),
-  contextLimit: z.number().optional(),
-  outputLimit: z.number().optional(),
-})
-export type ProviderOverride = z.infer<typeof ProviderOverrideSchema>
-
 export const HeadlessAgentConfigSchema = z.object({
   driver: HeadlessAgentDriverSchema.default(HEADLESS_AGENT_DEFAULTS.driver),
-  modelPrefix: z.string().default(HEADLESS_AGENT_DEFAULTS.modelPrefix),
   /**
-   * Explicit opencode binary for the headless tuner (jit-optimize, jit-boost).
-   * Deliberately separate from `adapters.opencode` so the benchmark target and
-   * the internal tuner can diverge — adapters.opencode is "what we bench",
-   * this is "what drives tuning". Unset falls through to bundled → global.
+   * Explicit opencode binary for the headless tuner. Deliberately separate
+   * from `adapters.opencode` so the benchmark target and the internal tuner
+   * can diverge. Unset falls through to bundled → global.
    */
   opencodePath: z.string().optional(),
-  /**
-   * When set, skvm injects OPENCODE_CONFIG_CONTENT into the opencode subprocess
-   * to register a custom OpenAI-compatible provider. This avoids modifying the
-   * user's global opencode config. The provider `name` must match the first
-   * segment of `modelPrefix` (e.g. modelPrefix="custom/" → name="custom").
-   */
-  providerOverride: ProviderOverrideSchema.optional(),
 })
 export type HeadlessAgentConfig = z.infer<typeof HeadlessAgentConfigSchema>
 
