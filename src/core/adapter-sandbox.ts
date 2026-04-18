@@ -38,6 +38,7 @@ import { createLogger } from "./logger.ts"
 import { isPidAlive } from "./file-lock.ts"
 import type { ProviderRoute } from "./types.ts"
 import { resolveRouteApiKey } from "../providers/registry.ts"
+import { routingPrefix } from "./config.ts"
 import { HEADLESS_AGENT_DEFAULTS } from "./ui-defaults.ts"
 
 const log = createLogger("adapter-sandbox")
@@ -239,12 +240,9 @@ export function buildOpenCodeConfigContent(route: ProviderRoute, bareModelId: st
     )
   }
 
-  // The provider name in opencode's namespace is the first `/`-segment of the
-  // route's match glob (e.g. `ipads/*` → `ipads`, `openai/gpt-4o-mini` →
-  // `openai`). Taking just the first segment handles narrow matches like
-  // single-model globs where the full pattern would yield an invalid opencode
-  // provider id.
-  const providerName = route.match.split("/")[0]
+  // Opencode provider id = first `/`-segment of the route's match glob;
+  // narrow globs like `openai/gpt-4o-mini` collapse to their prefix `openai`.
+  const providerName = routingPrefix(route.match)
   if (!providerName) {
     throw new Error(`buildOpenCodeConfigContent: route match "${route.match}" has no leading prefix`)
   }

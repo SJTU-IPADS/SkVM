@@ -3,7 +3,7 @@ import { mkdir, rm, copyFile, readdir } from "node:fs/promises"
 import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, SkillMode, ProviderRoute } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
-import { getAdapterRepoDir, getAdapterSettings, getProvidersConfig, stripRoutingPrefix } from "../core/config.ts"
+import { getAdapterRepoDir, getAdapterSettings, getProvidersConfig, routingPrefix, stripRoutingPrefix } from "../core/config.ts"
 import { HEADLESS_AGENT_DEFAULTS, TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import {
   createSandbox,
@@ -246,23 +246,21 @@ function transcriptToRunResult(
 
 /**
  * Translate skvm `providers.routes` into openclaw `models.providers` entries
- * suitable for the top-level `openclaw.json`. Every provider block must carry
- * a non-empty `models[]` array — openclaw's resolver at
- * `src/agents/pi-embedded-runner/model.ts:251-399 buildInlineProviderModels`
- * iterates `entry.models ?? []` and fails with "Unknown model" when the array
- * is empty, regardless of whether the provider block itself exists.
+ * for the top-level `openclaw.json`. openclaw's resolver requires a non-empty
+ * `models[]` array on each provider block (see
+ * `src/agents/pi-embedded-runner/model.ts:251-399 buildInlineProviderModels`);
+ * attach a synthetic entry only on the active provider — the rest stay
+ * auth-only since openclaw won't route to them in this run.
  *
- * skvm knows the specific model id for this run (one model per adapter
- * instance), so we only attach a `models[]` entry to the matching provider.
- * Other routes still get a provider block (so cross-provider auth works if
- * a subagent needs it), just without a model entry — openclaw won't route
- * to them anyway.
+ * Pricing field is zero — skvm doesn't own cost metering for custom
+ * endpoints; accurate numbers come from the underlying SDK or the user's
+ * own models.json.
  */
 export interface OpenclawModelEntry {
   id: string
   name: string
   reasoning: boolean
-  input: string[]
+  input: readonly string[]
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
   contextWindow: number
   maxTokens: number
@@ -276,14 +274,16 @@ export interface OpenclawProviderEntry {
   models?: OpenclawModelEntry[]
 }
 
-const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+// Pricing placeholder — not to be confused with `emptyTokenUsage()` which
+// tracks observed counts at runtime.
+const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const
 
 function buildDefaultModelEntry(bareId: string): OpenclawModelEntry {
   return {
     id: bareId,
     name: bareId,
     reasoning: false,
-    input: ["text"],
+    input: ["text"] as const,
     cost: ZERO_COST,
     contextWindow: HEADLESS_AGENT_DEFAULTS.contextLimit,
     maxTokens: HEADLESS_AGENT_DEFAULTS.outputLimit,
@@ -294,11 +294,11 @@ export function renderOpenclawProviderEntries(
   routes: readonly ProviderRoute[],
   model: string,
 ): Record<string, OpenclawProviderEntry> {
-  const activePrefix = model.split("/")[0]
+  const activePrefix = routingPrefix(model)
   const bareModel = stripRoutingPrefix(model)
   const providers: Record<string, OpenclawProviderEntry> = {}
   for (const route of routes) {
-    const providerId = route.match.split("/")[0]
+    const providerId = routingPrefix(route.match)
     if (!providerId || providers[providerId]) continue
     const resolvedKey = resolveRouteApiKey(route) ?? route.apiKeyEnv ?? ""
     const baseUrl = route.baseUrl ?? defaultBaseUrl(route.kind)
@@ -475,10 +475,9 @@ class OpenclawSandboxPool {
       name: a.agentId,
       workspace: a.workspaceDir,
       agentDir: a.agentDir,
-      // Object form with explicit empty fallbacks prevents openclaw from
-      // cascading to the hardcoded DEFAULT_MODEL (anthropic/claude-opus-4-6)
-      // when primary resolution fails — the string form inherits
-      // agents.defaults.model.fallbacks and drowns the real error.
+      // Object form + empty fallbacks stops openclaw cascading to its
+      // hardcoded DEFAULT_MODEL (anthropic/claude-opus-4-6); the string form
+      // still inherits `agents.defaults.model.fallbacks`.
       model: { primary: this.initModel, fallbacks: [] },
     }))
     const doc: Record<string, unknown> = { agents: { list } }
@@ -573,7 +572,7 @@ export class OpenClawAdapter implements AgentAdapter {
       try {
         const raw = await Bun.file(modelsJsonPath).text()
         const doc = JSON.parse(raw) as { providers?: Record<string, unknown> }
-        const prefix = this.model.split("/")[0]
+        const prefix = routingPrefix(this.model)
         const provs = Object.keys(doc.providers ?? {})
         if (!prefix || !provs.includes(prefix)) {
           throw new Error(
@@ -710,11 +709,8 @@ export class OpenClawAdapter implements AgentAdapter {
       "--agent", agent.agentId,
       "--session-id", sessionId,
       "--message", task.prompt,
-      // --local skips the remote-gateway connection attempt. Managed mode
-      // never has a gateway token configured; the attempt always fails with
-      // "unauthorized: gateway token missing" and falls back to embedded,
-      // polluting stderr. Native users may run their own gateway, so we
-      // only force --local in managed mode.
+      // Managed mode has no gateway token; `--local` skips the failing
+      // remote-gateway probe. Native users may run their own gateway.
       ...(pool.sandboxMode === "managed" ? ["--local"] : []),
       ...this.extraCliArgs,
     ]

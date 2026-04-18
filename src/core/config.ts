@@ -130,6 +130,13 @@ export function stripRoutingPrefix(modelId: string): string {
   return slash >= 0 ? modelId.slice(slash + 1) : modelId
 }
 
+/** Inverse of `stripRoutingPrefix`: the leading `<provider>` segment, or the
+ *  whole id when there's no slash (typo / pre-stripped id). */
+export function routingPrefix(modelIdOrMatch: string): string {
+  const slash = modelIdOrMatch.indexOf("/")
+  return slash >= 0 ? modelIdOrMatch.slice(0, slash) : modelIdOrMatch
+}
+
 /**
  * Sanitize a model ID for use in filesystem paths. One CLI id = one slug
  * (no provider-prefix stripping): `openai/gpt-4o` and `ipads/gpt-4o` deliberately
