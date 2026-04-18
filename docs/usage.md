@@ -29,15 +29,16 @@ Top-level commands:
 
 ## Adapters & providers
 
-Five agent harness adapters, all registered in `src/adapters/registry.ts`:
+Six agent harness adapters, all registered in `src/adapters/registry.ts`:
 
 - `bare-agent` — minimal built-in agent loop. Primary adapter for profiling and testing.
 - `opencode` — wraps the [OpenCode](https://github.com/sst/opencode) CLI.
 - `openclaw` — wraps the OpenClaw CLI.
 - `hermes` — wraps the Hermes CLI. Populates full token/cost usage.
 - `jiuwenclaw` — wraps `jiuwenclaw-cli` over JSON-RPC. Token/cost are **not** persisted upstream, so bench/profile aggregators report `$0` for jiuwenclaw runs.
+- `pi` — wraps the [pi](https://shittycodingagent.ai/) CLI (`@mariozechner/pi-coding-agent`). Populates full token/cost usage via JSON mode.
 
-All commands (`profile`, `aot-compile`, `run`, `bench`, `jit-optimize`) accept any of these five via `--adapter=<name>`.
+All commands (`profile`, `aot-compile`, `run`, `bench`, `jit-optimize`) accept any of these six via `--adapter=<name>`.
 
 Two LLM provider backends under `src/providers/`:
 

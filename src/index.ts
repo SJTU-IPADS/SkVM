@@ -905,7 +905,7 @@ Usage:
 
 Required:
   --model=<id>              Model identifier (e.g. qwen/qwen3.5-122b-a10b)
-  --adapter=<name>          Adapter: bare-agent, opencode, openclaw
+  --adapter=<name>          Adapter: bare-agent, opencode, openclaw, pi
 
 Options:
   --dry-run                 Show what would be deleted, but do not delete
