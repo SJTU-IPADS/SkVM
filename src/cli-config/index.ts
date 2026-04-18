@@ -232,6 +232,33 @@ function maskKey(key: string): string {
   return `${key.slice(0, 4)}…${key.slice(-4)}`
 }
 
+/**
+ * Build a plausible example model id for the "smoke test" hint after `init`.
+ * Picks the first user route (or falls back to the built-in OpenRouter
+ * default) and fills the wildcard with a well-known model that matches the
+ * route's kind + baseUrl. Best-effort — the user knows their endpoint and
+ * can swap the model name when pasting the command.
+ */
+function smokeTestModelId(routes: readonly RouteDraft[]): string {
+  const route = routes[0]
+  if (!route) return "openrouter/anthropic/claude-sonnet-4.6"
+  if (!route.match.endsWith("/*") && !route.match.includes("*")) return route.match
+  const prefix = route.match.replace(/\/\*$/, "")
+  switch (route.kind) {
+    case "openrouter":
+      return `${prefix}/anthropic/claude-sonnet-4.6`
+    case "anthropic":
+      return `${prefix}/claude-sonnet-4.6`
+    case "openai-compatible": {
+      const bu = route.baseUrl ?? ""
+      if (bu.includes("openai.com")) return `${prefix}/gpt-4o`
+      if (bu.includes("deepseek.com")) return `${prefix}/deepseek-chat`
+      if (bu.includes("11434")) return `${prefix}/llama3.1`
+      return `${prefix}/<your-model>`
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // `init` — interactive wizard
 // ---------------------------------------------------------------------------
@@ -296,7 +323,9 @@ async function runInit(): Promise<void> {
     console.log(c.bold("\nNext steps"))
     console.log("  skvm config doctor       # verify env vars + paths")
     console.log("  skvm config show         # print resolved config")
-    console.log("  skvm profile --model=anthropic/claude-sonnet-4.6   # smoke test")
+    const smokeId = smokeTestModelId(draft.providers.routes)
+    console.log(`  skvm profile --model=${smokeId} --primitives=gen.text.prose --instances=1`)
+    console.log(c.dim("      # one-shot smoke test (swap the model if your endpoint serves different ids)"))
   } finally {
     rl.close()
   }
@@ -560,8 +589,9 @@ async function stepAdapters(rl: readline.Interface, draft: ConfigDraft): Promise
 
 async function stepPathsHint(rl: readline.Interface): Promise<void> {
   printHeader("Step 3 / 3 — Cache + data dirs")
-  console.log("These live outside skvm.config.json. Override by exporting env vars or")
-  console.log("passing flags. Current values:\n")
+  console.log(c.dim("Informational — these aren't part of skvm.config.json. The defaults below"))
+  console.log(c.dim("fit most users; override via env var or flag only if your layout needs it"))
+  console.log(c.dim("(CI, shared cluster, temp isolation, etc.).\n"))
   console.log(`  Cache root:  ${shortenPath(SKVM_CACHE)}      ${c.dim("$SKVM_CACHE / --skvm-cache")}`)
   console.log(`  Data dir:    ${shortenPath(SKVM_DATA_DIR)}   ${c.dim("$SKVM_DATA_DIR / --skvm-data-dir")}`)
   console.log(`  Profiles:    ${shortenPath(PROFILES_DIR)}    ${c.dim("$SKVM_PROFILES_DIR")}`)
