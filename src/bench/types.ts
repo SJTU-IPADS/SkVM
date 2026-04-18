@@ -278,9 +278,9 @@ export interface BenchRunConfig {
   jitRuns: number
   timeoutMult: number
   maxSteps: number
-  /** LLM judge model via OpenRouter (default: anthropic/claude-sonnet-4.6) */
+  /** LLM judge model (default: openrouter/anthropic/claude-sonnet-4.6) */
   judgeModel?: string
-  /** Model for AOT/JIT compiler via OpenRouter (default: anthropic/claude-sonnet-4.6) */
+  /** Model for AOT/JIT compiler (default: openrouter/anthropic/claude-sonnet-4.6) */
   compilerModel?: string
   tcpPath?: string
   resumeSession?: string

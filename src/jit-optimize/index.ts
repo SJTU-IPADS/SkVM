@@ -31,9 +31,9 @@ const log = createLogger("jit-optimize")
  * ```ts
  * const result = await jitOptimize({
  *   skillDir: "skvm-data/skills/powerpoint-pptx",
- *   optimizer: { model: "z-ai/glm-5.1" },
+ *   optimizer: { model: "<provider>/<model-id>" },
  *   taskSource: { kind: "real-task", tasks: ["powerpoint-pptx_task_02"] },
- *   targetAdapter: { model: "qwen/qwen3.5-35b-a3b", harness: "openclaw" },
+ *   targetAdapter: { model: "<provider>/<model-id>", harness: "openclaw" },
  *   loop: { rounds: 3 },
  *   delivery: { keepAllRounds: true, autoApply: false },
  * })

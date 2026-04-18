@@ -51,7 +51,7 @@ which python3   # → $JIUWENCLAW_DIR/.venv/bin/python3
 bun run skvm run \
   --task=skvm-data/tasks/file-operations_task_01/task.json \
   --adapter=jiuwenclaw \
-  --model=z-ai/glm-5.1 \
+  --model=openrouter/z-ai/glm-5.1 \
   --verbose
 ```
 

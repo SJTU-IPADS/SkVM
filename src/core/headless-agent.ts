@@ -14,8 +14,8 @@
  * be added as a new driver without touching callers.
  *
  * The headless agent is a skvm implementation detail — callers just supply a
- * SkVM-namespace model id (e.g. `ipads/gpt-4o`) and the driver derives
- * everything else from `providers.routes`. Users never configure the driver's
+ * SkVM-namespace model id (shaped as `<provider>/<model-id>`) and the driver
+ * derives everything else from `providers.routes`. Users never configure the driver's
  * provider side directly; that's what separates this from the adapter path.
  *
  * Callers (jit-optimize, jit-boost) should import only from this module, not
@@ -71,8 +71,8 @@ export interface HeadlessAgentRunOptions {
   /** The prompt given to the agent. */
   prompt: string
   /**
-   * SkVM-namespace model id (e.g. `anthropic/claude-sonnet-4.6`,
-   * `ipads/gpt-4o`, `qwen/qwen3-30b`). The driver derives the
+   * SkVM-namespace model id, shaped as `<provider>/<model-id>` (the
+   * `<provider>` prefix selects a route in `providers.routes`). The driver derives the
    * opencode-namespace model id + any provider registration from the
    * matching `providers.routes` entry.
    */

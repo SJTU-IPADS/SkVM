@@ -39,11 +39,11 @@ describe("proposals storage — target-model keying", () => {
         skillDir,
         harness: "bare-agent",
         optimizerModel: "anthropic/claude-opus-4.6",
-        targetModel: "qwen/qwen3-30b-a3b",
+        targetModel: "openrouter/qwen/qwen3-30b-a3b",
         source: "test",
       })
 
-      const expectedSegment = safeModelName("qwen/qwen3-30b-a3b")
+      const expectedSegment = safeModelName("openrouter/qwen/qwen3-30b-a3b")
       expect(result.id).toContain(`bare-agent/${expectedSegment}/calc/`)
       expect(result.dir).toContain(`bare-agent/${expectedSegment}/calc/`)
       // optimizer model must NOT appear in the path
@@ -51,7 +51,7 @@ describe("proposals storage — target-model keying", () => {
 
       // meta.json records both
       const meta = JSON.parse(await readFile(path.join(result.dir, "meta.json"), "utf-8"))
-      expect(meta.targetModel).toBe("qwen/qwen3-30b-a3b")
+      expect(meta.targetModel).toBe("openrouter/qwen/qwen3-30b-a3b")
       expect(meta.optimizerModel).toBe("anthropic/claude-opus-4.6")
     } finally {
       await rm(skillDir, { recursive: true, force: true })
@@ -65,8 +65,8 @@ describe("proposals storage — target-model keying", () => {
         skillName: "translator",
         skillDir,
         harness: "openclaw",
-        optimizerModel: "z-ai/glm-5.1",
-        targetModel: "qwen/qwen3-30b-a3b",
+        optimizerModel: "openrouter/z-ai/glm-5.1",
+        targetModel: "openrouter/qwen/qwen3-30b-a3b",
         source: "test",
       })
       // Simulate a finished proposal: write meta.json with bestRound=1 and create round-1/
@@ -80,7 +80,7 @@ describe("proposals storage — target-model keying", () => {
 
       const found = await storage.getLatestBestRoundDir(
         "openclaw",
-        "qwen/qwen3-30b-a3b",
+        "openrouter/qwen/qwen3-30b-a3b",
         "translator",
       )
       expect(found).not.toBeNull()
@@ -101,16 +101,16 @@ describe("proposals storage — target-model keying", () => {
   test("locks isolate by target model, not optimizer", async () => {
     // Same harness + skill + optimizer, two different targets — must NOT
     // block each other (this was the bug under the old layout).
-    const got1 = await storage.acquireOptimizeLock("bare-agent", "qwen/qwen3-30b-a3b", "lockskill")
+    const got1 = await storage.acquireOptimizeLock("bare-agent", "openrouter/qwen/qwen3-30b-a3b", "lockskill")
     const got2 = await storage.acquireOptimizeLock("bare-agent", "anthropic/claude-opus-4.6", "lockskill")
     try {
       expect(got1).toBe(true)
       expect(got2).toBe(true)
       // Re-acquiring the same (harness, target, skill) is blocked.
-      const got1Again = await storage.acquireOptimizeLock("bare-agent", "qwen/qwen3-30b-a3b", "lockskill")
+      const got1Again = await storage.acquireOptimizeLock("bare-agent", "openrouter/qwen/qwen3-30b-a3b", "lockskill")
       expect(got1Again).toBe(false)
     } finally {
-      await storage.releaseOptimizeLock("bare-agent", "qwen/qwen3-30b-a3b", "lockskill")
+      await storage.releaseOptimizeLock("bare-agent", "openrouter/qwen/qwen3-30b-a3b", "lockskill")
       await storage.releaseOptimizeLock("bare-agent", "anthropic/claude-opus-4.6", "lockskill")
     }
   })
@@ -126,7 +126,7 @@ describe("proposals storage — target-model keying", () => {
         skillDir,
         harness: "hermes",
         optimizerModel: "anthropic/claude-sonnet-4-6",
-        targetModel: "deepseek/deepseek-v3.2",
+        targetModel: "openrouter/deepseek/deepseek-v3.2",
         source: "test",
       })
       // Make the older proposal a completed, non-blocked session with
@@ -149,7 +149,7 @@ describe("proposals storage — target-model keying", () => {
         skillDir,
         harness: "hermes",
         optimizerModel: "anthropic/claude-sonnet-4-6",
-        targetModel: "deepseek/deepseek-v3.2",
+        targetModel: "openrouter/deepseek/deepseek-v3.2",
         source: "test",
       })
       // Mark newer proposal as infra-blocked. round-0 exists from
@@ -164,7 +164,7 @@ describe("proposals storage — target-model keying", () => {
 
       const found = await storage.getLatestBestRoundDir(
         "hermes",
-        "deepseek/deepseek-v3.2",
+        "openrouter/deepseek/deepseek-v3.2",
         "abstain-skill",
       )
       expect(found).toBe(path.join(older.dir, "round-1"))
@@ -172,7 +172,7 @@ describe("proposals storage — target-model keying", () => {
       // describeLatestProposalState should report has-usable (older exists).
       const state = await storage.describeLatestProposalState(
         "hermes",
-        "deepseek/deepseek-v3.2",
+        "openrouter/deepseek/deepseek-v3.2",
         "abstain-skill",
       )
       expect(state).toBe("has-usable")
@@ -189,7 +189,7 @@ describe("proposals storage — target-model keying", () => {
         skillDir,
         harness: "hermes",
         optimizerModel: "anthropic/claude-sonnet-4-6",
-        targetModel: "deepseek/deepseek-v3.2",
+        targetModel: "openrouter/deepseek/deepseek-v3.2",
         source: "test",
       })
       const metaPath = path.join(p.dir, "meta.json")
@@ -200,14 +200,14 @@ describe("proposals storage — target-model keying", () => {
 
       const found = await storage.getLatestBestRoundDir(
         "hermes",
-        "deepseek/deepseek-v3.2",
+        "openrouter/deepseek/deepseek-v3.2",
         "blocked-only",
       )
       expect(found).toBeNull()
 
       const state = await storage.describeLatestProposalState(
         "hermes",
-        "deepseek/deepseek-v3.2",
+        "openrouter/deepseek/deepseek-v3.2",
         "blocked-only",
       )
       expect(state).toBe("only-blocked")
@@ -219,7 +219,7 @@ describe("proposals storage — target-model keying", () => {
   test("describeLatestProposalState reports 'none' when no proposals exist", async () => {
     const state = await storage.describeLatestProposalState(
       "hermes",
-      "deepseek/deepseek-v3.2",
+      "openrouter/deepseek/deepseek-v3.2",
       "never-existed",
     )
     expect(state).toBe("none")
@@ -233,7 +233,7 @@ describe("proposals storage — target-model keying", () => {
         skillDir,
         harness: "hermes",
         optimizerModel: "anthropic/claude-sonnet-4-6",
-        targetModel: "deepseek/deepseek-v3.2",
+        targetModel: "openrouter/deepseek/deepseek-v3.2",
         source: "test",
       })
       await storage.finalizeProposal(p.dir, {
@@ -263,7 +263,7 @@ describe("proposals storage — target-model keying", () => {
         skillDir,
         harness: "hermes",
         optimizerModel: "anthropic/claude-sonnet-4-6",
-        targetModel: "deepseek/deepseek-v3.2",
+        targetModel: "openrouter/deepseek/deepseek-v3.2",
         source: "test",
       })
       await storage.finalizeProposal(p.dir, {
@@ -303,7 +303,7 @@ describe("proposals storage — target-model keying", () => {
         skillDir,
         harness: "hermes",
         optimizerModel: "anthropic/claude-sonnet-4-6",
-        targetModel: "deepseek/deepseek-v3.2",
+        targetModel: "openrouter/deepseek/deepseek-v3.2",
         source: "test",
       })
       // Overwrite with a minimal legacy shape (no optional fields).
@@ -312,7 +312,7 @@ describe("proposals storage — target-model keying", () => {
         skillDir,
         harness: "hermes",
         optimizerModel: "anthropic/claude-sonnet-4-6",
-        targetModel: "deepseek/deepseek-v3.2",
+        targetModel: "openrouter/deepseek/deepseek-v3.2",
         source: "test",
         timestamp: "20260413T220209Z",
         status: "pending",
@@ -341,26 +341,26 @@ describe("proposals storage — target-model keying", () => {
         skillName: "listme",
         skillDir,
         harness: "bare-agent",
-        optimizerModel: "z-ai/glm-5.1",
-        targetModel: "qwen/qwen3-30b-a3b",
+        optimizerModel: "openrouter/z-ai/glm-5.1",
+        targetModel: "openrouter/qwen/qwen3-30b-a3b",
         source: "test",
       })
       await storage.createProposal({
         skillName: "listme",
         skillDir,
         harness: "bare-agent",
-        optimizerModel: "z-ai/glm-5.1",
+        optimizerModel: "openrouter/z-ai/glm-5.1",
         targetModel: "anthropic/claude-opus-4.6",
         source: "test",
       })
 
       const onlyQwen = await storage.listProposals({
         skillName: "listme",
-        targetModel: "qwen/qwen3-30b-a3b",
+        targetModel: "openrouter/qwen/qwen3-30b-a3b",
       })
       expect(onlyQwen.length).toBeGreaterThanOrEqual(1)
       for (const p of onlyQwen) {
-        expect(p.meta.targetModel).toBe("qwen/qwen3-30b-a3b")
+        expect(p.meta.targetModel).toBe("openrouter/qwen/qwen3-30b-a3b")
       }
     } finally {
       await rm(skillDir, { recursive: true, force: true })
@@ -381,8 +381,8 @@ describe("proposals storage — concurrent createProposal", () => {
             skillName: "concurrent",
             skillDir,
             harness: "bare-agent",
-            optimizerModel: "z-ai/glm-5.1",
-            targetModel: "qwen/qwen3-30b-a3b",
+            optimizerModel: "openrouter/z-ai/glm-5.1",
+            targetModel: "openrouter/qwen/qwen3-30b-a3b",
             source: "test",
           }),
         ),

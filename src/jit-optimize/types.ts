@@ -277,7 +277,7 @@ export interface OptimizeInput {
 }
 
 export interface OptimizeConfig {
-  /** Optimizer LLM model (e.g. "z-ai/glm-5.1") */
+  /** Optimizer LLM model, shaped as "<provider>/<model-id>" */
   model: string
   /** Timeout for the agent invocation (default: 600_000) */
   timeoutMs?: number

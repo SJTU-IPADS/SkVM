@@ -209,4 +209,4 @@ The bench `jit-optimized` condition reads `round-{bestRound}/` of the latest pro
 - Zod schemas for all JSON artifacts — `types.ts` defines types and schemas together.
 - All imports use the `.ts` extension (required by `verbatimModuleSyntax`).
 - Plans and deep design docs go under `docs/skvm/`.
-- Model IDs use OpenRouter format: `qwen/qwen3-30b-a3b-instruct-2507`, `anthropic/claude-sonnet-4.6`.
+- CLI model ids carry a `<provider>/` prefix that picks a route in `providers.routes`; skvm strips the first `/`-segment before the backend SDK sees the id. Examples: `openrouter/qwen/qwen3-30b-a3b-instruct-2507`, `openrouter/anthropic/claude-sonnet-4.6`, `anthropic/claude-sonnet-4.6`, `openai/gpt-4o`, `self/qwen3-7b`. Unprefixed ids error out — see [providers.md](providers.md).

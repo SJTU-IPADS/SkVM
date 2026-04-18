@@ -565,11 +565,11 @@ Examples:
   # Import tasks and skills from SkillsBench
   bun run skvm bench --import=skillsbench --path=~/Projects/skillsbench
 
-  # Run specific models
-  bun run skvm bench --model=anthropic/claude-haiku-4.5,deepseek/deepseek-v3.2
+  # Run specific models (comma-separated; each <id> is <provider>/<model-id>)
+  bun run skvm bench --model=<id1>,<id2>
 
   # Single model quick test
-  bun run skvm bench --model=anthropic/claude-haiku-4.5 \\
+  bun run skvm bench --model=<id> \\
     --tasks=task_00_sanity,task_09_files --conditions=no-skill,original
 
   # Run a custom bench plan (YAML-defined task-skill-model matrix)
@@ -577,7 +577,7 @@ Examples:
 
   console.log(`
   # Compare original vs aot-compiled-p1 for one skill directory
-  bun run skvm bench --compare --model=qwen/qwen3.5-122b-a10b \
+  bun run skvm bench --compare --model=<id> \
     --adapter=bare-agent --skill-path=skvm-data/skills/calendar \
     --lhs=original --rhs=aot-compiled-p1 --output-dir=compare-runs \
     --analyze-model=${MODEL_DEFAULTS.judge}`)

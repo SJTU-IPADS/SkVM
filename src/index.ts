@@ -194,7 +194,7 @@ Options:
   if (flags.model) {
     models = flags.model.split(",").map(m => m.trim())
   } else {
-    console.error("--model is required. Example: --model=qwen/qwen3-30b-a3b-instruct-2507")
+    console.error("--model is required. Format: --model=<provider>/<model-id> (the <provider> prefix selects a route in providers.routes — see docs/providers.md)")
     process.exit(1)
   }
 
@@ -380,7 +380,7 @@ Notes:
   const skillPath = flags.skill
   const model = flags.model
   if (!taskPath || !model) {
-    console.error("--task and --model are required. Example: skvm run --task=path/to/task.json --model=qwen/qwen3-30b-a3b-instruct-2507 [--skill=path/to/SKILL.md]")
+    console.error("--task and --model are required. Example: skvm run --task=path/to/task.json --model=<provider>/<model-id> [--skill=path/to/SKILL.md]")
     process.exit(1)
   }
 
@@ -904,7 +904,7 @@ Usage:
   skvm clean-jit --model=<id> --adapter=<name> [options]
 
 Required:
-  --model=<id>              Model identifier (e.g. qwen/qwen3.5-122b-a10b)
+  --model=<id>              Model identifier, shaped as <provider>/<model-id>
   --adapter=<name>          Adapter: bare-agent, opencode, openclaw, pi
 
 Options:
@@ -1463,7 +1463,7 @@ Usage:
 Required for all sources:
   --skill=<path>             Path to skill directory (or --skill-list)
   --task-source=<kind>       synthetic | real | log   (must be set explicitly)
-  --optimizer-model=<id>     Optimizer LLM model (e.g. z-ai/glm-5.1)
+  --optimizer-model=<id>     Optimizer LLM model, shaped as <provider>/<model-id>
 
 Task-source-specific flags:
   --task-source=synthetic

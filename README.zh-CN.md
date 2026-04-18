@@ -112,6 +112,8 @@ export OPENROUTER_API_KEY=sk-or-...
 
 如果你使用其他 provider，可以参考 [docs/providers.md](docs/providers.md)。
 
+命令行上的 model id 形式为 `<provider>/<model-id>`：开头的 `<provider>` 用来匹配 `providers.routes` 中的路由（skvm 会在调用后端 SDK 前剥掉这一段）。走 OpenRouter 时是三段，例如 `openrouter/qwen/qwen3.5-35b-a3b`；走原生 SDK（Anthropic / OpenAI 等）时是两段，例如 `anthropic/claude-sonnet-4.6`。下文示例统一用 `<provider>/<model-id>` 占位符。
+
 ### 1. 评测模型的原语能力
 
 运行后会在 `~/.skvm/profiles/` 下生成对应的能力 Profile。
@@ -125,11 +127,11 @@ cp -R skvm-data/profiles/. ~/.skvm/profiles/
 
 当前仓库内已提供的预构建 Profile 组合如下：
 
-- 例如目前内置了 `qwen/qwen3.5-35b-a3b`、`deepseek/deepseek-v3.2`、`anthropic/claude-opus-4.6` 等目标的预构建 Profile。
+- 例如目前内置了 `openrouter/qwen/qwen3.5-35b-a3b`、`openrouter/deepseek/deepseek-v3.2`、`openrouter/anthropic/claude-opus-4.6` 等目标的预构建 Profile。
 
 ```bash
 skvm profile \
-  --model=qwen/qwen3.5-35b-a3b \
+  --model=<provider>/<model-id> \
   --adapter=bare-agent
 ```
 
@@ -142,10 +144,10 @@ skvm profile \
 ```bash
 skvm aot-compile \
   --skill=path/to/skill-dir \
-  --model=qwen/qwen3.5-35b-a3b \
+  --model=<provider>/<model-id> \
   --adapter=bare-agent \
   --pass=1 \
-  --compiler-model=anthropic/claude-sonnet-4.6
+  --compiler-model=<provider>/<model-id>
 ```
 
 编译产物默认会写入：
@@ -164,9 +166,9 @@ skvm jit-optimize \
   --task-source=synthetic \
   --task-concurrency=3 \
   --target-adapter=bare-agent \
-  --optimizer-model=anthropic/claude-sonnet-4.6 \
+  --optimizer-model=<provider>/<model-id> \
   --rounds=1 \
-  --target-model=qwen/qwen3.5-35b-a3b
+  --target-model=<provider>/<model-id>
 ```
 
 生成的 proposal 默认会写入：
@@ -183,8 +185,8 @@ skvm jit-optimize \
   --task-source=log \
   --target-adapter=bare-agent \
   --logs=path/to/session.jsonl \
-  --optimizer-model=anthropic/claude-sonnet-4.6 \
-  --target-model=qwen/qwen3.5-35b-a3b
+  --optimizer-model=<provider>/<model-id> \
+  --target-model=<provider>/<model-id>
 ```
 
 ### 查看、接受或拒绝 Proposal

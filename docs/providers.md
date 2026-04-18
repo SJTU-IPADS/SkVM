@@ -195,7 +195,7 @@ Schema guard — a route needs one of the two. Re-run `skvm config init` or add 
 
 ### My CLI scripts used unprefixed ids like `qwen/qwen3-30b` — now they error out
 
-This is the prefix-required convention. Every CLI id now needs a `<provider>/` prefix. Migrate: `qwen/qwen3-30b` → `openrouter/qwen/qwen3-30b`, `anthropic/claude-sonnet-4.6` stays the same (it's already prefixed by `anthropic`), etc. Disk artifacts like `skvm-data/profiles/` are unchanged — `safeModelName()` strips the routing prefix before slugifying, so `openrouter/anthropic/claude-opus-4.6` and the old `anthropic/claude-opus-4.6` both produce the same `anthropic--claude-opus-4.6/` directory.
+This is the prefix-required convention. Every CLI id now needs a `<provider>/` prefix. Migrate: `qwen/qwen3-30b` → `openrouter/qwen/qwen3-30b`, `anthropic/claude-sonnet-4.6` stays the same (it's already prefixed by `anthropic`), etc. Disk artifacts like `skvm-data/profiles/` follow the full prefixed id — `safeModelName()` keeps the whole id and only replaces `/` with `--`, so `openrouter/anthropic/claude-opus-4.6` lives in `openrouter--anthropic--claude-opus-4.6/`. Bundled profiles were rekeyed accordingly; if you have old `~/.skvm/profiles/<vendor>--<model>/` dirs from before the convention change, rename them to match or re-run `skvm profile`.
 
 ### Bench / profile fails: adapter can't resolve model id
 

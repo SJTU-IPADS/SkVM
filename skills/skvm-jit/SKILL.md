@@ -81,7 +81,7 @@ skvm jit-optimize --detach \
   --task-source=log \
   --logs=<path-to-report.json-or-conv-log.jsonl> \
   --target-model=<id-the-task-ran-on> \
-  --optimizer-model=z-ai/glm-5.1
+  --optimizer-model=openrouter/z-ai/glm-5.1
 ```
 
 `--detach` is what lets this skill stay snappy. Without it the optimizer runs in-process and blocks the agent for the full optimization pass (often a minute or more); with it the CLI returns in well under a second after spawning a background worker. Always pass it from this skill.
@@ -91,8 +91,8 @@ Required parameters:
 - `--skill` — path to the skill directory (the one containing `SKILL.md`)
 - `--task-source=log` — tells jit-optimize to analyze a conversation log without rerunning anything. **This is the only task source valid from this post-task optimization flow** — `real` and `synthetic` sources rerun tasks against a live model, which a post-hoc report cannot do.
 - `--logs` — path to the report file you wrote in Step 2
-- `--target-model=<id>` — **required for every `skvm jit-optimize` invocation, including `--task-source=log`**. In log mode the target model is not used for execution — it is the *storage key* that decides which folder under `proposals/<harness>/<target-model>/<skill>/` the proposal lands in, so proposals stay grouped by the model the skill is tuned for. Use the OpenRouter-format id of the model that just ran the task — **that is you**, the agent reading this skill. Read your own model id out of your system prompt / harness environment (Claude Code exposes it as the "exact model ID", e.g. map `claude-opus-4-6` → `anthropic/claude-opus-4-6`; opencode/openclaw/hermes similarly). If you genuinely cannot determine your own model id, ask the user once and stop — do not substitute a placeholder.
-- `--optimizer-model=<id>` — the LLM that drives the optimizer agent. Use any OpenRouter-compatible model; `z-ai/glm-5.1` is a good cheap default.
+- `--target-model=<id>` — **required for every `skvm jit-optimize` invocation, including `--task-source=log`**. In log mode the target model is not used for execution — it is the *storage key* that decides which folder under `proposals/<harness>/<target-model>/<skill>/` the proposal lands in, so proposals stay grouped by the model the skill is tuned for. Use the prefixed model id of the model that just ran the task — **that is you**, the agent reading this skill. Every id must carry a `<provider>/` prefix that matches a route in the user's `providers.routes`; read your own model id out of your system prompt / harness environment and prepend the right provider (Claude Code exposes it as the "exact model ID", e.g. map `claude-opus-4-6` → `anthropic/claude-opus-4.6` when Anthropic-routed, or `openrouter/anthropic/claude-opus-4.6` when OR-routed; opencode/openclaw/hermes similarly). If you genuinely cannot determine your own model id or provider, ask the user once and stop — do not substitute a placeholder.
+- `--optimizer-model=<id>` — the LLM that drives the optimizer agent. Every id must carry a `<provider>/` prefix; `openrouter/z-ai/glm-5.1` is a good cheap default (needs `OPENROUTER_API_KEY`).
 
 Optional:
 

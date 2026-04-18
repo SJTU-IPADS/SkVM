@@ -50,9 +50,6 @@ curl -fsSL https://skillvm.ai/install.sh | sh
 
 # or via npm (any platform with Node ≥ 18; postinstall fetches the matching binary)
 npm i -g @ipads-skvm/skvm
-
-# self-check
-skvm --help
 ```
 
 The installer drops a standalone binary at `~/.local/share/skvm/bin/skvm` (symlinked into `~/.local/bin/skvm`) and bundles a private, isolated headless agent runtime used internally by `skvm jit-optimize` — it is fully self-contained and does not touch any agent or CLI you may have installed globally.
@@ -107,15 +104,17 @@ This is the quickest way to make an OpenClaw environment self-host the SkVM tool
 
 ## Quick Start
 
-If you are running SkVM from the source tree instead of an installed binary, use `bun run skvm` in the examples below.
+SkVM currently supports five external agent harnesses — `openclaw`, `opencode`, `hermes`, `jiuwenclaw`, and `pi` — plus a built-in `bare-agent` that talks to any OpenAI-compatible backend directly.
 
-Set your API key:
+Configure your agent harness, provider, and API key via the interactive wizard:
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...
+skvm config init
 ```
 
-If you use another provider, see [docs/providers.md](docs/providers.md).
+This writes `$SKVM_CACHE/skvm.config.json` (default `~/.skvm/skvm.config.json`). For non-interactive setups or alternative providers, see [docs/providers.md](docs/providers.md).
+
+Model ids on the CLI take the form `<provider>/<model-id>` — the leading `<provider>` picks a route in `providers.routes` (skvm strips it before the backend SDK sees the id). For OpenRouter that means three segments, e.g. `openrouter/qwen/qwen3.5-35b-a3b`; for a native-SDK route two, e.g. `anthropic/claude-sonnet-4.6`.
 
 ### 1. Profile a model's primitive capabilities
 
@@ -128,13 +127,9 @@ mkdir -p ~/.skvm/profiles
 cp -R skvm-data/profiles/. ~/.skvm/profiles/
 ```
 
-Currently bundled pre-built profiles:
-
-- Example bundled targets include `qwen/qwen3.5-35b-a3b`, `deepseek/deepseek-v3.2`, `anthropic/claude-opus-4.6`, and others.
-
 ```bash
 skvm profile \
-  --model=qwen/qwen3.5-35b-a3b \
+  --model=<provider>/<model-id> \
   --adapter=bare-agent
 ```
 
@@ -147,10 +142,10 @@ The compiler rewrites the skill to match the target's capabilities. A cached pro
 ```bash
 skvm aot-compile \
   --skill=path/to/skill-dir \
-  --model=qwen/qwen3.5-35b-a3b \
+  --model=<provider>/<model-id> \
   --adapter=bare-agent \
   --pass=1 \
-  --compiler-model=anthropic/claude-sonnet-4.6
+  --compiler-model=<provider>/<model-id>
 ```
 
 Compiled variants are written under `~/.skvm/proposals/aot-compile/<adapter>/<safeModel>/<skillName>/<passTag>/` by default. 
@@ -167,9 +162,9 @@ skvm jit-optimize \
   --task-source=synthetic \
   --task-concurrency=3 \
   --target-adapter=bare-agent \
-  --optimizer-model=anthropic/claude-sonnet-4.6 \
+  --optimizer-model=<provider>/<model-id> \
   --rounds=1 \
-  --target-model=qwen/qwen3.5-35b-a3b
+  --target-model=<provider>/<model-id>
 ```
 
 Results are written under `~/.skvm/proposals/jit-optimize/<adapter>/<safeTargetModel>/<skillName>/<timestamp>/` by default. 
@@ -184,8 +179,8 @@ skvm jit-optimize \
   --task-source=log \
   --target-adapter=bare-agent \
   --logs=path/to/session.jsonl \
-  --optimizer-model=anthropic/claude-sonnet-4.6 \
-  --target-model=qwen/qwen3.5-35b-a3b
+  --optimizer-model=<provider>/<model-id> \
+  --target-model=<provider>/<model-id>
 ```
 
 ### Review, accept, or reject the proposal

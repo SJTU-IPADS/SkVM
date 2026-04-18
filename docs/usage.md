@@ -13,6 +13,8 @@ skvm --verbose <command>           # enable debug logging
 
 Flags use `--key=value` format (no space-separated form). `bun run skvm ...` works interchangeably with the installed `skvm` binary — all examples below use `skvm` for brevity.
 
+Model-id placeholders. `<id>` below is shorthand for `<provider>/<model-id>` — every CLI model id must carry a `<provider>/` prefix that matches a route in `providers.routes`. OpenRouter targets use three segments (e.g. `openrouter/qwen/qwen3.5-35b-a3b`); native-SDK targets use two (e.g. `anthropic/claude-sonnet-4.6`). See [providers.md](providers.md) for the full rule.
+
 Top-level commands:
 
 | Command | Purpose |
@@ -51,7 +53,7 @@ Profiles a model+harness against the 26-primitive capability set and writes cach
 
 ```bash
 # Single model
-skvm profile --model=qwen/qwen3-30b-a3b-instruct-2507 --adapter=bare-agent
+skvm profile --model=<id> --adapter=bare-agent
 
 # Multiple models in parallel
 skvm profile --model=<id1>,<id2> --concurrency=4
@@ -89,7 +91,7 @@ skvm aot-compile --skill=<path> --model=<id> --pass=1,2
 skvm aot-compile --skill=<path> --model=<id> --dry-run
 
 # Override the compiler backend model
-skvm aot-compile --skill=<path> --model=<id> --compiler-model=anthropic/claude-sonnet-4.6
+skvm aot-compile --skill=<path> --model=<id> --compiler-model=<id>
 ```
 
 Three sequential compiler passes:
@@ -170,8 +172,8 @@ skvm jit-optimize \
   --skill=path/to/skill-dir \
   --task-source=synthetic \
   --task-concurrency=3 \
-  --optimizer-model=anthropic/claude-sonnet-4.6 \
-  --target-model=qwen/qwen3-30b-a3b-instruct-2507 \
+  --optimizer-model=<id> \
+  --target-model=<id> \
   --rounds=1
 ```
 
@@ -189,8 +191,8 @@ skvm jit-optimize \
   --task-source=real \
   --tasks=<train-id-or-path,...> \
   --test-tasks=<test-id-or-path,...> \
-  --optimizer-model=anthropic/claude-sonnet-4.6 \
-  --target-model=qwen/qwen3-30b-a3b-instruct-2507 \
+  --optimizer-model=<id> \
+  --target-model=<id> \
   --rounds=3
 ```
 
@@ -208,8 +210,8 @@ skvm jit-optimize \
   --task-source=log \
   --logs=path/to/log1.jsonl,path/to/log2.jsonl \
   --failures=path/to/log1-failure.json,path/to/log2-failure.json \
-  --optimizer-model=anthropic/claude-sonnet-4.6 \
-  --target-model=qwen/qwen3-30b-a3b-instruct-2507
+  --optimizer-model=<id> \
+  --target-model=<id>
 ```
 
 Log-specific flags:

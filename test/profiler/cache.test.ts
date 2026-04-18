@@ -14,7 +14,7 @@ let tempDir: string
 function makeTCP(overrides: Partial<TCP> = {}): TCP {
   return {
     version: "1.0",
-    model: "qwen/qwen3-30b",
+    model: "openrouter/qwen/qwen3-30b",
     harness: "bare-agent",
     profiledAt: "2026-04-03T11:39:57.566Z",
     capabilities: { "reason.arithmetic": "L2" },

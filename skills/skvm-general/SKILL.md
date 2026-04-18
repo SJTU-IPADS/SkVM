@@ -116,7 +116,7 @@ skvm proposals reject <id>                                    # mark as rejected
 skvm proposals cancel <id>                                    # stop a detached run still in phase=running
 ```
 
-Proposal id format: `<harness>/<target-model>/<skill-name>/<timestamp>`. When the user gives you an id like `bare-agent/claude-sonnet-4.6/calendar/20260401T120000Z`, pass it verbatim — do not reformat it.
+Proposal id format: `<harness>/<safe-target-model>/<skill-name>/<timestamp>`, where `<safe-target-model>` is the slugified target model id (forward slashes in the CLI id become `--`). When the user gives you an id like `bare-agent/openrouter--anthropic--claude-sonnet-4.6/calendar/20260401T120000Z`, pass it verbatim — do not reformat it.
 
 Detached runs (`skvm jit-optimize --detach`) write an extra `run-status.json` inside the proposal directory that tracks execution phase (`running` / `done` / `failed`), separate from `meta.json.status`. `skvm proposals show` renders this header and tails the last 20 lines of `run.log` for running / failed detached runs. If the user wants to stop a detached optimization mid-run, use `cancel`; sync runs (no `--detach`) do not need `cancel`, they block until complete.
 

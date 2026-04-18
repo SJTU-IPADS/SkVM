@@ -93,7 +93,7 @@ describe("summarizeTextDiff", () => {
 describe("generateCompareBenchSkillMarkdown", () => {
   test("renders aggregate and task details", () => {
     const report: CompareBenchSkillReport = {
-      model: "qwen/qwen3.5-122b-a10b",
+      model: "openrouter/qwen/qwen3.5-122b-a10b",
       adapter: "bare-agent",
       lhs: "original",
       rhs: "aot-compiled-p1",
@@ -106,7 +106,7 @@ describe("generateCompareBenchSkillMarkdown", () => {
           reportPath: "/tmp/bench-original-1/report.json",
           report: {
             sessionId: "bench-original-1",
-            model: "qwen/qwen3.5-122b-a10b",
+            model: "openrouter/qwen/qwen3.5-122b-a10b",
             adapter: "bare-agent",
             timestamp: new Date().toISOString(),
             tasks: [],
@@ -122,7 +122,7 @@ describe("generateCompareBenchSkillMarkdown", () => {
           reportPath: "/tmp/bench-aot-1/report.json",
           report: {
             sessionId: "bench-aot-1",
-            model: "qwen/qwen3.5-122b-a10b",
+            model: "openrouter/qwen/qwen3.5-122b-a10b",
             adapter: "bare-agent",
             timestamp: new Date().toISOString(),
             tasks: [],
@@ -178,7 +178,7 @@ describe("generateCompareBenchSkillMarkdown", () => {
 
   test("writes output files with adapter and model in the filename", async () => {
     const report: CompareBenchSkillReport = {
-      model: "qwen/qwen3.5-122b-a10b",
+      model: "openrouter/qwen/qwen3.5-122b-a10b",
       adapter: "openclaw",
       lhs: "original",
       rhs: "aot-compiled-p1",
@@ -206,9 +206,9 @@ describe("generateCompareBenchSkillMarkdown", () => {
     tempDirs.push(outputRoot)
 
     const outputs = await writeCompareBenchSkillOutputs(report, outputRoot)
-    expect(outputs.reportJsonPath).toEndWith("calendar/openclaw--qwen-qwen3.5-122b-a10b--aot-compiled-p1-vs-original.report.json")
-    expect(outputs.reportMarkdownPath).toEndWith("calendar/openclaw--qwen-qwen3.5-122b-a10b--aot-compiled-p1-vs-original.report.md")
-    expect(outputs.skillDiffMarkdownPath).toEndWith("calendar/openclaw--qwen-qwen3.5-122b-a10b--aot-compiled-p1-vs-original.skill-diff.md")
+    expect(outputs.reportJsonPath).toEndWith("calendar/openclaw--openrouter-qwen-qwen3.5-122b-a10b--aot-compiled-p1-vs-original.report.json")
+    expect(outputs.reportMarkdownPath).toEndWith("calendar/openclaw--openrouter-qwen-qwen3.5-122b-a10b--aot-compiled-p1-vs-original.report.md")
+    expect(outputs.skillDiffMarkdownPath).toEndWith("calendar/openclaw--openrouter-qwen-qwen3.5-122b-a10b--aot-compiled-p1-vs-original.skill-diff.md")
 
     const written = await readFile(outputs.reportMarkdownPath, "utf8")
     expect(written).toContain("# Skill Compare: original vs aot-compiled-p1")
@@ -216,7 +216,7 @@ describe("generateCompareBenchSkillMarkdown", () => {
 
   test("renders change-only skill diff markdown", () => {
     const report: CompareBenchSkillReport = {
-      model: "qwen/qwen3.5-122b-a10b",
+      model: "openrouter/qwen/qwen3.5-122b-a10b",
       adapter: "bare-agent",
       lhs: "original",
       rhs: "aot-compiled-p1",
@@ -229,7 +229,7 @@ describe("generateCompareBenchSkillMarkdown", () => {
           reportPath: "/tmp/bench-original-1/report.json",
           report: {
             sessionId: "bench-original-1",
-            model: "qwen/qwen3.5-122b-a10b",
+            model: "openrouter/qwen/qwen3.5-122b-a10b",
             adapter: "bare-agent",
             timestamp: new Date().toISOString(),
             tasks: [],
@@ -245,7 +245,7 @@ describe("generateCompareBenchSkillMarkdown", () => {
           reportPath: "/tmp/bench-aot-1/report.json",
           report: {
             sessionId: "bench-aot-1",
-            model: "qwen/qwen3.5-122b-a10b",
+            model: "openrouter/qwen/qwen3.5-122b-a10b",
             adapter: "bare-agent",
             timestamp: new Date().toISOString(),
             tasks: [],
