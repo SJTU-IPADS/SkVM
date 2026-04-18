@@ -1,11 +1,19 @@
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, TokenUsage, SkillMode } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, TokenUsage, SkillMode } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
-import { getAdapterRepoDir, getHeadlessAgentConfig, expandHome } from "../core/config.ts"
-import { envForRoute } from "../providers/registry.ts"
+import { getAdapterRepoDir, getAdapterSettings, getHeadlessAgentConfig, expandHome, stripRoutingPrefix } from "../core/config.ts"
+import { envForRoute, resolveRoute } from "../providers/registry.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
+import {
+  createSandbox,
+  ensureDir,
+  copyFileIfExists,
+  symlinkIfExists,
+  buildOpenCodeConfigContent,
+  type Sandbox,
+} from "../core/adapter-sandbox.ts"
 
 const log = createLogger("opencode")
 
@@ -327,27 +335,108 @@ export async function resolveHeadlessOpenCodeCmd(): Promise<OpenCodeResolution> 
   return _headlessCache
 }
 
+const HOME = process.env.HOME ?? ""
+const USER_OPENCODE_CONFIG = path.join(HOME, ".config", "opencode")
+const USER_OPENCODE_DATA = path.join(HOME, ".local", "share", "opencode")
+
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = "opencode"
   private model = ""
   private timeoutMs: number = TASK_FILE_DEFAULTS.timeoutMs
   private cmdPrefix: string[] = []
   private envOverlay: Record<string, string> = {}
+  private mode: AdapterConfigMode = "managed"
+  private nativeAgent = "build"
+  private extraCliArgs: string[] = []
+  private sandbox: Sandbox | undefined
 
   async setup(config: AdapterConfig): Promise<void> {
-    // Model id is passed to opencode verbatim. The user is responsible for
-    // configuring opencode (globally, via ~/.opencode/opencode.jsonc) to
-    // know about any non-default provider prefix they use. skvm injects
-    // standard SDK env vars so the common case (openrouter/anthropic/openai)
-    // works without extra setup — but custom prefixes like `ipads/` need
-    // opencode-side config.
     this.model = config.model
     this.timeoutMs = config.timeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs
+    this.mode = config.mode ?? "managed"
+
+    const settings = getAdapterSettings("opencode")
+    this.nativeAgent = config.nativeAgent ?? settings.nativeAgent ?? "build"
+    this.extraCliArgs = config.extraCliArgs ?? settings.extraCliArgs ?? []
+
+    // Fail-fast: native mode needs an opencode.jsonc the user can resolve the
+    // model against; managed needs a providers.routes entry that matches.
+    if (this.mode === "native") {
+      const jsoncPath = path.join(USER_OPENCODE_CONFIG, "opencode.jsonc")
+      if (!(await Bun.file(jsoncPath).exists())) {
+        throw new Error(
+          `opencode (native): ${jsoncPath} not found. Either run opencode's own setup, ` +
+          `or switch to --adapter-config=managed.`,
+        )
+      }
+    } else {
+      // resolveRoute throws if no match — surface as a clear setup error.
+      try {
+        resolveRoute(this.model)
+      } catch (err) {
+        throw new Error(
+          `opencode (managed): ${(err as Error).message} Run \`skvm config init\` to add a route, ` +
+          `or switch to --adapter-config=native.`,
+        )
+      }
+    }
+
     const resolved = await resolveAdapterOpenCodeCmd()
     this.cmdPrefix = resolved.cmd
-    this.envOverlay = { ...resolved.env, ...envForRoute(config.model) }
+
+    // Build the sandbox HOME (XDG_* pointing into it) so runs don't touch
+    // the user's global opencode state.
+    this.sandbox = createSandbox("opencode")
+    const root = this.sandbox.root
+    const cfgDir = path.join(root, "config", "opencode")
+    const dataDir = path.join(root, "data", "opencode")
+    const cacheDir = path.join(root, "cache", "opencode")
+    const stateDir = path.join(root, "state", "opencode")
+    ensureDir(cfgDir)
+    ensureDir(dataDir)
+    ensureDir(cacheDir)
+    ensureDir(stateDir)
+
+    const envOverlay: Record<string, string> = {
+      ...resolved.env,
+      ...envForRoute(config.model),
+      XDG_CONFIG_HOME: path.join(root, "config"),
+      XDG_DATA_HOME: path.join(root, "data"),
+      XDG_CACHE_HOME: path.join(root, "cache"),
+      XDG_STATE_HOME: path.join(root, "state"),
+    }
+
+    if (this.mode === "native") {
+      // Copy opencode.jsonc + auth.json, symlink agent/rules/skills
+      copyFileIfExists(
+        path.join(USER_OPENCODE_CONFIG, "opencode.jsonc"),
+        path.join(cfgDir, "opencode.jsonc"),
+      )
+      symlinkIfExists(path.join(USER_OPENCODE_CONFIG, "agent"), path.join(cfgDir, "agent"))
+      symlinkIfExists(path.join(USER_OPENCODE_CONFIG, "rules"), path.join(cfgDir, "rules"))
+      symlinkIfExists(path.join(USER_OPENCODE_CONFIG, "skills"), path.join(cfgDir, "skills"))
+      // auth.json is always COPIED so an OAuth refresh from the sandbox
+      // doesn't overwrite the user's real credentials.
+      copyFileIfExists(
+        path.join(USER_OPENCODE_DATA, "auth.json"),
+        path.join(dataDir, "auth.json"),
+      )
+    } else {
+      // Managed: empty sandbox. For openai-compatible routes, inject a
+      // synthesized provider via OPENCODE_CONFIG_CONTENT so opencode doesn't
+      // need the user's config at all.
+      const route = resolveRoute(this.model)
+      if (route.kind === "openai-compatible") {
+        envOverlay.OPENCODE_CONFIG_CONTENT = buildOpenCodeConfigContent(
+          route,
+          stripRoutingPrefix(this.model),
+        )
+      }
+    }
+
+    this.envOverlay = envOverlay
     log.info(`opencode command: ${this.cmdPrefix.join(" ")}`)
-    log.info(`opencode model: ${this.model}`)
+    log.info(`opencode model: ${this.model} (mode=${this.mode}, sandbox=${root})`)
   }
 
   async run(task: {
@@ -387,15 +476,17 @@ export class OpenCodeAdapter implements AgentAdapter {
     // Prepend directive to suppress clarification questions in non-interactive bench mode
     const prompt = `IMPORTANT: Do not ask clarifying questions. Proceed directly with implementation. Execute all steps immediately without waiting for user input.\n\n${task.prompt}`
 
+    const agentFlag = this.mode === "native" ? this.nativeAgent : "build"
     const cmd = [
       ...this.cmdPrefix,
       "run",
       prompt,
       "--dir", task.workDir,
       "--model", this.model,
-      "--agent", "build",
+      "--agent", agentFlag,
       "--pure",
       "--format", "json",
+      ...this.extraCliArgs,
     ]
 
     const { stdout, stderr, exitCode, timedOut } = await runCommand(cmd, {
@@ -407,7 +498,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     const durationMs = performance.now() - startMs
 
     if (exitCode !== 0 && stderr) {
-      log.warn(`opencode exited with code ${exitCode}: ${stderr.slice(0, 200)}`)
+      log.warn(`opencode exited with code ${exitCode}: ${stderr.slice(0, 2000)}`)
     }
 
     // Save raw NDJSON to convLog path if available
@@ -483,7 +574,8 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 
   async teardown(): Promise<void> {
-    // No persistent state to clean up
+    this.sandbox?.teardown()
+    this.sandbox = undefined
   }
 }
 

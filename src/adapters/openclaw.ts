@@ -1,51 +1,24 @@
 import path from "node:path"
-import { mkdir, rm, writeFile, copyFile, readdir } from "node:fs/promises"
-import { statSync } from "node:fs"
-import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, TokenUsage, SkillMode } from "../core/types.ts"
+import { mkdir, rm, copyFile, readdir } from "node:fs/promises"
+import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, SkillMode, ProviderRoute } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
-import { getAdapterRepoDir } from "../core/config.ts"
-import { tryAcquireFileLock, withFileLock, releaseFileLock } from "../core/file-lock.ts"
+import { getAdapterRepoDir, getAdapterSettings, getProvidersConfig } from "../core/config.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
+import {
+  createSandbox,
+  ensureDir,
+  copyFileIfExists,
+  symlinkIfExists,
+  type Sandbox,
+} from "../core/adapter-sandbox.ts"
+import { resolveRoute, resolveRouteApiKey } from "../providers/registry.ts"
 
 const log = createLogger("openclaw")
 
 const BOOTSTRAP_FILES = ["SOUL.md", "BOOTSTRAP.md", "USER.md", "IDENTITY.md", "HEARTBEAT.md", "TOOLS.md"]
 const HOME = process.env.HOME ?? ""
-const OPENCLAW_DIR = path.join(HOME, ".openclaw")
-
-// ---------------------------------------------------------------------------
-// Two-layer config lock: in-process mutex + cross-process file lock
-// ---------------------------------------------------------------------------
-//
-// The cross-process side uses src/core/file-lock.ts, which handles atomic
-// create, stale-holder reaping, and crash cleanup. The in-process mutex is
-// still required on top: file-lock is only a cross-process primitive, and
-// concurrent awaits within one process would each try to atomically create
-// the same file and only one would succeed — the others would spin.
-//
-const CONFIG_LOCK_PATH = path.join(OPENCLAW_DIR, "openclaw.json.lock")
-const CONFIG_LOCK_STALE_MS = 30_000
-
-/** In-process async mutex (serializes concurrent awaits within one process). */
-let inProcessLock: Promise<void> = Promise.resolve()
-
-async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
-  const prev = inProcessLock
-  let resolveInProcess!: () => void
-  inProcessLock = new Promise<void>((r) => { resolveInProcess = r })
-  await prev
-
-  try {
-    return await withFileLock(
-      CONFIG_LOCK_PATH,
-      { staleMs: CONFIG_LOCK_STALE_MS, timeoutMs: 5000 },
-      fn,
-    )
-  } finally {
-    resolveInProcess()
-  }
-}
+const USER_OPENCLAW_DIR = path.join(HOME, ".openclaw")
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -57,13 +30,16 @@ export function normalizeAgentId(id: string): string {
 
 async function runCommand(
   cmd: string[],
-  opts?: { cwd?: string; timeout?: number },
+  opts?: { cwd?: string; timeout?: number; env?: Record<string, string | undefined> },
 ): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }> {
+  const env = opts?.env && Object.keys(opts.env).length > 0
+    ? mergeEnv(process.env, opts.env)
+    : process.env
   const proc = Bun.spawn(cmd, {
     cwd: opts?.cwd,
     stdout: "pipe",
     stderr: "pipe",
-    env: process.env,
+    env,
   })
 
   let timedOut = false
@@ -83,16 +59,24 @@ async function runCommand(
   return { stdout, stderr, exitCode, timedOut }
 }
 
+function mergeEnv(
+  base: NodeJS.ProcessEnv,
+  overlay: Record<string, string | undefined>,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(base)) if (typeof v === "string") out[k] = v
+  for (const [k, v] of Object.entries(overlay)) {
+    if (v === undefined) delete out[k]
+    else out[k] = v
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------
 // CLI Resolution
 // ---------------------------------------------------------------------------
 
-/**
- * Resolve openclaw CLI command.
- * Priority: custom path from skvm.config.json → globally installed `openclaw`.
- */
 async function resolveOpenClawCmd(): Promise<string[]> {
-  // 1. Custom path from config
   const repoDir = getAdapterRepoDir("openclaw")
   if (repoDir) {
     const entryPoint = path.join(repoDir, "openclaw.mjs")
@@ -112,7 +96,6 @@ async function resolveOpenClawCmd(): Promise<string[]> {
     )
   }
 
-  // 2. Global install
   const { exitCode, stdout } = await runCommand(["which", "openclaw"])
   if (exitCode === 0 && stdout.trim()) {
     log.info(`Using global openclaw: ${stdout.trim()}`)
@@ -173,7 +156,6 @@ function transcriptToRunResult(
     if (entry.type !== "message" || !entry.message) continue
     const msg = entry.message
 
-    // Accumulate tokens
     if (msg.usage) {
       totalTokens = {
         input: totalTokens.input + (msg.usage.input ?? 0),
@@ -188,7 +170,6 @@ function transcriptToRunResult(
       const toolCalls: ToolCall[] = []
       let text = ""
 
-      // Content can be string or array of content blocks
       const contentItems = Array.isArray(msg.content)
         ? msg.content
         : typeof msg.content === "string"
@@ -217,7 +198,6 @@ function transcriptToRunResult(
 
       if (text) finalText = text
     } else if (msg.role === "toolResult" || msg.role === "tool") {
-      // Tool results — openclaw puts toolCallId and toolName at the message level
       const contentItems = Array.isArray(msg.content)
         ? msg.content
         : typeof msg.content === "string"
@@ -261,371 +241,266 @@ function transcriptToRunResult(
 }
 
 // ---------------------------------------------------------------------------
-// Shared OpenClaw Agent Pool (cross-process safe)
+// Managed-mode provider synthesis from providers.routes
 // ---------------------------------------------------------------------------
-//
-// Multiple bun processes (profile, bench, jit-optimize) may run concurrently,
-// each with their own in-memory OpenClawPool singleton. Cross-process safety
-// is achieved via per-agent file locks:
-//
-//   ~/.openclaw/agents/skvm-{i}/run.lock
-//
-// acquire() atomically creates run.lock (O_CREAT|O_EXCL). Only the process
-// holding the lock may use that agent's workspace and sessions directory.
-// release() deletes the lock. Stale locks from crashed processes are cleaned
-// up after STALE_RUN_LOCK_MS.
+
+/**
+ * Translate skvm `providers.routes` into openclaw models.json provider
+ * entries. Openclaw's `apiKey` field accepts either a literal key or an env
+ * var name — skvm resolves the key up front (env → literal) and emits a
+ * single string, matching what the user's hand-written models.json looks like.
+ *
+ * Exported so the user-facing cli-config `doctor` can surface what managed
+ * mode would synthesize without actually running a command.
+ */
+export interface OpenclawProviderEntry {
+  name: string
+  baseUrl?: string
+  apiKey?: string
+  api?: string
+}
+
+export function renderOpenclawProviderEntries(
+  routes: readonly ProviderRoute[],
+): Record<string, OpenclawProviderEntry> {
+  const providers: Record<string, OpenclawProviderEntry> = {}
+  for (const route of routes) {
+    const providerId = route.match.split("/")[0]
+    if (!providerId || providers[providerId]) continue
+    const resolvedKey = resolveRouteApiKey(route) ?? route.apiKeyEnv ?? ""
+    const baseUrl = route.baseUrl ?? defaultBaseUrl(route.kind)
+    providers[providerId] = {
+      name: providerId,
+      api: route.kind === "anthropic" ? "anthropic-messages" : "openai-completions",
+      ...(baseUrl ? { baseUrl } : {}),
+      ...(resolvedKey ? { apiKey: resolvedKey } : {}),
+    }
+  }
+  return providers
+}
+
+function defaultBaseUrl(kind: ProviderRoute["kind"]): string | undefined {
+  switch (kind) {
+    case "openrouter": return "https://openrouter.ai/api/v1"
+    case "anthropic":  return "https://api.anthropic.com/v1"
+    case "openai-compatible": return undefined
+  }
+}
+
+async function writeManagedModelsJson(
+  modelsJsonPath: string,
+  routes: readonly ProviderRoute[],
+): Promise<void> {
+  const providers = renderOpenclawProviderEntries(routes)
+  await Bun.write(modelsJsonPath, JSON.stringify({ providers }, null, 2))
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox + pool
 // ---------------------------------------------------------------------------
 
 interface PoolAgent {
   agentId: string
-  agentDir: string      // ~/.openclaw/agents/{agentId}/agent
-  sessionsDir: string   // ~/.openclaw/agents/{agentId}/sessions
-  workspaceDir: string  // /tmp/skvm-openclaw/{agentId}
+  agentDir: string       // <sandbox>/agents/<agentId>/agent
+  sessionsDir: string    // <sandbox>/agents/<agentId>/sessions
+  workspaceDir: string   // <sandbox>/agents/<agentId>/workspace
 }
 
-const DEFAULT_POOL_SIZE = 8
-const MAX_POOL_SIZE = 16
-// 5 min is now a crash-recovery ceiling, not a run-length ceiling: a live
-// holder refreshes the lock file's mtime every RUN_LOCK_HEARTBEAT_MS, so only
-// abandoned locks can trip the staleness check. A run that legitimately takes
-// longer than this (even if it exceeds ACQUIRE_TIMEOUT_MS) is no longer at
-// risk of being stolen mid-execution.
-const STALE_RUN_LOCK_MS = 300_000
-const RUN_LOCK_HEARTBEAT_MS = 60_000
-const ACQUIRE_TIMEOUT_MS = 600_000  // 10 min max wait for a free agent
-const ACQUIRE_POLL_MS = 1_000       // poll interval when all agents busy
+const NATIVE_IDENTITY_FILES = [
+  "SOUL.md",
+  "IDENTITY.md",
+  "BOOTSTRAP.md",
+  "HEARTBEAT.md",
+  "TOOLS.md",
+  "USER.md",
+]
 
-class OpenClawPool {
-  private agents: PoolAgent[] = []
-  private heldByThisProcess = new Set<string>()  // agentIds currently held
+const NATIVE_COPY_FILES = [
+  "models.json",
+  "auth-profiles.json",
+  "auth.json",
+]
+
+class OpenclawSandboxPool {
+  private sandbox: Sandbox | undefined
   private cmdPrefix: string[] = []
-  private modelsTemplate: Record<string, unknown> = { providers: {} }
-  private initPromise: Promise<void> | null = null
+  private mode: AdapterConfigMode = "managed"
+  private poolCap = 1
+  private agents: PoolAgent[] = []
+  private heldByThisProcess = new Set<string>()
+  private nativeSourceAgent = "main"
+  private initModel = ""
   private initialized = false
+  private initPromise: Promise<void> | null = null
 
-  /** Initialize pool (idempotent within this process; safe across processes). */
-  async init(model: string, poolSize: number = DEFAULT_POOL_SIZE): Promise<void> {
+  /**
+   * Initialize the sandbox + pool. `poolSize` is the managed-mode pool size;
+   * native mode is always serialized (concurrency=1) since it clones a single
+   * user source agent and running two sessions against the same agent dir is
+   * unsafe.
+   */
+  async init(config: {
+    mode: AdapterConfigMode
+    nativeSourceAgent: string
+    poolSize: number
+    model: string
+  }): Promise<void> {
     if (this.initialized) return
     if (this.initPromise) { await this.initPromise; return }
-    this.initPromise = this._init(model, poolSize)
-    await this.initPromise
+    this.initPromise = this._init(config)
+    try { await this.initPromise } finally { this.initPromise = null }
   }
 
-  private async _init(model: string, poolSize: number): Promise<void> {
+  private async _init(config: {
+    mode: AdapterConfigMode
+    nativeSourceAgent: string
+    poolSize: number
+    model: string
+  }): Promise<void> {
+    this.mode = config.mode
+    this.nativeSourceAgent = config.nativeSourceAgent
+    this.initModel = config.model
     this.cmdPrefix = await resolveOpenClawCmd()
     log.info(`openclaw command: ${this.cmdPrefix.join(" ")}`)
 
-    // Read and cache main agent's models.json as template. Whatever provider
-    // blocks are defined there are what each skvm-spawned agent will see —
-    // skvm no longer patches openrouter in automatically. If you want to
-    // bench a new provider prefix (e.g. `ipads/*`), add it to your openclaw
-    // models.json first. See docs/providers.md.
-    const mainModelsPath = path.join(OPENCLAW_DIR, "agents", "main", "agent", "models.json")
-    try {
-      this.modelsTemplate = JSON.parse(await Bun.file(mainModelsPath).text())
-    } catch {
-      this.modelsTemplate = { providers: {} }
+    this.sandbox = createSandbox("openclaw")
+    const root = this.sandbox.root
+    ensureDir(path.join(root, "agents"))
+
+    this.poolCap = config.mode === "native" ? 1 : config.poolSize
+    if (config.mode === "native") {
+      await this.provisionNativeAgent(root, config.nativeSourceAgent)
+    } else {
+      await this.provisionManagedAgent(root, 0)
     }
 
-    // Provision initial agents and register in openclaw.json (under config lock)
-    const openclawConfigPath = path.join(OPENCLAW_DIR, "openclaw.json")
-    await withConfigLock(async () => {
-      let config: Record<string, unknown>
-      try {
-        config = JSON.parse(await Bun.file(openclawConfigPath).text())
-      } catch {
-        config = {}
-      }
-      if (!config.agents) config.agents = {}
-      const agentsConfig = config.agents as Record<string, unknown>
-      if (!agentsConfig.list) agentsConfig.list = []
-      const agentsList = agentsConfig.list as Record<string, unknown>[]
-
-      let configChanged = false
-
-      for (let i = 0; i < poolSize; i++) {
-        const { agent, registered } = await this.provisionAgent(i, model, agentsList)
-        this.agents.push(agent)
-        if (registered) configChanged = true
-      }
-
-      if (configChanged) {
-        await Bun.write(openclawConfigPath, JSON.stringify(config, null, 2))
-      }
-    })
-
-    // Also discover agents created by other processes (e.g. prior run with larger pool)
-    this.discoverAgents()
-
+    await this.writeOpenclawJson(root)
     this.initialized = true
-    log.info(`OpenClaw pool initialized: ${this.agents.length} agents (pid=${process.pid})`)
+    log.info(`openclaw sandbox ready (${config.mode}) at ${root}, ${this.agents.length} agent(s)`)
   }
 
-  /**
-   * Acquire an agent via cross-process file lock.
-   * Scans all known agents, tries to create run.lock atomically.
-   * If all busy, expands the pool on-demand up to MAX_POOL_SIZE.
-   * Polls with ACQUIRE_POLL_MS interval when at max capacity.
-   */
-  async acquire(model: string): Promise<PoolAgent> {
-    if (!this.initialized) throw new Error("OpenClawPool not initialized")
+  // -------------------------------------------------------------------------
+  // Provisioning
+  // -------------------------------------------------------------------------
 
+  private async provisionNativeAgent(
+    root: string,
+    sourceAgent: string,
+  ): Promise<void> {
+    const srcAgentRoot = path.join(USER_OPENCLAW_DIR, "agents", sourceAgent)
+    const srcAgentDir = path.join(srcAgentRoot, "agent")
+    try { await readdir(srcAgentDir) } catch {
+      throw new Error(
+        `openclaw native mode: source agent directory not found at ${srcAgentDir}. ` +
+        `Run \`skvm config init --adapter=openclaw\` to pick a valid agent, or set ` +
+        `adapters.openclaw.nativeSourceAgent in skvm.config.json.`,
+      )
+    }
+
+    const dstAgentRoot = path.join(root, "agents", sourceAgent)
+    const dstAgentDir = path.join(dstAgentRoot, "agent")
+    const dstSessionsDir = path.join(dstAgentRoot, "sessions")
+    const dstWorkspaceDir = path.join(dstAgentRoot, "workspace")
+    ensureDir(dstAgentDir)
+    ensureDir(dstSessionsDir)
+    ensureDir(dstWorkspaceDir)
+
+    for (const f of [...NATIVE_COPY_FILES, ...NATIVE_IDENTITY_FILES]) {
+      copyFileIfExists(path.join(srcAgentDir, f), path.join(dstAgentDir, f))
+    }
+
+    const sandboxWorkspace = path.join(root, "workspace")
+    ensureDir(sandboxWorkspace)
+    symlinkIfExists(
+      path.join(USER_OPENCLAW_DIR, "workspace", "skills"),
+      path.join(sandboxWorkspace, "skills"),
+    )
+    symlinkIfExists(path.join(USER_OPENCLAW_DIR, "plugins"), path.join(root, "plugins"))
+
+    this.agents.push({
+      agentId: sourceAgent,
+      agentDir: dstAgentDir,
+      sessionsDir: dstSessionsDir,
+      workspaceDir: dstWorkspaceDir,
+    })
+  }
+
+  private async provisionManagedAgent(
+    root: string,
+    index: number,
+  ): Promise<PoolAgent> {
+    const agentId = `skvm-${index}`
+    const agentRoot = path.join(root, "agents", agentId)
+    const agentDir = path.join(agentRoot, "agent")
+    const sessionsDir = path.join(agentRoot, "sessions")
+    const workspaceDir = path.join(agentRoot, "workspace")
+    ensureDir(agentDir)
+    ensureDir(sessionsDir)
+    ensureDir(workspaceDir)
+
+    const routes = getProvidersConfig().routes
+    await writeManagedModelsJson(path.join(agentDir, "models.json"), routes)
+    const agent: PoolAgent = { agentId, agentDir, sessionsDir, workspaceDir }
+    this.agents.push(agent)
+    return agent
+  }
+
+  private async writeOpenclawJson(root: string): Promise<void> {
+    const list = this.agents.map((a) => ({
+      id: a.agentId,
+      name: a.agentId,
+      workspace: a.workspaceDir,
+      agentDir: a.agentDir,
+      model: this.initModel,
+    }))
+    const doc = { agents: { list } }
+    await Bun.write(path.join(root, "openclaw.json"), JSON.stringify(doc, null, 2))
+  }
+
+  // -------------------------------------------------------------------------
+  // In-process acquire / release
+  // -------------------------------------------------------------------------
+
+  async acquire(): Promise<PoolAgent> {
+    if (!this.initialized) throw new Error("OpenclawSandboxPool not initialized")
     const start = Date.now()
-
     while (true) {
-      // Try all known agents
       for (const agent of this.agents) {
         if (this.heldByThisProcess.has(agent.agentId)) continue
-
-        if (this.tryAcquireRunLock(agent)) {
-          this.heldByThisProcess.add(agent.agentId)
-          try {
-            // Post-acquire setup can fail (models.json write, withConfigLock
-            // timeout, etc.). Release the lock on any failure so a transient
-            // error doesn't permanently remove this slot from the pool — the
-            // heartbeat would otherwise keep the leaked lock fresh for the
-            // lifetime of this process.
-            await this.ensureAgentModel(agent, model)
-          } catch (err) {
-            this.releaseRunLock(agent)
-            this.heldByThisProcess.delete(agent.agentId)
-            throw err
-          }
-          return agent
-        }
+        this.heldByThisProcess.add(agent.agentId)
+        return agent
       }
-
-      // All known agents busy — try expanding the pool
-      if (this.agents.length < MAX_POOL_SIZE) {
-        // First discover agents other processes may have already created
-        this.discoverAgents()
-
-        // Still under max? Create a new one
-        if (this.agents.length < MAX_POOL_SIZE) {
-          await this.expandPool(model)
-          continue // retry immediately — new agent should be free
-        }
-        // discoverAgents found more agents — loop back to try them
-        continue
+      if (this.mode === "managed" && this.agents.length < this.poolCap) {
+        const idx = this.agents.length
+        const next = await this.provisionManagedAgent(this.sandbox!.root, idx)
+        await this.writeOpenclawJson(this.sandbox!.root)
+        this.heldByThisProcess.add(next.agentId)
+        return next
       }
-
-      // At max capacity, all busy — poll
-      if (Date.now() - start > ACQUIRE_TIMEOUT_MS) {
-        throw new Error(
-          `Timed out waiting for an available openclaw agent ` +
-          `(all ${this.agents.length} busy for ${ACQUIRE_TIMEOUT_MS / 1000}s, pid=${process.pid})`,
-        )
+      if (Date.now() - start > 600_000) {
+        throw new Error(`Timed out waiting for an available openclaw agent (pool size=${this.agents.length})`)
       }
-
-      log.debug(`All ${this.agents.length} agents busy, waiting... (pid=${process.pid})`)
-      await Bun.sleep(ACQUIRE_POLL_MS)
+      await Bun.sleep(250)
     }
   }
 
-  /** Release an agent: delete run.lock so other processes can acquire it. */
   release(agent: PoolAgent): void {
-    this.releaseRunLock(agent)
     this.heldByThisProcess.delete(agent.agentId)
   }
 
-  get resolvedCmdPrefix(): string[] {
-    return this.cmdPrefix
-  }
+  get cmdPrefixValue(): string[] { return this.cmdPrefix }
+  get sandboxRoot(): string { return this.sandbox?.root ?? "" }
+  get sandboxMode(): AdapterConfigMode { return this.mode }
 
-  // -------------------------------------------------------------------------
-  // Pool expansion
-  // -------------------------------------------------------------------------
-
-  /**
-   * Provision a single agent: create dirs, write models.json if missing,
-   * register in agentsList if not present.
-   * Returns the PoolAgent and whether a new entry was added to agentsList.
-   */
-  private async provisionAgent(
-    index: number,
-    model: string,
-    agentsList: Record<string, unknown>[],
-  ): Promise<{ agent: PoolAgent; registered: boolean }> {
-    const agentId = `skvm-${index}`
-    const agentDir = path.join(OPENCLAW_DIR, "agents", agentId, "agent")
-    const sessionsDir = path.join(OPENCLAW_DIR, "agents", agentId, "sessions")
-    const workspaceDir = path.join("/tmp", "skvm-openclaw", agentId)
-
-    await mkdir(agentDir, { recursive: true })
-    await mkdir(sessionsDir, { recursive: true })
-    await mkdir(workspaceDir, { recursive: true })
-
-    // Write models.json only if it doesn't exist yet
-    const modelsJsonPath = path.join(agentDir, "models.json")
-    if (!await Bun.file(modelsJsonPath).exists()) {
-      const agentModelsJson = this.buildModelsJson(this.modelsTemplate)
-      await Bun.write(modelsJsonPath, JSON.stringify(agentModelsJson, null, 2))
-    }
-
-    // Register in openclaw.json if not already present. Model id is passed
-    // verbatim; if openclaw can't resolve its `<provider>/<model>` prefix
-    // against the providers in models.json, that's a user-side openclaw
-    // config gap, not something skvm should paper over.
-    let registered = false
-    if (!agentsList.find((a) => a.id === agentId)) {
-      agentsList.push({
-        id: agentId,
-        name: agentId,
-        workspace: workspaceDir,
-        agentDir,
-        model,
-      })
-      registered = true
-    }
-
-    return { agent: { agentId, agentDir, sessionsDir, workspaceDir }, registered }
-  }
-
-  /**
-   * Expand pool by one agent. Called when all current agents are busy
-   * and we're below MAX_POOL_SIZE.
-   */
-  private async expandPool(model: string): Promise<void> {
-    const nextIndex = this.agents.length
-
-    const openclawConfigPath = path.join(OPENCLAW_DIR, "openclaw.json")
-    await withConfigLock(async () => {
-      let config: Record<string, unknown>
-      try {
-        config = JSON.parse(await Bun.file(openclawConfigPath).text())
-      } catch {
-        config = {}
-      }
-      if (!config.agents) config.agents = {}
-      const agentsConfig = config.agents as Record<string, unknown>
-      if (!agentsConfig.list) agentsConfig.list = []
-      const agentsList = agentsConfig.list as Record<string, unknown>[]
-
-      const { agent, registered } = await this.provisionAgent(nextIndex, model, agentsList)
-      this.agents.push(agent)
-
-      if (registered) {
-        await Bun.write(openclawConfigPath, JSON.stringify(config, null, 2))
-      }
-    })
-
-    log.info(`Pool expanded to ${this.agents.length}/${MAX_POOL_SIZE} agents (pid=${process.pid})`)
-  }
-
-  /**
-   * Discover agents created by other processes that this process doesn't know about.
-   * Scans ~/.openclaw/agents/skvm-{i}/ directories beyond our current list.
-   */
-  private discoverAgents(): void {
-    const knownIds = new Set(this.agents.map(a => a.agentId))
-
-    for (let i = 0; i < MAX_POOL_SIZE; i++) {
-      const agentId = `skvm-${i}`
-      if (knownIds.has(agentId)) continue
-
-      const agentDir = path.join(OPENCLAW_DIR, "agents", agentId, "agent")
-      try {
-        statSync(agentDir)
-      } catch {
-        continue // dir doesn't exist
-      }
-
-      // Agent exists but we didn't know about it
-      this.agents.push({
-        agentId,
-        agentDir,
-        sessionsDir: path.join(OPENCLAW_DIR, "agents", agentId, "sessions"),
-        workspaceDir: path.join("/tmp", "skvm-openclaw", agentId),
-      })
-      log.debug(`Discovered agent ${agentId} created by another process`)
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Per-agent run lock (cross-process) — delegates to src/core/file-lock.ts
-  // -------------------------------------------------------------------------
-
-  private runLockPath(agent: PoolAgent): string {
-    // agent.agentDir = ~/.openclaw/agents/{agentId}/agent
-    // lock at ~/.openclaw/agents/{agentId}/run.lock
-    return path.join(path.dirname(agent.agentDir), "run.lock")
-  }
-
-  private tryAcquireRunLock(agent: PoolAgent): boolean {
-    return tryAcquireFileLock(this.runLockPath(agent), {
-      staleMs: STALE_RUN_LOCK_MS,
-      heartbeatMs: RUN_LOCK_HEARTBEAT_MS,
-      // The spawned `openclaw agent` child can outlive the parent on
-      // SIGTERM/SIGHUP or a fatal process.exit. Skipping automatic release
-      // on parent exit leaves the lock on disk so it still protects the
-      // workspace/sessions dir until heartbeat-death + staleMs reaps it,
-      // preventing a concurrent skvm from colliding with the orphaned child.
-      releaseOnProcessExit: false,
-    })
-  }
-
-  private releaseRunLock(agent: PoolAgent): void {
-    releaseFileLock(this.runLockPath(agent))
-  }
-
-  // -------------------------------------------------------------------------
-  // Model management (per-agent, only when holding run.lock)
-  // -------------------------------------------------------------------------
-
-  /**
-   * Ensure agent is configured for the requested model. Only touches
-   * openclaw.json's per-agent `model` entry (so bench sweeps can swap the
-   * agent to a new model between runs). Per-agent `models.json` is a clone
-   * of the user's main template — skvm doesn't register models or
-   * providers there; the user is expected to have the needed entries
-   * configured in openclaw's main models.json (see docs/providers.md).
-   */
-  private async ensureAgentModel(agent: PoolAgent, model: string): Promise<void> {
-    // Keep per-agent models.json in sync with the user's main template. The
-    // `~/.openclaw/agents/skvm-*` dirs persist across runs, so if we only
-    // wrote on first creation a user who adds a new provider to their main
-    // template would never see it take effect in existing agents.
-    const modelsJsonPath = path.join(agent.agentDir, "models.json")
-    const expectedContent = JSON.stringify(this.modelsTemplate, null, 2)
-    let currentContent: string | null = null
-    try {
-      currentContent = await Bun.file(modelsJsonPath).text()
-    } catch { /* missing — will be written below */ }
-    if (currentContent !== expectedContent) {
-      await Bun.write(modelsJsonPath, expectedContent)
-    }
-
-    const openclawConfigPath = path.join(OPENCLAW_DIR, "openclaw.json")
-    await withConfigLock(async () => {
-      try {
-        const config = JSON.parse(await Bun.file(openclawConfigPath).text())
-        const agentsList = (config.agents?.list ?? []) as Record<string, unknown>[]
-        const entry = agentsList.find((a) => a.id === agent.agentId)
-        if (entry && entry.model !== model) {
-          entry.model = model
-          await Bun.write(openclawConfigPath, JSON.stringify(config, null, 2))
-        }
-      } catch (err) {
-        log.warn(`Failed to update agent model in openclaw.json: ${err}`)
-      }
-    })
-
-    log.debug(`${agent.agentId} configured for model ${model}`)
-  }
-
-  /**
-   * Deep-clone the user's models.json template for per-agent writing.
-   * skvm intentionally does NOT inject provider blocks or register models —
-   * whatever the user has in their openclaw main config is what each spawned
-   * agent sees. See docs/providers.md for the matching expectations.
-   */
-  private buildModelsJson(template: Record<string, unknown>): Record<string, unknown> {
-    return JSON.parse(JSON.stringify(template))
+  teardown(): void {
+    if (!this.sandbox) return
+    const sb = this.sandbox
+    this.sandbox = undefined
+    this.initialized = false
+    this.agents = []
+    sb.teardown()
   }
 }
-
-/** Shared singleton pool for all OpenClaw usage (profile + bench). */
-const openclawPool = new OpenClawPool()
 
 // ---------------------------------------------------------------------------
 // OpenClaw Adapter
@@ -635,13 +510,64 @@ export class OpenClawAdapter implements AgentAdapter {
   readonly name = "openclaw"
   private model = ""
   private timeoutMs: number = TASK_FILE_DEFAULTS.timeoutMs
+  private pool: OpenclawSandboxPool | undefined
+  private extraCliArgs: string[] = []
 
   async setup(config: AdapterConfig): Promise<void> {
     this.model = config.model
     this.timeoutMs = config.timeoutMs
 
-    const poolSize = (config.providerOptions?.poolSize as number) ?? DEFAULT_POOL_SIZE
-    await openclawPool.init(this.model, poolSize)
+    const mode = config.mode ?? "managed"
+    const settings = getAdapterSettings("openclaw")
+    const nativeSourceAgent = config.nativeSourceAgent ?? settings.nativeSourceAgent ?? "main"
+    this.extraCliArgs = config.extraCliArgs ?? settings.extraCliArgs ?? []
+
+    // Fail-fast model resolution: throw here rather than wait 13 s for
+    // openclaw to emit "Unknown model" on stderr.
+    if (mode === "managed") {
+      try {
+        resolveRoute(this.model)
+      } catch (err) {
+        throw new Error(
+          `openclaw (managed): ${(err as Error).message} ` +
+          `Add a route via \`skvm config init\`, or switch to --adapter-config=native to use your openclaw models.json directly.`,
+        )
+      }
+    } else {
+      // Native mode: model must be resolvable in the source agent's models.json.
+      const modelsJsonPath = path.join(
+        USER_OPENCLAW_DIR, "agents", nativeSourceAgent, "agent", "models.json",
+      )
+      try {
+        const raw = await Bun.file(modelsJsonPath).text()
+        const doc = JSON.parse(raw) as { providers?: Record<string, unknown> }
+        const prefix = this.model.split("/")[0]
+        const provs = Object.keys(doc.providers ?? {})
+        if (!prefix || !provs.includes(prefix)) {
+          throw new Error(
+            `openclaw (native): provider prefix "${prefix}/" from model "${this.model}" is not in ` +
+            `${modelsJsonPath} (providers: ${provs.join(", ") || "(none)"}). ` +
+            `Add it to your openclaw models.json, or switch to --adapter-config=managed.`,
+          )
+        }
+      } catch (err) {
+        const e = err as Error
+        if (e.message.startsWith("openclaw (native)")) throw e
+        throw new Error(
+          `openclaw (native): failed to read source agent models.json at ${modelsJsonPath}: ${e.message}`,
+        )
+      }
+    }
+
+    const poolSize = mode === "native" ? 1 : (config.providerOptions?.poolSize as number) ?? 8
+
+    this.pool = new OpenclawSandboxPool()
+    await this.pool.init({
+      mode,
+      nativeSourceAgent,
+      poolSize,
+      model: this.model,
+    })
   }
 
   async run(task: {
@@ -654,21 +580,19 @@ export class OpenClawAdapter implements AgentAdapter {
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
   }): Promise<RunResult> {
-    const agent = await openclawPool.acquire(this.model)
+    if (!this.pool) throw new Error("OpenClawAdapter: setup() not called")
+    const agent = await this.pool.acquire()
     try {
       return await this.runWithAgent(agent, task)
     } finally {
-      openclawPool.release(agent)
+      this.pool.release(agent)
     }
   }
 
   async teardown(): Promise<void> {
-    // No-op: pool persists for reuse across profile + bench
+    this.pool?.teardown()
+    this.pool = undefined
   }
-
-  // -------------------------------------------------------------------------
-  // Private: run logic using a pool agent
-  // -------------------------------------------------------------------------
 
   private async runWithAgent(
     agent: PoolAgent,
@@ -683,11 +607,12 @@ export class OpenClawAdapter implements AgentAdapter {
       timeoutMs?: number
     },
   ): Promise<RunResult> {
+    const pool = this.pool!
     const ws = agent.workspaceDir
     const skillMode = task.skillMode ?? "inject"
     let skillLoaded: boolean | undefined
 
-    // 1. Clean agent workspace and sessions
+    // 1. Clean workspace + sessions
     await rm(ws, { recursive: true, force: true })
     await mkdir(ws, { recursive: true })
     await rm(agent.sessionsDir, { recursive: true, force: true })
@@ -696,7 +621,7 @@ export class OpenClawAdapter implements AgentAdapter {
     // 2. Copy task workDir contents into agent workspace
     await runCommand(["cp", "-a", `${task.workDir}/.`, ws])
 
-    // 3. Prepare workspace: preserve bootstrap files
+    // 3. Preserve bootstrap files
     const savedBootstrap: Record<string, Buffer> = {}
     for (const fname of BOOTSTRAP_FILES) {
       const fpath = path.join(ws, fname)
@@ -707,15 +632,12 @@ export class OpenClawAdapter implements AgentAdapter {
         }
       } catch { /* skip */ }
     }
-
-    // Restore bootstrap files
     for (const [fname, content] of Object.entries(savedBootstrap)) {
       await Bun.write(path.join(ws, fname), content)
     }
 
     if (task.skillContent) {
       if (skillMode === "inject") {
-        // Inject mode: write skill content to BOOTSTRAP.md (append to existing if present)
         const bootstrapPath = path.join(ws, "BOOTSTRAP.md")
         let existing = ""
         try {
@@ -728,7 +650,6 @@ export class OpenClawAdapter implements AgentAdapter {
         await Bun.write(bootstrapPath, existing + separator + task.skillContent)
         skillLoaded = false
       } else {
-        // Discover mode: copy to skills/<name>/
         const skillName = task.skillMeta?.name ?? "bench-skill"
         const skillDir = path.join(ws, "skills", skillName)
         await mkdir(skillDir, { recursive: true })
@@ -737,43 +658,48 @@ export class OpenClawAdapter implements AgentAdapter {
       }
     }
 
-    // Copy skills from main workspace
-    const mainSkillsDir = path.join(HOME, ".openclaw", "workspace", "skills")
-    try {
-      const entries = await readdir(mainSkillsDir, { withFileTypes: true })
-      const destSkillsDir = path.join(ws, "skills")
-      await mkdir(destSkillsDir, { recursive: true })
-      for (const entry of entries) {
-        if (entry.isDirectory()) {
-          await runCommand(["cp", "-r", path.join(mainSkillsDir, entry.name), path.join(destSkillsDir, entry.name)])
-        }
-      }
-    } catch { /* no main skills */ }
+    if (pool.sandboxMode === "native") {
+      const userSkillsDir = path.join(USER_OPENCLAW_DIR, "workspace", "skills")
+      symlinkIfExists(userSkillsDir, path.join(ws, "skills"))
+    }
 
-    // 4. Execute task in agent workspace
     const startMs = performance.now()
     const sessionId = `bench_${Date.now()}`
 
-    const { stdout, stderr, exitCode, timedOut } = await runCommand(
-      [
-        ...openclawPool.resolvedCmdPrefix, "agent",
-        "--agent", agent.agentId,
-        "--session-id", sessionId,
-        "--message", task.prompt,
-      ],
-      { cwd: ws, timeout: task.timeoutMs ?? this.timeoutMs },
+    // Only OPENCLAW_STATE_DIR — not OPENCLAW_HOME, which is the user's
+    // homedir; child processes (bash, git, ...) still need real HOME for
+    // ~/.ssh, ~/.gitconfig, etc.
+    const spawnEnv: Record<string, string | undefined> = {
+      OPENCLAW_STATE_DIR: pool.sandboxRoot,
+    }
+
+    const cmd = [
+      ...pool.cmdPrefixValue, "agent",
+      "--agent", agent.agentId,
+      "--session-id", sessionId,
+      "--message", task.prompt,
+      ...this.extraCliArgs,
+    ]
+
+    const { stderr, exitCode, timedOut } = await runCommand(
+      cmd,
+      {
+        cwd: ws,
+        timeout: task.timeoutMs ?? this.timeoutMs,
+        env: spawnEnv,
+      },
     )
 
     const durationMs = performance.now() - startMs
 
     if (exitCode !== 0 && stderr) {
-      log.warn(`openclaw exited with code ${exitCode}: ${stderr.slice(0, 200)}`)
+      log.warn(`openclaw exited with code ${exitCode}: ${stderr.slice(0, 2000)}`)
     }
 
-    // 5. Copy agent workspace back to task workDir (for eval to find agent-created files)
+    // 5. Copy sandbox workspace back to original task workDir for eval
     await runCommand(["cp", "-a", `${ws}/.`, task.workDir])
 
-    // 6. Load transcript and save raw JSONL to convLog path if available
+    // 6. Load transcript
     const { transcript, rawJsonlPath } = await this.loadTranscript(agent, sessionId)
     if (rawJsonlPath && task.convLog) {
       try {
@@ -786,7 +712,7 @@ export class OpenClawAdapter implements AgentAdapter {
       }
     }
 
-    // 7. Verify skill was actually loaded from transcript
+    // 7. Verify skill load
     if (task.skillContent && skillLoaded === false) {
       const skillName = task.skillMeta?.name ?? "bench-skill"
 
@@ -794,9 +720,7 @@ export class OpenClawAdapter implements AgentAdapter {
         const hasAssistantMessage = transcript.some(
           e => e.type === "message" && e.message?.role === "assistant",
         )
-        if (hasAssistantMessage) {
-          skillLoaded = true
-        }
+        if (hasAssistantMessage) skillLoaded = true
       }
 
       if (!skillLoaded) {
@@ -859,14 +783,6 @@ export class OpenClawAdapter implements AgentAdapter {
       result.runStatus = "adapter-crashed"
       result.statusDetail = `openclaw exited with code ${exitCode}`
     } else if (transcript.length === 0) {
-      // Best-effort telemetry miss, NOT a workDir taint: the agent workspace
-      // was already copied back to task.workDir at the `cp -a` line above
-      // BEFORE we attempted to load the transcript. `loadTranscript` retries
-      // 10 times waiting for the JSONL file to flush, and it can still come
-      // up empty if the file is late-written or its format changed. Mirror
-      // hermes/jiuwenclaw round-3 narrowing: clean exit + missing telemetry
-      // ⇒ 'ok' so the runner gate evaluates the workDir as-is. See round-5
-      // Codex review.
       result.runStatus = "ok"
       result.statusDetail =
         "openclaw produced no parseable transcript entries — telemetry unavailable, workDir scored as-is"
@@ -883,7 +799,6 @@ export class OpenClawAdapter implements AgentAdapter {
   ): Promise<{ transcript: OpenClawTranscriptEntry[]; rawJsonlPath?: string }> {
     const sessionsDir = agent.sessionsDir
 
-    // Strategy: find the most recently modified .jsonl file
     for (let attempt = 0; attempt < 10; attempt++) {
       try {
         const entries = await readdir(sessionsDir, { withFileTypes: true, recursive: true })
@@ -897,7 +812,6 @@ export class OpenClawAdapter implements AgentAdapter {
           })
 
         if (jsonlFiles.length > 0) {
-          // Pick the most recently modified
           let bestPath = jsonlFiles[0]!
           let bestMtime = 0
           for (const f of jsonlFiles) {
@@ -917,7 +831,6 @@ export class OpenClawAdapter implements AgentAdapter {
         }
       } catch { /* retry */ }
 
-      // Wait for OpenClaw to flush
       await Bun.sleep(1000)
     }
 

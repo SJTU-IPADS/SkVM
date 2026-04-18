@@ -11,7 +11,7 @@ import {
   printCompareBenchSkillReport,
   writeCompareBenchSkillOutputs,
 } from "./compare.ts"
-import { LOGS_DIR, getBenchLogDir, SKVM_CACHE } from "../core/config.ts"
+import { LOGS_DIR, getBenchLogDir, SKVM_CACHE, resolveAdapterConfigMode } from "../core/config.ts"
 import { mkdir, readdir } from "node:fs/promises"
 import { runDeferredJudge, readDeferredResults, mergeDeferredResults } from "../framework/deferred-eval.ts"
 import { ALL_ADAPTERS, type AdapterName, isAdapterName } from "../adapters/registry.ts"
@@ -58,7 +58,7 @@ export async function runBench(flags: Record<string, string>): Promise<void> {
   // Handle --custom=<file.yaml>: standalone custom plan mode
   if (flags.custom) {
     const { executeCustomPlan } = await import("./custom-plan.ts")
-    await executeCustomPlan(flags.custom, flags.resume)
+    await executeCustomPlan(flags.custom, flags.resume, resolveAdapterConfigMode(flags["adapter-config"]))
     return
   }
 
@@ -113,6 +113,7 @@ export async function runBench(flags: Record<string, string>): Promise<void> {
     concurrency: flags.concurrency ? parseInt(flags.concurrency, 10) : CLI_DEFAULTS.concurrency,
     asyncJudge: flags["async-judge"] === "true" || flags["async-judge"] === "",
     runsPerTask: flags["runs-per-task"] ? parseInt(flags["runs-per-task"], 10) : CLI_DEFAULTS.benchRunsPerTask,
+    adapterConfigMode: resolveAdapterConfigMode(flags["adapter-config"]),
   }
 
   if (!baseConfig.tcpPath && conditions.some(c => isAotCondition(c))) {
@@ -537,6 +538,8 @@ Benchmark Options:
   --concurrency=<n>     Parallel task runs (default: ${CLI_DEFAULTS.concurrency}, sequential).
                          In multi-model mode, slots are distributed across models.
   --runs-per-task=<n>    Runs per task-condition pair, averaged to reduce variance (default: ${CLI_DEFAULTS.benchRunsPerTask})
+  --adapter-config=<m>   native | managed (default: defaults.adapterConfigMode in skvm.config.json, else managed).
+                         Native uses your real harness config; managed uses providers.routes only.
   --keep-workdirs        Don't delete work directories after runs
   --verbose              Enable debug logging
 

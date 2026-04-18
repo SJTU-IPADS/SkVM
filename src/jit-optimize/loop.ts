@@ -330,6 +330,10 @@ export async function runLoop(
     timeoutMs: config.targetAdapter.adapterConfig?.timeoutMs ?? 300_000,
     apiKey: config.targetAdapter.adapterConfig?.apiKey,
     providerOptions: config.targetAdapter.adapterConfig?.providerOptions,
+    mode: config.targetAdapter.adapterConfig?.mode,
+    nativeSourceAgent: config.targetAdapter.adapterConfig?.nativeSourceAgent,
+    nativeAgent: config.targetAdapter.adapterConfig?.nativeAgent,
+    extraCliArgs: config.targetAdapter.adapterConfig?.extraCliArgs,
   }
 
   /**

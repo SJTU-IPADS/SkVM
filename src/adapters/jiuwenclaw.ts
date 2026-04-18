@@ -302,6 +302,16 @@ export class JiuwenClawAdapter implements AgentAdapter {
     this.model = config.model
     this.apiKey = config.apiKey
     this.timeoutMs = config.timeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs
+    const mode = config.mode ?? "managed"
+    if (mode === "native") {
+      throw new Error(
+        "jiuwenclaw does not support --adapter-config=native: its set_user_home() Python API " +
+        "only scopes config for the in-process Python side, not for the subprocess AgentServer " +
+        "+ gateway sidecars. Use --adapter-config=managed (or set defaults.adapterConfigMode=managed " +
+        "in skvm.config.json) — skvm writes a minimal ~/.jiuwenclaw/config/.env from providers.routes " +
+        "and backs up / restores the user's .env around the run.",
+      )
+    }
     this.repoDir = getAdapterRepoDir("jiuwenclaw")
     this.cmdPrefix = await resolveJiuwenClawCmd()
     this.sidecarPython = await resolveSidecarPython(this.repoDir, this.cmdPrefix[0]!)
@@ -397,7 +407,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
     const durationMs = performance.now() - startMs
 
     if (exitCode !== 0 && stderr) {
-      log.warn(`jiuwenclaw exited with code ${exitCode}: ${stderr.slice(0, 200)}`)
+      log.warn(`jiuwenclaw exited with code ${exitCode}: ${stderr.slice(0, 2000)}`)
     }
 
     // --- Parse JSON-RPC response from stdout ---

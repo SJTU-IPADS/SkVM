@@ -405,12 +405,60 @@ export type WorkflowDAG = z.infer<typeof WorkflowDAGSchema>
 // Adapter Config
 // ---------------------------------------------------------------------------
 
+/**
+ * Mode controlling how the CLI-wrapping adapters (openclaw, opencode, hermes,
+ * jiuwenclaw) build the harness's config at run time.
+ *
+ *   - `native`  — sandbox HOME is populated from the user's real harness
+ *                 config (copy small config files, symlink large asset
+ *                 dirs). Honors everything the user has set up in
+ *                 `~/.openclaw`, `~/.config/opencode`, `~/.hermes`, etc.
+ *   - `managed` — sandbox HOME starts empty; skvm writes minimal config
+ *                 derived from `providers.routes`. Reproducible across
+ *                 machines.
+ *
+ * Users choose a default via `skvm config init`
+ * (`defaults.adapterConfigMode`); per-invocation override is
+ * `--adapter-config=<mode>`. Unset → `managed` (preserves legacy behavior
+ * for upgrading users).
+ */
+export const AdapterConfigModeSchema = z.enum(["native", "managed"])
+export type AdapterConfigMode = z.infer<typeof AdapterConfigModeSchema>
+
 export const AdapterConfigSchema = z.object({
   model: z.string(),
   apiKey: z.string().optional(),
   maxSteps: z.number().default(TASK_FILE_DEFAULTS.maxSteps),
   timeoutMs: z.number().default(TASK_FILE_DEFAULTS.timeoutMs),
   providerOptions: z.record(z.unknown()).optional(),
+  /**
+   * Which config-source mode to use when building the sandbox HOME for the
+   * harness. When undefined, adapters treat it as `managed` (preserves the
+   * pre-feature behavior for callers that haven't been updated to thread a
+   * resolved mode through). The CLI entry points resolve the mode from
+   * `--adapter-config` > `defaults.adapterConfigMode` > `"managed"` before
+   * handing the config to adapters.
+   */
+  mode: AdapterConfigModeSchema.optional(),
+  /**
+   * For openclaw native: the source agent whose config (models.json, auth,
+   * identity files) gets cloned into the sandbox. Read from
+   * `adapters.openclaw.nativeSourceAgent` in skvm.config.json; defaults to
+   * `"main"`.
+   */
+  nativeSourceAgent: z.string().optional(),
+  /**
+   * For opencode native: which agent frontmatter id (`--agent <id>`) to use.
+   * Read from `adapters.opencode.nativeAgent` in skvm.config.json; defaults
+   * to `"build"` when unset.
+   */
+  nativeAgent: z.string().optional(),
+  /**
+   * Per-adapter extra CLI args appended verbatim to the harness command.
+   * Escape hatch for knobs skvm doesn't model directly (e.g.
+   * `["--thinking", "high"]`). Read from `adapters.<name>.extraCliArgs`.
+   */
+  extraCliArgs: z.array(z.string()).optional(),
 })
 
 export type AdapterConfig = z.infer<typeof AdapterConfigSchema>

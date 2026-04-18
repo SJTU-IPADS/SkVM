@@ -11,7 +11,7 @@
  * copy on subsequent runs).
  */
 
-import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync, chmodSync, accessSync, constants as fsConst } from "node:fs"
+import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync, chmodSync, accessSync, readdirSync, constants as fsConst } from "node:fs"
 import path from "node:path"
 import readline from "node:readline/promises"
 import { stdin, stdout } from "node:process"
@@ -30,9 +30,11 @@ import {
   getProvidersConfig,
   getHeadlessAgentConfig,
   getAdapterRepoDir,
+  getAdapterSettings,
+  getDefaultAdapterConfigMode,
   detectLegacyHeadlessFields,
 } from "../core/config.ts"
-import type { ProviderKind } from "../core/types.ts"
+import type { ProviderKind, AdapterConfigMode } from "../core/types.ts"
 import { ALL_ADAPTERS, type AdapterName } from "../adapters/registry.ts"
 import { shortenPath } from "../core/banner.ts"
 
@@ -56,9 +58,17 @@ interface HeadlessAgentDraft {
   opencodePath?: string
 }
 
+interface AdapterDraft {
+  repoPath?: string
+  nativeSourceAgent?: string
+  nativeAgent?: string
+  extraCliArgs?: string[]
+}
+
 interface ConfigDraft {
-  adapters: Partial<Record<AdapterName, string>>
+  adapters: Partial<Record<AdapterName, AdapterDraft>>
   providers: { routes: RouteDraft[] }
+  defaults?: { adapterConfigMode?: AdapterConfigMode }
   /**
    * Preserved as an opaque passthrough on re-init — the wizard doesn't
    * configure these fields (credentials and endpoints come from
@@ -166,6 +176,10 @@ async function runShow(): Promise<void> {
   console.log(`  ${c.dim("credentials derived automatically from providers.routes")}`)
   warnLegacyHeadlessFields()
 
+  console.log(c.bold("\nDefaults"))
+  const defMode = getDefaultAdapterConfigMode() ?? "(unset → managed)"
+  printRow("Adapter mode", String(defMode), "defaults.adapterConfigMode")
+
   console.log(c.bold("\nAdapters"))
   const labelW = Math.max(...ALL_ADAPTERS.map(a => a.length))
   for (const a of ALL_ADAPTERS) {
@@ -184,6 +198,22 @@ async function runShow(): Promise<void> {
       const tag = ok ? c.green("✓") : c.red("✗ missing")
       console.log(`  ${a.padEnd(labelW)}  ${shortenPath(dir)}  ${tag}`)
     }
+    // Surface native-mode + extraCliArgs settings when set.
+    const settings = getAdapterSettings(a as Exclude<AdapterName, "bare-agent">)
+    const lines: string[] = []
+    if (a === "openclaw" && settings.nativeSourceAgent) {
+      lines.push(`${c.dim("nativeSourceAgent:")} ${settings.nativeSourceAgent}`)
+    }
+    if (a === "opencode" && settings.nativeAgent) {
+      lines.push(`${c.dim("nativeAgent:")} ${settings.nativeAgent}`)
+    }
+    if (settings.extraCliArgs && settings.extraCliArgs.length > 0) {
+      lines.push(`${c.dim("extraCliArgs:")} ${settings.extraCliArgs.join(" ")}`)
+    }
+    if (a === "jiuwenclaw") {
+      lines.push(c.dim("native not supported (managed only)"))
+    }
+    for (const ln of lines) console.log(`  ${"".padEnd(labelW)}    ${ln}`)
   }
   console.log()
 }
@@ -295,6 +325,7 @@ async function runInit(): Promise<void> {
     await stepProviders(rl, draft)
     // No headlessAgent config: jit-optimize / jit-boost resolve credentials
     // directly from providers.routes at runtime.
+    await stepDefaultMode(rl, draft)
     await stepAdapters(rl, draft)
     await stepPathsHint(rl)
 
@@ -345,8 +376,24 @@ function loadExistingDraft(): ConfigDraft {
   if (raw.adapters && typeof raw.adapters === "object") {
     for (const [k, v] of Object.entries(raw.adapters as Record<string, unknown>)) {
       if (typeof v === "string" && v && !v.startsWith("<")) {
-        draft.adapters[k as AdapterName] = v
+        draft.adapters[k as AdapterName] = { repoPath: v }
+      } else if (v && typeof v === "object") {
+        const o = v as Record<string, unknown>
+        const entry: AdapterDraft = {}
+        if (typeof o.repoPath === "string" && !o.repoPath.startsWith("<")) entry.repoPath = o.repoPath
+        if (typeof o.nativeSourceAgent === "string") entry.nativeSourceAgent = o.nativeSourceAgent
+        if (typeof o.nativeAgent === "string") entry.nativeAgent = o.nativeAgent
+        if (Array.isArray(o.extraCliArgs) && o.extraCliArgs.every((x) => typeof x === "string")) {
+          entry.extraCliArgs = o.extraCliArgs as string[]
+        }
+        if (Object.keys(entry).length > 0) draft.adapters[k as AdapterName] = entry
       }
+    }
+  }
+  if (raw.defaults && typeof raw.defaults === "object") {
+    const d = raw.defaults as Record<string, unknown>
+    if (d.adapterConfigMode === "native" || d.adapterConfigMode === "managed") {
+      draft.defaults = { adapterConfigMode: d.adapterConfigMode }
     }
   }
   if (raw.providers && typeof raw.providers === "object") {
@@ -390,7 +437,7 @@ function tryReadJson(p: string): Record<string, unknown> | null {
 // --- Step 1: providers --------------------------------------------------------
 
 async function stepProviders(rl: readline.Interface, draft: ConfigDraft): Promise<void> {
-  printHeader("Step 1 / 3 — Providers (where SkVM sends LLM calls)")
+  printHeader("Step 1 / 4 — Providers (where SkVM sends LLM calls)")
   console.log(c.dim("Each 'route' tells skvm where to send a class of model ids. Add as many"))
   console.log(c.dim("as you want; the first match wins (so order matters)."))
   console.log(c.dim("Keys are stored in skvm.config.json (gitignored, chmod 0600), or you can"))
@@ -561,34 +608,133 @@ async function askApiKey(
 
 // --- Step 2: adapters ---------------------------------------------------------
 
+async function stepDefaultMode(rl: readline.Interface, draft: ConfigDraft): Promise<void> {
+  printHeader("Step 2 / 4 — Default adapter-config mode")
+  console.log(c.dim("Each run can be `native` (use your real harness config from ~/.openclaw,"))
+  console.log(c.dim("~/.config/opencode, ~/.hermes) or `managed` (a clean sandbox with skvm-generated"))
+  console.log(c.dim("config derived from providers.routes). This is the default; --adapter-config=<m>"))
+  console.log(c.dim("on any command overrides per-run."))
+  console.log(c.dim("  native  — real user environment; best for development / ad-hoc runs"))
+  console.log(c.dim("  managed — clean reproducible baseline; best for bench / profile / jit-optimize"))
+  const cur = draft.defaults?.adapterConfigMode ?? "managed"
+  const ans = (await ask(rl, "Default mode", cur)).trim() || cur
+  if (ans !== "native" && ans !== "managed") {
+    console.log(c.yellow(`   ⚠ "${ans}" is not native/managed — keeping previous value (${cur}).`))
+    draft.defaults = { adapterConfigMode: cur }
+    return
+  }
+  draft.defaults = { adapterConfigMode: ans }
+}
+
 async function stepAdapters(rl: readline.Interface, draft: ConfigDraft): Promise<void> {
-  printHeader("Step 2 / 3 — Local adapter checkouts (optional)")
+  printHeader("Step 3 / 4 — Local adapter checkouts + per-adapter options")
   console.log(c.dim("Adapters are external agent CLIs (opencode, openclaw, hermes, jiuwenclaw)."))
   console.log(c.dim("Point an adapter at a local git clone if you want skvm to build/run that"))
   console.log(c.dim("agent from source. Otherwise skvm tries `which <name>` on your PATH."))
+  console.log(c.dim("You'll also be asked for the native-mode source agent where it applies."))
   console.log(c.dim("Most users can press Enter through this section."))
   console.log(c.dim("Path can use ~ for $HOME. Example: ~/Projects/opencode\n"))
 
   for (const a of ALL_ADAPTERS) {
     if (a === "bare-agent") continue
-    const cur = draft.adapters[a] ?? ""
-    const ans = (await ask(rl, `${a} repo path`, cur || "(skip)")).trim()
-    if (!ans || ans === "(skip)") {
+    const cur = draft.adapters[a] ?? {}
+    console.log(c.bold(`\n  ${a}`))
+
+    // 1. Repo path
+    const repoCurrent = cur.repoPath ?? ""
+    const repoAns = (await ask(rl, `    repo path`, repoCurrent || "(skip)")).trim()
+    let nextEntry: AdapterDraft = {}
+    if (repoAns && repoAns !== "(skip)") {
+      const expanded = expandHome(repoAns)
+      if (!existsSync(expanded)) {
+        console.log(c.yellow(`     ⚠ ${shortenPath(expanded)} does not exist — saving anyway.`))
+      }
+      nextEntry.repoPath = repoAns
+    }
+
+    // 2. Per-adapter native settings
+    if (a === "openclaw") {
+      const agents = listOpenclawAgents()
+      if (agents.length > 0) {
+        console.log(c.dim(`    available agents under ~/.openclaw/agents: ${agents.join(", ")}`))
+      } else {
+        console.log(c.dim(`    (no ~/.openclaw/agents — native mode will error until you create one or pick another)`))
+      }
+      const curSrc = cur.nativeSourceAgent ?? (agents.includes("main") ? "main" : agents[0] ?? "main")
+      const srcAns = (await ask(rl, `    native source agent`, curSrc)).trim() || curSrc
+      nextEntry.nativeSourceAgent = srcAns
+    }
+    if (a === "opencode") {
+      const agents = listOpencodeAgents()
+      if (agents.length > 0) {
+        console.log(c.dim(`    available agents under ~/.config/opencode/agent: ${agents.join(", ")}`))
+      }
+      const curAgent = cur.nativeAgent ?? (agents.includes("build") ? "build" : agents[0] ?? "build")
+      const agentAns = (await ask(rl, `    native agent`, curAgent)).trim() || curAgent
+      nextEntry.nativeAgent = agentAns
+    }
+    if (a === "hermes") {
+      const cfg = expandHome("~/.hermes/config.yaml")
+      const env = expandHome("~/.hermes/.env")
+      if (existsSync(cfg)) {
+        console.log(c.green(`    ✓ found ~/.hermes/config.yaml (native mode ready)`))
+      } else {
+        console.log(c.yellow(`    ⚠ ~/.hermes/config.yaml missing — native mode will error.`))
+      }
+      if (!existsSync(env)) {
+        console.log(c.yellow(`    ⚠ ~/.hermes/.env missing — native mode may lack API keys.`))
+      }
+    }
+    if (a === "jiuwenclaw") {
+      console.log(c.yellow(`    note: jiuwenclaw only supports --adapter-config=managed.`))
+      console.log(c.dim(`    (its set_user_home() does not isolate the AgentServer sidecar)`))
+    }
+
+    // 3. extraCliArgs escape hatch (space-separated; empty to skip).
+    const curExtra = (cur.extraCliArgs ?? []).join(" ")
+    const extraAns = (await ask(
+      rl,
+      `    extra CLI args (space-separated, appended verbatim)`,
+      curExtra,
+    )).trim()
+    if (extraAns) {
+      nextEntry.extraCliArgs = extraAns.split(/\s+/).filter(Boolean)
+    }
+
+    if (Object.keys(nextEntry).length > 0) {
+      draft.adapters[a] = nextEntry
+    } else {
       delete draft.adapters[a]
-      continue
     }
-    const expanded = expandHome(ans)
-    if (!existsSync(expanded)) {
-      console.log(c.yellow(`   ⚠ ${shortenPath(expanded)} does not exist — saving anyway.`))
-    }
-    draft.adapters[a] = ans
+  }
+}
+
+function listOpenclawAgents(): string[] {
+  try {
+    return readdirSync(expandHome("~/.openclaw/agents"), { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort()
+  } catch {
+    return []
+  }
+}
+
+function listOpencodeAgents(): string[] {
+  try {
+    return readdirSync(expandHome("~/.config/opencode/agent"), { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.endsWith(".md"))
+      .map((e) => e.name.replace(/\.md$/, ""))
+      .sort()
+  } catch {
+    return []
   }
 }
 
 // --- Step 3: paths hint -------------------------------------------------------
 
 async function stepPathsHint(rl: readline.Interface): Promise<void> {
-  printHeader("Step 3 / 3 — Cache + data dirs")
+  printHeader("Step 4 / 4 — Cache + data dirs")
   console.log(c.dim("Informational — these aren't part of skvm.config.json. The defaults below"))
   console.log(c.dim("fit most users; override via env var or flag only if your layout needs it"))
   console.log(c.dim("(CI, shared cluster, temp isolation, etc.).\n"))
@@ -683,15 +829,50 @@ async function runDoctor(): Promise<void> {
     })
   }
 
-  // Adapter checkouts
+  // Adapter checkouts + native-mode readiness
   for (const a of ALL_ADAPTERS) {
     if (a === "bare-agent") continue
     const dir = getAdapterRepoDir(a as Exclude<AdapterName, "bare-agent">)
-    if (!dir) continue
-    if (!existsSync(dir)) {
-      results.push({ status: "fail", label: `Adapter ${a} checkout`, detail: `${shortenPath(dir)} does not exist` })
-    } else {
-      results.push({ status: "ok", label: `Adapter ${a} checkout`, detail: shortenPath(dir) })
+    if (dir) {
+      if (!existsSync(dir)) {
+        results.push({ status: "fail", label: `Adapter ${a} checkout`, detail: `${shortenPath(dir)} does not exist` })
+      } else {
+        results.push({ status: "ok", label: `Adapter ${a} checkout`, detail: shortenPath(dir) })
+      }
+    }
+    const settings = getAdapterSettings(a as Exclude<AdapterName, "bare-agent">)
+    // Native-mode readiness: skip if user defaults to managed AND adapter has no native-specific setting.
+    const defMode = getDefaultAdapterConfigMode() ?? "managed"
+    const nativeCouldApply = defMode === "native"
+      || settings.nativeSourceAgent !== undefined
+      || settings.nativeAgent !== undefined
+    if (!nativeCouldApply) continue
+
+    if (a === "openclaw") {
+      const srcAgent = settings.nativeSourceAgent ?? "main"
+      const modelsJson = expandHome(`~/.openclaw/agents/${srcAgent}/agent/models.json`)
+      results.push(existsSync(modelsJson)
+        ? { status: "ok", label: `openclaw native source agent "${srcAgent}"`, detail: shortenPath(modelsJson) }
+        : { status: "fail", label: `openclaw native source agent "${srcAgent}"`, detail: `${shortenPath(modelsJson)} missing — native mode will error` },
+      )
+    } else if (a === "opencode") {
+      const cfg = expandHome("~/.config/opencode/opencode.jsonc")
+      results.push(existsSync(cfg)
+        ? { status: "ok", label: `opencode native config`, detail: shortenPath(cfg) }
+        : { status: "fail", label: `opencode native config`, detail: `${shortenPath(cfg)} missing — native mode will error` },
+      )
+    } else if (a === "hermes") {
+      const cfg = expandHome("~/.hermes/config.yaml")
+      results.push(existsSync(cfg)
+        ? { status: "ok", label: `hermes native config`, detail: shortenPath(cfg) }
+        : { status: "fail", label: `hermes native config`, detail: `${shortenPath(cfg)} missing — native mode will error` },
+      )
+    } else if (a === "jiuwenclaw" && defMode === "native") {
+      results.push({
+        status: "fail",
+        label: `jiuwenclaw native mode`,
+        detail: `jiuwenclaw does not support native; change defaults.adapterConfigMode or pass --adapter-config=managed`,
+      })
     }
   }
 
@@ -789,9 +970,30 @@ function printHeader(title: string): void {
 function serialize(draft: ConfigDraft): string {
   // Drop empty optional fields so the output stays minimal.
   const out: Record<string, unknown> = {}
-  if (Object.keys(draft.adapters).length > 0) {
-    out.adapters = draft.adapters
+  if (draft.defaults && draft.defaults.adapterConfigMode !== undefined) {
+    out.defaults = { adapterConfigMode: draft.defaults.adapterConfigMode }
   }
+  const adaptersOut: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(draft.adapters)) {
+    if (!v) continue
+    // Keep the legacy string form when only repoPath is set, so users who
+    // used the previous wizard see the same shape they had before.
+    const onlyRepoPath = v.repoPath !== undefined
+      && v.nativeSourceAgent === undefined
+      && v.nativeAgent === undefined
+      && (v.extraCliArgs === undefined || v.extraCliArgs.length === 0)
+    if (onlyRepoPath) {
+      adaptersOut[k] = v.repoPath
+      continue
+    }
+    const entry: Record<string, unknown> = {}
+    if (v.repoPath) entry.repoPath = v.repoPath
+    if (v.nativeSourceAgent) entry.nativeSourceAgent = v.nativeSourceAgent
+    if (v.nativeAgent) entry.nativeAgent = v.nativeAgent
+    if (v.extraCliArgs && v.extraCliArgs.length > 0) entry.extraCliArgs = v.extraCliArgs
+    if (Object.keys(entry).length > 0) adaptersOut[k] = entry
+  }
+  if (Object.keys(adaptersOut).length > 0) out.adapters = adaptersOut
   if (draft.providers.routes.length > 0) {
     out.providers = { routes: draft.providers.routes }
   }

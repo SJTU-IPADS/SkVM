@@ -1,12 +1,19 @@
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, SkillMode } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, SkillMode, ProviderRoute } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
-import { getAdapterRepoDir } from "../core/config.ts"
-import { envForRoute } from "../providers/registry.ts"
+import { getAdapterRepoDir, getAdapterSettings, stripRoutingPrefix } from "../core/config.ts"
+import { envForRoute, resolveRoute } from "../providers/registry.ts"
 import { runCommand } from "./opencode.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
+import {
+  createSandbox,
+  ensureDir,
+  copyFileIfExists,
+  symlinkIfExists,
+  type Sandbox,
+} from "../core/adapter-sandbox.ts"
 
 const log = createLogger("hermes")
 
@@ -206,6 +213,9 @@ export async function resolveHermesCmd(): Promise<string[]> {
 // Hermes Adapter
 // ---------------------------------------------------------------------------
 
+const HOME = process.env.HOME ?? ""
+const USER_HERMES_DIR = path.join(HOME, ".hermes")
+
 export class HermesAdapter implements AgentAdapter {
   readonly name = "hermes"
   private model = ""
@@ -213,6 +223,10 @@ export class HermesAdapter implements AgentAdapter {
   private timeoutMs: number = TASK_FILE_DEFAULTS.timeoutMs
   private cmdPrefix: string[] = []
   private repoDir: string | undefined
+  private mode: AdapterConfigMode = "managed"
+  private extraCliArgs: string[] = []
+  private sandbox: Sandbox | undefined
+  private hermesHome: string | undefined
 
   async setup(config: AdapterConfig): Promise<void> {
     this.model = config.model
@@ -220,8 +234,55 @@ export class HermesAdapter implements AgentAdapter {
     this.timeoutMs = config.timeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs
     this.repoDir = getAdapterRepoDir("hermes")
     this.cmdPrefix = await resolveHermesCmd()
+    this.mode = config.mode ?? "managed"
+
+    const settings = getAdapterSettings("hermes")
+    this.extraCliArgs = config.extraCliArgs ?? settings.extraCliArgs ?? []
+
+    // Fail-fast model resolution
+    if (this.mode === "native") {
+      const cfgPath = path.join(USER_HERMES_DIR, "config.yaml")
+      if (!(await Bun.file(cfgPath).exists())) {
+        throw new Error(
+          `hermes (native): ${cfgPath} not found. Run hermes's own setup first, ` +
+          `or switch to --adapter-config=managed.`,
+        )
+      }
+    } else {
+      try {
+        resolveRoute(this.model)
+      } catch (err) {
+        throw new Error(
+          `hermes (managed): ${(err as Error).message} Run \`skvm config init\` to add a route, ` +
+          `or switch to --adapter-config=native.`,
+        )
+      }
+    }
+
+    // Build HERMES_HOME sandbox
+    this.sandbox = createSandbox("hermes")
+    const root = this.sandbox.root
+    this.hermesHome = root
+    ensureDir(path.join(root, "sessions"))
+
+    if (this.mode === "native") {
+      copyFileIfExists(path.join(USER_HERMES_DIR, "config.yaml"), path.join(root, "config.yaml"))
+      copyFileIfExists(path.join(USER_HERMES_DIR, ".env"), path.join(root, ".env"))
+      copyFileIfExists(path.join(USER_HERMES_DIR, "SOUL.md"), path.join(root, "SOUL.md"))
+      symlinkIfExists(path.join(USER_HERMES_DIR, "skills"), path.join(root, "skills"))
+      symlinkIfExists(path.join(USER_HERMES_DIR, "memories"), path.join(root, "memories"))
+      symlinkIfExists(path.join(USER_HERMES_DIR, "profiles"), path.join(root, "profiles"))
+    } else {
+      // Managed: generate minimal config.yaml + .env from providers.routes.
+      const route = resolveRoute(this.model)
+      const yamlDoc = renderHermesConfig(route, this.model)
+      await Bun.write(path.join(root, "config.yaml"), yamlDoc)
+      const envFile = renderHermesEnv(this.model)
+      if (envFile) await Bun.write(path.join(root, ".env"), envFile)
+    }
+
     log.info(`hermes command: ${this.cmdPrefix.join(" ")}`)
-    log.info(`hermes model: ${this.model}`)
+    log.info(`hermes model: ${this.model} (mode=${this.mode}, HERMES_HOME=${root})`)
   }
 
   async run(task: {
@@ -245,10 +306,11 @@ export class HermesAdapter implements AgentAdapter {
         prompt += task.skillContent + "\n\n---\n\n"
         skillLoaded = false
       } else {
-        // Discover mode: copy to ~/.hermes/skills/<name>/
         const skillName = task.skillMeta?.name ?? "bench-skill"
-        const hermesHome = path.join(process.env.HOME ?? "", ".hermes")
-        const skillDir = path.join(hermesHome, "skills", skillName)
+        if (!this.hermesHome) {
+          throw new Error("hermes.run called before setup() initialized sandbox")
+        }
+        const skillDir = path.join(this.hermesHome, "skills", skillName)
         await mkdir(skillDir, { recursive: true })
         await Bun.write(path.join(skillDir, "SKILL.md"), task.skillContent)
         skillLoaded = false
@@ -270,6 +332,7 @@ export class HermesAdapter implements AgentAdapter {
       "--max-turns", String(this.maxSteps),
       "--yolo",                        // bypass command approval
       "--source", "tool",              // tag for separation
+      ...this.extraCliArgs,
     ]
 
     // Add --skills flag for discover mode
@@ -281,9 +344,10 @@ export class HermesAdapter implements AgentAdapter {
     // Build env with PYTHONPATH for source installs. Also inject standard SDK
     // env vars from the matched providers.routes entry so hermes can reach
     // the configured backend without the user also exporting them manually.
-    // (hermes must still be configured on its own side to know about any
-    // non-default provider prefixes — skvm just passes the creds.)
+    // HERMES_HOME points at the sandbox so hermes reads the managed / native
+    // config.yaml we just wrote and never touches ~/.hermes.
     const env: Record<string, string | undefined> = { ...process.env, ...envForRoute(this.model) }
+    if (this.hermesHome) env.HERMES_HOME = this.hermesHome
     if (this.repoDir) {
       env.PYTHONPATH = this.repoDir + (env.PYTHONPATH ? `:${env.PYTHONPATH}` : "")
     }
@@ -297,7 +361,7 @@ export class HermesAdapter implements AgentAdapter {
     const durationMs = performance.now() - startMs
 
     if (exitCode !== 0 && stderr) {
-      log.warn(`hermes exited with code ${exitCode}: ${stderr.slice(0, 200)}`)
+      log.warn(`hermes exited with code ${exitCode}: ${stderr.slice(0, 2000)}`)
     }
 
     // Save whatever stdout we have to the conv log now, before any early return.
@@ -446,8 +510,59 @@ export class HermesAdapter implements AgentAdapter {
   }
 
   async teardown(): Promise<void> {
-    // No persistent state to clean up
+    this.sandbox?.teardown()
+    this.sandbox = undefined
+    this.hermesHome = undefined
   }
+}
+
+// ---------------------------------------------------------------------------
+// Managed-mode config / .env generators
+// ---------------------------------------------------------------------------
+
+/**
+ * Emit a minimal hermes `config.yaml` for managed mode. Hermes reads
+ * `model.provider` / `model.base_url` / `model.name` (and resolves API keys
+ * via the matching provider-specific env var), so we write just enough to
+ * drive one backend. Asset directories (skills/, profiles/, memories/) are
+ * left empty — managed mode is a clean baseline.
+ *
+ * Exported so the doctor can preview the synthesized yaml.
+ */
+const HERMES_PROVIDER_KIND: Record<ProviderRoute["kind"], string> = {
+  openrouter: "openrouter",
+  anthropic: "anthropic",
+  "openai-compatible": "openai",
+}
+
+const HERMES_DEFAULT_BASE_URL: Partial<Record<ProviderRoute["kind"], string>> = {
+  openrouter: "https://openrouter.ai/api/v1",
+  anthropic: "https://api.anthropic.com/v1",
+}
+
+export function renderHermesConfig(route: ProviderRoute, model: string): string {
+  const bareModel = stripRoutingPrefix(model)
+  const baseUrl = route.baseUrl ?? HERMES_DEFAULT_BASE_URL[route.kind]
+  const lines = [
+    `# Generated by skvm (managed mode); do not hand-edit — next run will overwrite.`,
+    `model:`,
+    `  name: "${bareModel}"`,
+    `  provider: "${HERMES_PROVIDER_KIND[route.kind]}"`,
+  ]
+  if (baseUrl) lines.push(`  base_url: "${baseUrl}"`)
+  lines.push(``)
+  return lines.join("\n")
+}
+
+/**
+ * Serialize the matched route's SDK env vars as `.env` lines for hermes's
+ * managed sandbox. Returns `null` when the route has no resolvable key —
+ * caller leaves .env absent and lets hermes surface the auth error natively.
+ */
+export function renderHermesEnv(model: string): string | null {
+  const env = envForRoute(model)
+  if (Object.keys(env).length === 0) return null
+  return Object.entries(env).map(([k, v]) => `${k}="${v}"`).join("\n") + "\n"
 }
 
 // ---------------------------------------------------------------------------

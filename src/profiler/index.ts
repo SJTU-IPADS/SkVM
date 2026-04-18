@@ -171,6 +171,8 @@ export interface ProfileMultiOptions {
   concurrency: number
   /** Factory for log dir path per (harness, model) */
   logDirFactory: (harness: string, model: string) => string
+  /** Resolved adapter-config mode to pass into each adapter.setup() call. */
+  adapterMode?: import("../core/types.ts").AdapterConfigMode
 }
 
 interface ProfileAccumulator {
@@ -284,7 +286,7 @@ export async function profileMulti(opts: ProfileMultiOptions): Promise<{
     items: allItems,
     createRunner: async (harness, model) => {
       const adapter = opts.createAdapter(harness)
-      await adapter.setup({ model, maxSteps: 25, timeoutMs: 300_000 })
+      await adapter.setup({ model, maxSteps: 25, timeoutMs: 300_000, mode: opts.adapterMode })
       return { adapter, teardown: async () => adapter.teardown() } as { adapter: AgentAdapter } & RunnerHandle
     },
     execute: async (runner, item) => {

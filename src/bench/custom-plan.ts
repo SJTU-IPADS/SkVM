@@ -239,7 +239,11 @@ interface CustomWorkPayload {
   skillDir?: string   // resolved absolute path (undefined = no-skill, or bare ID resolved to dir)
 }
 
-export async function executeCustomPlan(yamlPath: string, resumeSession?: string): Promise<void> {
+export async function executeCustomPlan(
+  yamlPath: string,
+  resumeSession?: string,
+  adapterConfigMode?: import("../core/types.ts").AdapterConfigMode,
+): Promise<void> {
   const { workItems, concurrency } = await parseCustomPlan(yamlPath)
 
   log.info(`Custom plan: ${workItems.length} work items, concurrency=${concurrency}`)
@@ -408,7 +412,12 @@ export async function executeCustomPlan(yamlPath: string, resumeSession?: string
           throw new Error(`custom-plan: unknown adapter "${adapterName}"`)
         }
         const adapter = createAdapter(adapterName, (cfg) => providerFactory(cfg.model))
-        await adapter.setup({ model, maxSteps: TASK_FILE_DEFAULTS.maxSteps, timeoutMs: TASK_FILE_DEFAULTS.timeoutMs })
+        await adapter.setup({
+          model,
+          maxSteps: TASK_FILE_DEFAULTS.maxSteps,
+          timeoutMs: TASK_FILE_DEFAULTS.timeoutMs,
+          mode: adapterConfigMode,
+        })
         return { adapter, teardown: async () => adapter.teardown() }
       },
       execute: async (runner, workItem) => {
@@ -417,6 +426,7 @@ export async function executeCustomPlan(yamlPath: string, resumeSession?: string
           model: item.model,
           maxSteps: item.maxSteps,
           timeoutMs: TASK_FILE_DEFAULTS.timeoutMs * item.timeoutMult,
+          mode: adapterConfigMode,
         }
         const evaluatorConfig = getEvaluatorConfig(item.judgeModel)
 

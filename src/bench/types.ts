@@ -292,6 +292,12 @@ export interface BenchRunConfig {
   asyncJudge?: boolean
   /** Runs per task-condition pair, averaged to reduce variance (default: 1) */
   runsPerTask?: number
+  /**
+   * Adapter-config mode to pass through to every adapter.setup() call. When
+   * undefined, adapters treat it as `managed`. The CLI resolves this from
+   * `--adapter-config` > `defaults.adapterConfigMode` > `"managed"`.
+   */
+  adapterConfigMode?: import("../core/types.ts").AdapterConfigMode
 }
 
 // ---------------------------------------------------------------------------

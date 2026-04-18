@@ -5,6 +5,7 @@ import {
   HeadlessAgentConfigSchema,
   type ProvidersConfig,
   type HeadlessAgentConfig,
+  type AdapterConfigMode,
 } from "./types.ts"
 
 export const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..")
@@ -226,16 +227,46 @@ export function fromPassTag(tag: string): number[] {
 // Project config (skvm.config.json)
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-adapter settings stored in skvm.config.json. The `repoPath` field
+ * (historically just a bare string) is preserved as `repoPath` when the
+ * wizard writes the richer shape, and the loader normalizes either form to
+ * this object. All fields are optional; missing ones fall back to code
+ * defaults at read time.
+ */
+export interface AdapterEntrySettings {
+  /** Local source checkout / binary path. */
+  repoPath?: string
+  /**
+   * openclaw only: which user agent to clone into the sandbox in native mode.
+   * Default "main".
+   */
+  nativeSourceAgent?: string
+  /**
+   * opencode only: which agent id (`--agent <id>`) to pass through in native
+   * mode. Default "build".
+   */
+  nativeAgent?: string
+  /**
+   * Extra CLI args appended verbatim to the harness invocation. Escape
+   * hatch for per-run flags skvm doesn't model directly.
+   */
+  extraCliArgs?: string[]
+}
+
 interface SkVMConfig {
   adapters?: {
-    opencode?: string
-    openclaw?: string
-    hermes?: string
-    jiuwenclaw?: string
+    opencode?: string | AdapterEntrySettings
+    openclaw?: string | AdapterEntrySettings
+    hermes?: string | AdapterEntrySettings
+    jiuwenclaw?: string | AdapterEntrySettings
   }
   proposalsDir?: string
   providers?: unknown
   headlessAgent?: unknown
+  defaults?: {
+    adapterConfigMode?: AdapterConfigMode
+  }
 }
 
 let _configCache: SkVMConfig | undefined
@@ -345,11 +376,57 @@ export function getHeadlessAgentConfig(): HeadlessAgentConfig {
   return _headlessAgentConfigCache
 }
 
-export function getAdapterRepoDir(adapter: "opencode" | "openclaw" | "hermes" | "jiuwenclaw"): string | undefined {
+/**
+ * Read the adapter settings block. Normalizes legacy string form
+ * (`"adapters.opencode": "~/Projects/opencode"`) into the richer object
+ * shape at read time so callers only deal with one representation.
+ */
+export function getAdapterSettings(
+  adapter: "opencode" | "openclaw" | "hermes" | "jiuwenclaw",
+): AdapterEntrySettings {
   const config = getProjectConfig()
   const raw = config.adapters?.[adapter]
-  if (!raw) return undefined
-  return expandHome(raw)
+  if (!raw) return {}
+  if (typeof raw === "string") return { repoPath: raw }
+  return raw
+}
+
+export function getAdapterRepoDir(adapter: "opencode" | "openclaw" | "hermes" | "jiuwenclaw"): string | undefined {
+  const repo = getAdapterSettings(adapter).repoPath
+  if (!repo) return undefined
+  return expandHome(repo)
+}
+
+/**
+ * Resolve the default adapter-config mode from skvm.config.json. Returns
+ * `undefined` when the user hasn't set one — callers apply their own
+ * fallback (typically `"managed"` for the legacy behavior).
+ */
+export function getDefaultAdapterConfigMode(): AdapterConfigMode | undefined {
+  return getProjectConfig().defaults?.adapterConfigMode
+}
+
+/**
+ * Resolve the effective adapter-config mode for a single invocation.
+ *
+ * Precedence:
+ *   1. CLI flag (`--adapter-config=<mode>`; passed as `flagValue`)
+ *   2. `defaults.adapterConfigMode` in skvm.config.json
+ *   3. `"managed"` (preserves pre-feature behavior)
+ *
+ * Throws on an invalid flag value so the user sees a clear error instead of
+ * the adapter silently reverting to `"managed"`.
+ */
+export function resolveAdapterConfigMode(flagValue: string | undefined): AdapterConfigMode {
+  if (flagValue !== undefined) {
+    if (flagValue !== "native" && flagValue !== "managed") {
+      throw new Error(
+        `--adapter-config must be "native" or "managed" (got "${flagValue}")`,
+      )
+    }
+    return flagValue
+  }
+  return getDefaultAdapterConfigMode() ?? "managed"
 }
 
 /**

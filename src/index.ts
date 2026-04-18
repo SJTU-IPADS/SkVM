@@ -4,6 +4,7 @@ import "./core/env-bootstrap.ts"
 import { setLogLevel, createLogger, c, shouldUseColor } from "./core/logger.ts"
 import { createSpinner, createProgressSpinner, spinnerLog } from "./core/spinner.ts"
 import { ALL_ADAPTERS, type AdapterName, createAdapter, isAdapterName } from "./adapters/registry.ts"
+import { resolveAdapterConfigMode } from "./core/config.ts"
 
 const noColor = (s: string) => s
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "./core/ui-defaults.ts"
@@ -159,6 +160,9 @@ Options:
   --batch               Profile all models from bench config
   --concurrency=<n>     Parallel primitives across all model×adapter combos (default: ${CLI_DEFAULTS.concurrency}).
                         Slots are distributed per-adapter then per-model.
+  --adapter-config=<m>  native | managed (default: defaults.adapterConfigMode in
+                        skvm.config.json, falls back to managed). Native uses your
+                        real harness config; managed uses providers.routes only.
   --verbose             Show detailed output`)
     process.exit(0)
   }
@@ -182,6 +186,8 @@ Options:
   const instances = flags.instances ? parseInt(flags.instances) : CLI_DEFAULTS.profileInstances
   const force = flags.force === "true"
   const concurrency = flags.concurrency ? parseInt(flags.concurrency) : CLI_DEFAULTS.concurrency
+
+  const adapterMode = resolveAdapterConfigMode(flags["adapter-config"])
 
   // Resolve models
   let models: string[]
@@ -278,7 +284,7 @@ Options:
         model: job.model,
         harness: job.harness,
         adapter,
-        adapterConfig: { model: job.model, maxSteps: 25, timeoutMs: 300_000 },
+        adapterConfig: { model: job.model, maxSteps: 25, timeoutMs: 300_000, mode: adapterMode },
         primitives,
         skip,
         instances,
@@ -288,7 +294,7 @@ Options:
         concurrency,
         adapterFactory: concurrency > 1 ? async () => {
           const a = createAdapter(job.harness)
-          await a.setup({ model: job.model, maxSteps: 25, timeoutMs: 300_000 })
+          await a.setup({ model: job.model, maxSteps: 25, timeoutMs: 300_000, mode: adapterMode })
           return a
         } : undefined,
       })
@@ -310,6 +316,7 @@ Options:
     instances,
     force,
     concurrency,
+    adapterMode,
     logDirFactory: (harness, model) => {
       const dir = getProfileLogDir(harness, model)
       mkdirSync(dir, { recursive: true })
@@ -359,6 +366,7 @@ Options:
   --workdir=<path>      Use this directory instead of a temp work directory
   --timeoutMs=<n>       Override task timeout in ms
   --maxSteps=<n>        Override max steps for the adapter
+  --adapter-config=<m>  native | managed (default: from skvm.config.json, else managed)
   --verbose             Show detailed output
 
 Notes:
@@ -411,10 +419,13 @@ Notes:
     process.exit(1)
   }
 
+  const adapterModeRun = resolveAdapterConfigMode(flags["adapter-config"])
+
   const adapterConfig: import("./core/types.ts").AdapterConfig = {
     model,
     maxSteps: flags.maxSteps ? parseInt(flags.maxSteps) : task.maxSteps,
     timeoutMs: flags.timeoutMs ? parseInt(flags.timeoutMs) : task.timeoutMs,
+    mode: adapterModeRun,
   }
 
   const adapter = createAdapter(harness)
@@ -796,6 +807,7 @@ Options:
       const convLogDir = pipelineLogDir
 
       const adapter = createAdapter(harness)
+      const adapterModePipeline = resolveAdapterConfigMode(flags["adapter-config"])
       tcp = await profile({
         model,
         harness,
@@ -804,6 +816,7 @@ Options:
           model,
           maxSteps: 25,
           timeoutMs: 300_000,
+          mode: adapterModePipeline,
         },
         force: true,
         logFile,
@@ -1496,6 +1509,11 @@ Batch mode:
   --skill-list=<file>        One skill path per line
   --concurrency=<n>          Parallel jobs (default: ${CLI_DEFAULTS.concurrency})
 
+Adapter config:
+  --adapter-config=<m>       native | managed (default: defaults.adapterConfigMode in
+                             skvm.config.json, else managed). Applies to the target
+                             adapter that runs tasks during optimization.
+
 Detached invocation:
   --detach                   Spawn a background worker and return as soon as
                              it reports its proposal id (~100-300 ms). The
@@ -1540,9 +1558,11 @@ Detached invocation:
     console.error(`jit-optimize: --target-model is required for task-source=${stripSuffix(taskSource.kind)}`)
     process.exit(1)
   }
+  const adapterModeJit = resolveAdapterConfigMode(flags["adapter-config"])
   const targetAdapter: import("./jit-optimize/types.ts").JitOptimizeConfig["targetAdapter"] = {
     model: tModel,
     harness: tHarness,
+    adapterConfig: { mode: adapterModeJit },
   }
 
   const rounds = flags.rounds

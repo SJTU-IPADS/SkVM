@@ -29,94 +29,12 @@ import {
   resolveHeadlessOpenCodeCmd,
 } from "../adapters/opencode.ts"
 import { resolveRoute, resolveRouteApiKey } from "../providers/registry.ts"
-import type { ProviderRoute } from "./types.ts"
 import type { TokenUsage } from "./types.ts"
 import { assertNoLegacyHeadlessFields, stripRoutingPrefix } from "./config.ts"
-import { HEADLESS_AGENT_DEFAULTS } from "./ui-defaults.ts"
 import { createLogger } from "./logger.ts"
+import { buildOpenCodeConfigContent } from "./adapter-sandbox.ts"
 
 const log = createLogger("headless-agent")
-
-/**
- * Build an OPENCODE_CONFIG_CONTENT JSON string that registers a route's
- * OpenAI-compatible endpoint as a provider inside the opencode subprocess.
- * Only needed for `kind: "openai-compatible"` routes — opencode ships with
- * openrouter and anthropic built in.
- *
- * `bareModelId` is the model's name within the registered provider — i.e.
- * the route's match prefix already stripped (e.g. for skvm id `ipads/gpt-4o`
- * matched by `ipads/*`, this is `gpt-4o`).
- */
-function buildOpenCodeConfigContent(route: ProviderRoute, bareModelId: string): string {
-  if (route.kind !== "openai-compatible") {
-    throw new Error(`buildOpenCodeConfigContent: unexpected route kind ${route.kind}`)
-  }
-  if (!route.baseUrl) {
-    throw new Error(`buildOpenCodeConfigContent: route ${route.match} is missing baseUrl`)
-  }
-
-  // Empty string is intentional: allows auth-free local endpoints (vLLM
-  // without --api-key). opencode will still send the Authorization header
-  // but the server can ignore it.
-  const apiKey = resolveRouteApiKey(route) ?? ""
-  if (!apiKey) {
-    log.warn(
-      `route "${route.match}" has no resolved API key — the opencode subprocess may fail to authenticate.`,
-    )
-  }
-
-  // The provider name in opencode's namespace is the first `/`-segment of
-  // the route's match glob (e.g. `ipads/*` → `ipads`, `openai/gpt-4o-mini`
-  // → `openai`). Taking just the first segment handles narrow matches like
-  // single-model globs where the full pattern would yield an invalid
-  // opencode provider id.
-  const providerName = route.match.split("/")[0]
-  if (!providerName) {
-    throw new Error(`buildOpenCodeConfigContent: route match "${route.match}" has no leading prefix`)
-  }
-
-  const injected: Record<string, unknown> = {
-    provider: {
-      [providerName]: {
-        // Explicit npm package so opencode knows which SDK adapter to use
-        // for a provider ID that doesn't exist in models.dev.
-        npm: "@ai-sdk/openai-compatible",
-        options: {
-          apiKey,
-          baseURL: route.baseUrl,
-        },
-        models: {
-          [bareModelId]: {
-            limit: {
-              context: HEADLESS_AGENT_DEFAULTS.contextLimit,
-              output: HEADLESS_AGENT_DEFAULTS.outputLimit,
-            },
-          },
-        },
-      },
-    },
-  }
-
-  // Merge with any pre-existing OPENCODE_CONFIG_CONTENT from the parent
-  // environment (CI wrappers, plugin configs, etc.) so we don't clobber it.
-  const existing = process.env.OPENCODE_CONFIG_CONTENT
-  if (existing) {
-    try {
-      const parsed = JSON.parse(existing) as Record<string, unknown>
-      // Shallow-merge top-level keys; deep-merge the provider map so both
-      // the inherited providers and our injected one coexist.
-      const mergedProviders = {
-        ...((parsed.provider as Record<string, unknown>) ?? {}),
-        ...((injected.provider as Record<string, unknown>) ?? {}),
-      }
-      return JSON.stringify({ ...parsed, ...injected, provider: mergedProviders })
-    } catch {
-      log.warn("existing OPENCODE_CONFIG_CONTENT is not valid JSON; overwriting")
-    }
-  }
-
-  return JSON.stringify(injected)
-}
 
 /**
  * Thrown when a headless-agent driver subprocess fails (non-zero exit or

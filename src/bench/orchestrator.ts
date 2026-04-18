@@ -179,6 +179,7 @@ async function prepareBenchSession(config: BenchRunConfig): Promise<{
     model: config.model,
     maxSteps: config.maxSteps,
     timeoutMs: TASK_FILE_DEFAULTS.timeoutMs * config.timeoutMult,
+    mode: config.adapterConfigMode,
   }
 
   const providerFactory = (cfg: AdapterConfig): LLMProvider => createProviderForModel(cfg.model)
