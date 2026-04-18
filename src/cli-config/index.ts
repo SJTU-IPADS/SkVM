@@ -36,6 +36,7 @@ import {
 } from "../core/config.ts"
 import type { ProviderKind, AdapterConfigMode } from "../core/types.ts"
 import { ALL_ADAPTERS, type AdapterName } from "../adapters/registry.ts"
+import { resolveUserHermesDir as resolveHermesProfileDir } from "../adapters/hermes.ts"
 import { shortenPath } from "../core/banner.ts"
 
 const EXAMPLE_PATH = path.join(PROJECT_ROOT, "skvm.config.example.json")
@@ -674,15 +675,17 @@ async function stepAdapters(rl: readline.Interface, draft: ConfigDraft): Promise
       nextEntry.nativeAgent = agentAns
     }
     if (a === "hermes") {
-      const cfg = expandHome("~/.hermes/config.yaml")
-      const env = expandHome("~/.hermes/.env")
+      const srcDir = resolveHermesProfileDir()
+      const cfg = path.join(srcDir, "config.yaml")
+      const env = path.join(srcDir, ".env")
+      const disp = shortenPath(srcDir)
       if (existsSync(cfg)) {
-        console.log(c.green(`    ✓ found ~/.hermes/config.yaml (native mode ready)`))
+        console.log(c.green(`    ✓ found ${shortenPath(cfg)} (native mode ready, from ${disp})`))
       } else {
-        console.log(c.yellow(`    ⚠ ~/.hermes/config.yaml missing — native mode will error.`))
+        console.log(c.yellow(`    ⚠ ${shortenPath(cfg)} missing — native mode will error.`))
       }
       if (!existsSync(env)) {
-        console.log(c.yellow(`    ⚠ ~/.hermes/.env missing — native mode may lack API keys.`))
+        console.log(c.yellow(`    ⚠ ${shortenPath(env)} missing — native mode may lack API keys.`))
       }
     }
     if (a === "jiuwenclaw") {
@@ -862,7 +865,7 @@ async function runDoctor(): Promise<void> {
         : { status: "fail", label: `opencode native config`, detail: `${shortenPath(cfg)} missing — native mode will error` },
       )
     } else if (a === "hermes") {
-      const cfg = expandHome("~/.hermes/config.yaml")
+      const cfg = path.join(resolveHermesProfileDir(), "config.yaml")
       results.push(existsSync(cfg)
         ? { status: "ok", label: `hermes native config`, detail: shortenPath(cfg) }
         : { status: "fail", label: `hermes native config`, detail: `${shortenPath(cfg)} missing — native mode will error` },

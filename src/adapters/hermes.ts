@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises"
+import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, SkillMode, ProviderRoute } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
@@ -214,7 +215,28 @@ export async function resolveHermesCmd(): Promise<string[]> {
 // ---------------------------------------------------------------------------
 
 const HOME = process.env.HOME ?? ""
-const USER_HERMES_DIR = path.join(HOME, ".hermes")
+const HERMES_ROOT = path.join(HOME, ".hermes")
+
+/**
+ * Resolve the hermes home directory the user actually runs against.
+ *
+ * Hermes supports profiles: the effective home is `~/.hermes/profiles/<name>`
+ * when `HERMES_HOME` is set, or when `~/.hermes/active_profile` (sticky file,
+ * managed by `hermes profile use`) names one. skvm must mirror that so native
+ * mode clones the user's real config, not an empty default tree.
+ */
+export function resolveUserHermesDir(): string {
+  const envHome = process.env.HERMES_HOME?.trim()
+  if (envHome) return envHome
+  try {
+    const name = readFileSync(path.join(HERMES_ROOT, "active_profile"), "utf-8").trim()
+    if (name && name !== "default") {
+      const profileDir = path.join(HERMES_ROOT, "profiles", name)
+      if (existsSync(profileDir)) return profileDir
+    }
+  } catch { /* no active_profile — fall through */ }
+  return HERMES_ROOT
+}
 
 export class HermesAdapter implements AgentAdapter {
   readonly name = "hermes"
@@ -239,9 +261,10 @@ export class HermesAdapter implements AgentAdapter {
     const settings = getAdapterSettings("hermes")
     this.extraCliArgs = config.extraCliArgs ?? settings.extraCliArgs ?? []
 
-    // Fail-fast model resolution
+    const srcDir = resolveUserHermesDir()
+
     if (this.mode === "native") {
-      const cfgPath = path.join(USER_HERMES_DIR, "config.yaml")
+      const cfgPath = path.join(srcDir, "config.yaml")
       if (!(await Bun.file(cfgPath).exists())) {
         throw new Error(
           `hermes (native): ${cfgPath} not found. Run hermes's own setup first, ` +
@@ -259,19 +282,18 @@ export class HermesAdapter implements AgentAdapter {
       }
     }
 
-    // Build HERMES_HOME sandbox
     this.sandbox = createSandbox("hermes")
     const root = this.sandbox.root
     this.hermesHome = root
     ensureDir(path.join(root, "sessions"))
 
     if (this.mode === "native") {
-      copyFileIfExists(path.join(USER_HERMES_DIR, "config.yaml"), path.join(root, "config.yaml"))
-      copyFileIfExists(path.join(USER_HERMES_DIR, ".env"), path.join(root, ".env"))
-      copyFileIfExists(path.join(USER_HERMES_DIR, "SOUL.md"), path.join(root, "SOUL.md"))
-      symlinkIfExists(path.join(USER_HERMES_DIR, "skills"), path.join(root, "skills"))
-      symlinkIfExists(path.join(USER_HERMES_DIR, "memories"), path.join(root, "memories"))
-      symlinkIfExists(path.join(USER_HERMES_DIR, "profiles"), path.join(root, "profiles"))
+      copyFileIfExists(path.join(srcDir, "config.yaml"), path.join(root, "config.yaml"))
+      copyFileIfExists(path.join(srcDir, ".env"), path.join(root, ".env"))
+      copyFileIfExists(path.join(srcDir, "SOUL.md"), path.join(root, "SOUL.md"))
+      symlinkIfExists(path.join(srcDir, "skills"), path.join(root, "skills"))
+      symlinkIfExists(path.join(srcDir, "memories"), path.join(root, "memories"))
+      symlinkIfExists(path.join(srcDir, "profiles"), path.join(root, "profiles"))
     } else {
       // Managed: generate minimal config.yaml + .env from providers.routes.
       const route = resolveRoute(this.model)
