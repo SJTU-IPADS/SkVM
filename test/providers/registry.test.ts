@@ -3,9 +3,10 @@ import {
   globMatch,
   findMatchingRoute,
   createProviderForModel,
+  validateModelIdForRoute,
 } from "../../src/providers/registry.ts"
 import { ProviderAuthError } from "../../src/providers/errors.ts"
-import type { ProvidersConfig } from "../../src/core/types.ts"
+import type { ProviderRoute, ProvidersConfig } from "../../src/core/types.ts"
 
 describe("globMatch", () => {
   test("literal match", () => {
@@ -123,5 +124,44 @@ describe("createProviderForModel", () => {
     expect(thrown).toBeInstanceOf(Error)
     expect((thrown as Error).message).toContain("No providers.routes entry matches")
     expect((thrown as Error).message).toContain("bare-id-no-prefix")
+  })
+})
+
+describe("validateModelIdForRoute", () => {
+  const ORoute: ProviderRoute = { match: "openrouter/*", kind: "openrouter", apiKeyEnv: "OPENROUTER_API_KEY" }
+  const ARoute: ProviderRoute = { match: "anthropic/*", kind: "anthropic", apiKeyEnv: "ANTHROPIC_API_KEY" }
+  const CRoute: ProviderRoute = { match: "ipads/*", kind: "openai-compatible", baseUrl: "http://x/v1" }
+
+  test("openrouter: id missing <vendor>/ segment is rejected with hint", () => {
+    let err: Error | undefined
+    try { validateModelIdForRoute("openrouter/qwen3.5-35b-a3b", ORoute) } catch (e) { err = e as Error }
+    expect(err).toBeInstanceOf(Error)
+    expect(err?.message).toContain("not a valid OpenRouter id")
+    expect(err?.message).toContain("<vendor>/<model>")
+  })
+
+  test("openrouter: vendor/model form passes", () => {
+    expect(() => validateModelIdForRoute("openrouter/qwen/qwen3-30b-a3b", ORoute)).not.toThrow()
+  })
+
+  test("anthropic: non-claude id is rejected", () => {
+    let err: Error | undefined
+    try { validateModelIdForRoute("anthropic/gpt-4o", ARoute) } catch (e) { err = e as Error }
+    expect(err?.message).toContain("doesn't look like an Anthropic model")
+  })
+
+  test("anthropic: claude-* id passes", () => {
+    expect(() => validateModelIdForRoute("anthropic/claude-sonnet-4.6", ARoute)).not.toThrow()
+  })
+
+  test("openai-compatible: any non-whitespace id passes", () => {
+    expect(() => validateModelIdForRoute("ipads/gpt-4o", CRoute)).not.toThrow()
+    expect(() => validateModelIdForRoute("ipads/whatever-123_v2", CRoute)).not.toThrow()
+  })
+
+  test("openai-compatible: whitespace in id rejected", () => {
+    let err: Error | undefined
+    try { validateModelIdForRoute("ipads/has space", CRoute) } catch (e) { err = e as Error }
+    expect(err?.message).toMatch(/empty or contains whitespace/)
   })
 })

@@ -535,8 +535,14 @@ function renderEvidenceMarkdown(
     parts.push(`- tokens: in=${ev.runMeta.tokens.input} out=${ev.runMeta.tokens.output}`)
     if (ev.runMeta.skillLoaded === false) parts.push(`- WARNING: skill was not loaded`)
     if (ev.runMeta.adapterError) {
-      parts.push(`- adapter error: exit ${ev.runMeta.adapterError.exitCode}`)
-      parts.push(`  stderr: ${ev.runMeta.adapterError.stderr.slice(0, 500)}`)
+      const ae = ev.runMeta.adapterError
+      parts.push(`- adapter error: exit ${ae.exitCode}`)
+      if (ae.diagnosis) {
+        parts.push(`  ${ae.diagnosis.summary}`)
+        if (ae.diagnosis.hint) parts.push(`  ${ae.diagnosis.hint}`)
+      } else {
+        parts.push(`  stderr: ${ae.stderr.slice(0, 500)}`)
+      }
     }
     parts.push("")
   }

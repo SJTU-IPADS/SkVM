@@ -12,7 +12,8 @@ import {
   symlinkIfExists,
   type Sandbox,
 } from "../core/adapter-sandbox.ts"
-import { resolveRoute, resolveRouteApiKey } from "../providers/registry.ts"
+import { resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
+import { diagnoseOpenclaw } from "./diagnose-failure.ts"
 
 const log = createLogger("openclaw")
 
@@ -566,7 +567,8 @@ export class OpenClawAdapter implements AgentAdapter {
     // openclaw to emit "Unknown model" on stderr.
     if (mode === "managed") {
       try {
-        resolveRoute(this.model)
+        const route = resolveRoute(this.model)
+        validateModelIdForRoute(this.model, route)
       } catch (err) {
         throw new Error(
           `openclaw (managed): ${(err as Error).message} ` +
@@ -832,6 +834,18 @@ export class OpenClawAdapter implements AgentAdapter {
     }
     if (exitCode !== 0) {
       result.adapterError = { exitCode, stderr: stderr.slice(0, 2000) }
+      const diagnosis = await diagnoseOpenclaw({
+        sandboxRoot: pool.sandboxRoot,
+        sessionId,
+        agentId: agent.agentId,
+        stdout: "",
+        stderr,
+        exitCode,
+      })
+      if (diagnosis) {
+        result.adapterError.diagnosis = diagnosis
+        log.warn(`${diagnosis.summary}${diagnosis.hint ? `\n  ${diagnosis.hint}` : ""}`)
+      }
     }
     return result
   }

@@ -210,6 +210,15 @@ export const RunResultSchema = z.object({
   adapterError: z.object({
     exitCode: z.number(),
     stderr: z.string(),
+    /** Optional structured diagnosis extracted from the adapter's sandbox
+     *  artifacts (hermes request_dump, openclaw transcript, opencode NDJSON
+     *  errors, …). Surfaces the actual failure reason when stderr is empty
+     *  or uninformative. */
+    diagnosis: z.object({
+      summary: z.string(),
+      hint: z.string().optional(),
+      source: z.string(),
+    }).optional(),
   }).optional(),
 })
 

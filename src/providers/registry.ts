@@ -47,6 +47,51 @@ export function resolveRoute(modelId: string): ProviderRoute {
 }
 
 /**
+ * Cheap shape check on the model id AFTER the routing prefix is stripped —
+ * catches common user typos before we spawn any subprocess. This is
+ * deliberately loose: we can't know what models a given backend catalog
+ * actually has, only the format it expects.
+ *
+ *   openrouter: bare id must be `<vendor>/<model>` (the format the
+ *               openrouter.ai /chat/completions endpoint expects)
+ *   anthropic:  bare id must look like an Anthropic model (`claude-*`)
+ *   openai-compatible: any non-whitespace string
+ *
+ * Throws an `Error` with an actionable hint. Callers (each adapter's managed
+ * setup) should wrap in try/catch to add adapter-specific context.
+ */
+export function validateModelIdForRoute(modelId: string, route: ProviderRoute): void {
+  const bare = stripRoutingPrefix(modelId)
+  if (!bare || /\s/.test(bare)) {
+    throw new Error(`Invalid model id "${modelId}" — empty or contains whitespace after stripping routing prefix.`)
+  }
+  switch (route.kind) {
+    case "openrouter": {
+      if (!bare.includes("/")) {
+        throw new Error(
+          `Model id "${modelId}" is not a valid OpenRouter id. ` +
+          `OpenRouter expects "<vendor>/<model>" (e.g. "openrouter/qwen/qwen3-30b-a3b-instruct-2507"). ` +
+          `Got bare id "${bare}" — did you mean "openrouter/qwen/${bare}" or similar?`,
+        )
+      }
+      return
+    }
+    case "anthropic": {
+      if (!/^claude-/i.test(bare)) {
+        throw new Error(
+          `Model id "${modelId}" doesn't look like an Anthropic model. ` +
+          `Anthropic SDK expects ids starting with "claude-" (e.g. "anthropic/claude-sonnet-4.6"). ` +
+          `Got bare id "${bare}".`,
+        )
+      }
+      return
+    }
+    case "openai-compatible":
+      return
+  }
+}
+
+/**
  * Resolve a model id to a concrete `LLMProvider`. Single chokepoint for
  * internal LLM calls (compiler passes, bench judging, jit-optimize eval,
  * jit-boost candidate parsing, bare-agent adapter, …).

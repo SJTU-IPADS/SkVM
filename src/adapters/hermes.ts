@@ -5,7 +5,8 @@ import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentSt
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, stripRoutingPrefix } from "../core/config.ts"
-import { envForRoute, resolveRoute } from "../providers/registry.ts"
+import { envForRoute, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
+import { diagnoseHermes } from "./diagnose-failure.ts"
 import { runCommand } from "./opencode.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import {
@@ -298,7 +299,8 @@ export class HermesAdapter implements AgentAdapter {
       }
     } else {
       try {
-        resolveRoute(this.model)
+        const route = resolveRoute(this.model)
+        validateModelIdForRoute(this.model, route)
       } catch (err) {
         throw new Error(
           `hermes (managed): ${(err as Error).message} Run \`skvm config init\` to add a route, ` +
@@ -475,6 +477,17 @@ export class HermesAdapter implements AgentAdapter {
       }
       if (exitCode !== 0) {
         result.adapterError = { exitCode, stderr: stderr.slice(0, 2000) }
+        const diagnosis = await diagnoseHermes({
+          sandboxRoot: this.hermesHome ?? "",
+          sessionId,
+          stdout,
+          stderr,
+          exitCode,
+        })
+        if (diagnosis) {
+          result.adapterError.diagnosis = diagnosis
+          log.warn(`${diagnosis.summary}${diagnosis.hint ? `\n  ${diagnosis.hint}` : ""}`)
+        }
       }
       return result
     }
@@ -556,6 +569,17 @@ export class HermesAdapter implements AgentAdapter {
     }
     if (exitCode !== 0) {
       result.adapterError = { exitCode, stderr: stderr.slice(0, 2000) }
+      const diagnosis = await diagnoseHermes({
+        sandboxRoot: this.hermesHome ?? "",
+        sessionId,
+        stdout,
+        stderr,
+        exitCode,
+      })
+      if (diagnosis) {
+        result.adapterError.diagnosis = diagnosis
+        log.warn(`${diagnosis.summary}${diagnosis.hint ? `\n  ${diagnosis.hint}` : ""}`)
+      }
     }
     return result
   }

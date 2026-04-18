@@ -472,7 +472,13 @@ Notes:
       }
     }
     if (result.runResult.adapterError) {
-      console.log(`Adapter error: ${result.runResult.adapterError.stderr || `exit code ${result.runResult.adapterError.exitCode}`}`)
+      const ae = result.runResult.adapterError
+      if (ae.diagnosis) {
+        console.log(`Adapter error: ${ae.diagnosis.summary}`)
+        if (ae.diagnosis.hint) console.log(`  ${ae.diagnosis.hint}`)
+      } else {
+        console.log(`Adapter error: ${ae.stderr || `exit code ${ae.exitCode}`}`)
+      }
     }
     if (result.runResult.text) {
       console.log(`\nFinal output:\n${result.runResult.text}`)

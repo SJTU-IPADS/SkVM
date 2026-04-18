@@ -202,7 +202,12 @@ export async function buildFailureDiagnostics(opts: {
   lines.push(`Eval: ${opts.evalDetails}`)
 
   if (adapterError) {
-    lines.push(`Adapter error: exit=${adapterError.exitCode}, stderr: ${adapterError.stderr.slice(0, 500)}`)
+    if (adapterError.diagnosis) {
+      lines.push(`Adapter error: ${adapterError.diagnosis.summary} (source=${adapterError.diagnosis.source})`)
+      if (adapterError.diagnosis.hint) lines.push(`  ${adapterError.diagnosis.hint}`)
+    } else {
+      lines.push(`Adapter error: exit=${adapterError.exitCode}, stderr: ${adapterError.stderr.slice(0, 500)}`)
+    }
   }
 
   if (steps.length === 0) {

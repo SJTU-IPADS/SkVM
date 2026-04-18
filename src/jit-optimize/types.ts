@@ -123,7 +123,11 @@ export interface RunMeta {
   /** USD cost of this agent run (from RunResult.cost; 0 for adapters that don't report cost). */
   costUsd: number
   durationMs: number
-  adapterError?: { exitCode: number; stderr: string }
+  adapterError?: {
+    exitCode: number
+    stderr: string
+    diagnosis?: { summary: string; hint?: string; source: string }
+  }
   skillLoaded?: boolean
   /**
    * Canonical signal for whether this evidence is trustworthy at the skill level.

@@ -9,7 +9,8 @@ import { getAdapterRepoDir, stripRoutingPrefix } from "../core/config.ts"
 import { acquireFileLock, releaseFileLock } from "../core/file-lock.ts"
 import { runCommandWithEnv } from "./hermes.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
-import { resolveRoute, resolveRouteApiKey } from "../providers/registry.ts"
+import { resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
+import { diagnoseJiuwenclaw } from "./diagnose-failure.ts"
 
 const log = createLogger("jiuwenclaw")
 
@@ -520,6 +521,17 @@ export class JiuwenClawAdapter implements AgentAdapter {
     }
     if (exitCode !== 0) {
       result.adapterError = { exitCode, stderr: stderr.slice(0, 2000) }
+      const diagnosis = await diagnoseJiuwenclaw({
+        sandboxRoot: JIUWEN_DIR,
+        sessionId: responseSessionId,
+        stdout,
+        stderr,
+        exitCode,
+      })
+      if (diagnosis) {
+        result.adapterError.diagnosis = diagnosis
+        log.warn(`${diagnosis.summary}${diagnosis.hint ? `\n  ${diagnosis.hint}` : ""}`)
+      }
     }
     return result
   }
@@ -746,6 +758,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
  */
 function renderJiuwenEnv(model: string, apiKey: string | undefined): string {
   const route = resolveRoute(model)
+  validateModelIdForRoute(model, route)
   // jiuwenclaw's sidecar .env shape is OpenAI-only — it calls
   // `<API_BASE>/chat/completions` with `Authorization: Bearer`. Anthropic's
   // native API speaks /messages with `x-api-key`, so even with a valid
