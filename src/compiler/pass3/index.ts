@@ -9,9 +9,14 @@ import { createLogger } from "../../core/logger.ts"
 
 const log = createLogger("pass3")
 
+const ParallelismKind = z.enum(["dlp", "ilp", "tlp"])
+type ParallelismKindValue = z.infer<typeof ParallelismKind>
+
 const ParallelGroupSchema = z.object({
-  stepIds: z.array(z.string()).min(2),
+  type: ParallelismKind.default("tlp"),
+  stepIds: z.array(z.string()).min(1),
   reason: z.string().default(""),
+  mechanism: z.string().default(""),
 })
 
 const Pass3PlanSchema = z.object({
@@ -21,7 +26,12 @@ const Pass3PlanSchema = z.object({
   parallelGroups: z.array(ParallelGroupSchema).default([]),
 })
 
-type Pass3Plan = z.infer<typeof Pass3PlanSchema>
+interface RawParallelGroup {
+  type?: ParallelismKindValue
+  stepIds: string[]
+  reason?: string
+  mechanism?: string
+}
 
 export async function runPass3(
   skillContent: string,
@@ -38,7 +48,7 @@ export async function runPass3(
       provider,
       schema: Pass3PlanSchema,
       schemaName: "pass3_parallel_plan",
-      schemaDescription: "A conservative sub-agent parallelism plan for a skill workflow",
+      schemaDescription: "Classified parallelism plan (DLP/ILP/TLP) for a skill workflow",
       system: buildSystemPrompt(),
       prompt: buildUserPrompt(skillContent, scr),
       maxRetries: 2,
@@ -46,7 +56,9 @@ export async function runPass3(
     })
 
     const dag = normalizePlan(result)
-    log.info(`Parallel groups: ${dag.parallelism.length}, DAG steps: ${dag.steps.length}`)
+    log.info(
+      `Parallel groups: ${dag.parallelism.length} (dlp=${countKind(dag, "dlp")}, ilp=${countKind(dag, "ilp")}, tlp=${countKind(dag, "tlp")}), DAG steps: ${dag.steps.length}`,
+    )
     return { dag }
   } catch (err) {
     // Provider outages must surface — otherwise you silently get a compile
@@ -58,16 +70,35 @@ export async function runPass3(
   }
 }
 
+function countKind(dag: WorkflowDAG, kind: ParallelismKindValue): number {
+  return dag.parallelism.filter((group) => group.type === kind).length
+}
+
 function buildSystemPrompt(): string {
   return [
-    "You analyze a skill document and decide whether it contains real opportunities for sub-agent parallelism.",
+    "You analyze a skill document and extract parallelism opportunities hiding in sequential prose.",
+    "Classify each opportunity into one of three levels (Hennessy-Patterson mapped to agent workflows):",
+    "",
+    "- DLP (data-level parallelism): a single step applies the SAME operation to multiple independent",
+    "  data items. Example: run the same analysis on each of 15 CSV files. Mechanism: inline language-",
+    "  level parallel primitives like 'xargs -P', Python multiprocessing, or Promise.all. A DLP group",
+    "  may reference exactly ONE step that iterates over a collection.",
+    "",
+    "- ILP (instruction-level parallelism): two or more independent steps each need a tool call with",
+    "  no data dependency between them, and they can be issued in the SAME LLM turn via batched tool",
+    "  use. Example: web_search plus read_file in one turn. An ILP group must contain >= 2 steps.",
+    "",
+    "- TLP (thread-level parallelism): two or more independent sub-tasks that each require multi-turn",
+    "  reasoning and belong in their own sub-agent sessions. Example: debug backend and debug database",
+    "  concurrently. A TLP group must contain >= 2 steps.",
     "",
     "Be conservative:",
     "- Prefer false negatives over speculative parallelism.",
-    "- Only mark steps as parallel when they can start from the same available inputs and can be merged later.",
-    "- If the workflow is mostly linear, return hasParallelism=false.",
+    "- Only mark steps as parallel when they can start from the same available inputs and can be merged.",
+    "- If the workflow is mostly linear with no iteration or independent tool calls, return hasParallelism=false.",
     "- Do not decompose into many tiny steps. Use 2-6 meaningful workflow nodes.",
-    "- Use task-level sub-agent parallelism only. Do not classify DLP, ILP, or TLP.",
+    "- Prefer DLP over ILP when the work is homogeneous over a collection.",
+    "- Prefer ILP over TLP when each branch is a single tool call (no multi-turn reasoning).",
   ].join("\n")
 }
 
@@ -82,21 +113,20 @@ function buildUserPrompt(skillContent: string, scr: SCR): string {
     .join("\n")
 
   return [
-    "Analyze whether this skill defines any workflow branches that can be handled by separate sub-agents in parallel.",
+    "Analyze this skill for parallelism opportunities and classify each as DLP, ILP, or TLP.",
     "",
     "Return hasParallelism=false when:",
-    "- later work depends directly on earlier work with no real branching",
-    "- the skill only describes one main execution path",
-    "- the branches would mostly duplicate context gathering rather than save time",
+    "- the workflow is linear with no iteration and no independent sibling steps",
+    "- branches would mostly duplicate context gathering rather than save time",
     "",
-    "Return hasParallelism=true only when:",
-    "- there are at least two meaningful sibling tasks",
-    "- those tasks can start after the same prerequisite step or from the initial state",
-    "- there is a clear merge point or downstream continuation",
-    "",
-    "If you find parallelism:",
-    "- include a small DAG with explicit dependsOn edges",
-    "- include one or more parallelGroups, each containing the sibling step IDs that may run concurrently",
+    "When you find parallelism:",
+    "- include a small DAG with explicit dependsOn edges (use 2-6 workflow nodes total)",
+    "- include one or more parallelGroups, each with:",
+    '  - "type": one of "dlp" | "ilp" | "tlp"',
+    '  - "stepIds": step IDs this group covers (DLP may be a single iterating step; ILP/TLP must have >= 2)',
+    '  - "mechanism": a short phrase naming the concrete parallel primitive (e.g., "xargs -P", ',
+    '    "Promise.all", "batched tool_use in one turn", "sub-agent per branch")',
+    '  - "reason": why these items are independent',
     "",
     "Skill purposes:",
     purposeSummary,
@@ -117,15 +147,12 @@ function normalizePlan(plan: {
     primitives: string[]
     dependsOn?: string[]
   }>
-  parallelGroups?: Array<{
-    stepIds: string[]
-    reason?: string
-  }>
+  parallelGroups?: RawParallelGroup[]
 }): WorkflowDAG {
   if (!plan.hasParallelism) return emptyDag()
 
   const steps = normalizeSteps(plan.steps ?? [])
-  if (steps.length < 3) return emptyDag()
+  if (steps.length < 2) return emptyDag()
   if (hasCycle(steps)) {
     log.warn("Pass 3 returned a cyclic DAG; dropping parallelism")
     return emptyDag()
@@ -135,9 +162,9 @@ function normalizePlan(plan: {
   const parallelism = (plan.parallelGroups ?? [])
     .map((group) => normalizeParallelGroup(group, stepIds))
     .filter((group): group is ParallelismAnnotation => group !== null)
+    .filter((group) => groupIsViable(group, steps))
 
   if (parallelism.length === 0) return emptyDag()
-  if (!hasRealFanOut(steps, parallelism)) return emptyDag()
 
   return { steps, parallelism }
 }
@@ -172,19 +199,66 @@ function normalizeSteps(rawSteps: Array<{
 }
 
 function normalizeParallelGroup(
-  group: { stepIds: string[]; reason?: string },
+  group: RawParallelGroup,
   stepIds: Set<string>,
 ): ParallelismAnnotation | null {
   const uniqueStepIds = [...new Set(group.stepIds.filter((stepId) => stepIds.has(stepId)))]
-  if (uniqueStepIds.length < 2) return null
+  const kind: ParallelismKindValue = group.type ?? "tlp"
+
+  // DLP applies to a single iterating step; ILP/TLP need at least two siblings.
+  if (kind === "dlp") {
+    if (uniqueStepIds.length < 1) return null
+  } else {
+    if (uniqueStepIds.length < 2) return null
+  }
+
   const reason = group.reason?.trim() ?? ""
+  const explicitMechanism = group.mechanism?.trim() ?? ""
+  const defaultMechanism = defaultMechanismFor(kind)
+  const mechanismBase = explicitMechanism || defaultMechanism
+  const mechanism = reason ? `${mechanismBase}: ${reason}` : mechanismBase
 
   return {
-    type: "tlp",
+    type: kind,
     steps: uniqueStepIds,
-    mechanism: reason ? `sub_agent: ${reason}` : "sub_agent",
+    mechanism,
     fallback: "sequential_execution",
   }
+}
+
+function defaultMechanismFor(kind: ParallelismKindValue): string {
+  switch (kind) {
+    case "dlp":
+      return "inline_parallel_primitive"
+    case "ilp":
+      return "batched_tool_use"
+    case "tlp":
+      return "sub_agent"
+  }
+}
+
+/**
+ * DLP is intra-step (same op, many data items) and does not require fan-out.
+ * ILP/TLP require either shared entry or shared downstream merge to be real.
+ */
+function groupIsViable(group: ParallelismAnnotation, steps: WorkflowStep[]): boolean {
+  if (group.type === "dlp") return group.steps.length >= 1
+
+  if (group.steps.length < 2) return false
+
+  const stepMap = new Map(steps.map((step) => [step.id, step]))
+  const dependencyKeys = group.steps.map((stepId) => {
+    const deps = stepMap.get(stepId)?.dependsOn ?? []
+    return deps.slice().sort().join("|")
+  })
+  const hasSharedEntry = new Set(dependencyKeys).size === 1
+
+  const hasSharedDownstream = steps.some((step) => {
+    const depSet = new Set(step.dependsOn)
+    return group.steps.filter((member) => depSet.has(member)).length >= 2
+  })
+
+  return hasSharedEntry || hasSharedDownstream
 }
 
 function hasCycle(steps: WorkflowStep[]): boolean {
@@ -215,27 +289,6 @@ function hasCycle(steps: WorkflowStep[]): boolean {
   return false
 }
 
-function hasRealFanOut(steps: WorkflowStep[], parallelism: ParallelismAnnotation[]): boolean {
-  const stepMap = new Map(steps.map((step) => [step.id, step]))
-
-  return parallelism.some((annotation) => {
-    if (annotation.steps.length < 2) return false
-
-    const dependencyKeys = annotation.steps.map((stepId) => {
-      const deps = stepMap.get(stepId)?.dependsOn ?? []
-      return deps.slice().sort().join("|")
-    })
-    const hasSharedEntry = new Set(dependencyKeys).size === 1
-
-    const hasSharedDownstream = steps.some((step) => {
-      const depSet = new Set(step.dependsOn)
-      return annotation.steps.filter((member) => depSet.has(member)).length >= 2
-    })
-
-    return hasSharedEntry || hasSharedDownstream
-  })
-}
-
 function emptyDag(): WorkflowDAG {
   return { steps: [], parallelism: [] }
 }
@@ -245,18 +298,53 @@ export function generateParallelismSection(dag: WorkflowDAG): string {
 
   const stepMap = new Map(dag.steps.map((step) => [step.id, step]))
   let section = "\n\n---\n\n"
-  section += "**Parallel execution hint:** If your harness supports sub-agents, you may launch separate sub-agents for the following sibling subtasks once their shared prerequisites are satisfied. Merge their outputs before continuing to dependent steps.\n\n"
+  section += "**Parallel execution hints:** the compiler identified the following opportunities. Apply each only if your harness supports the indicated primitive; otherwise fall back to sequential execution.\n\n"
 
-  for (let i = 0; i < dag.parallelism.length; i++) {
-    const group = dag.parallelism[i]!
-    section += `**Group ${i + 1}:**\n`
-    for (const stepId of group.steps) {
-      const step = stepMap.get(stepId)
-      section += `- **${stepId}**: ${step?.description ?? "(no description)"}\n`
-    }
-    section += "\nStart one sub-agent per step in this group, then continue only after the required branch outputs are available.\n\n"
+  let groupIndex = 0
+  for (const group of dag.parallelism) {
+    groupIndex += 1
+    section += renderGroup(group, groupIndex, stepMap)
   }
   return section
+}
+
+function renderGroup(
+  group: ParallelismAnnotation,
+  index: number,
+  stepMap: Map<string, WorkflowStep>,
+): string {
+  const header = `**Group ${index} — ${group.type.toUpperCase()} (${humanLabel(group.type)}):**\n`
+  const bullets = group.steps
+    .map((stepId) => {
+      const step = stepMap.get(stepId)
+      return `- **${stepId}**: ${step?.description ?? "(no description)"}`
+    })
+    .join("\n")
+  const mechanismLine = `\nMechanism: ${group.mechanism}\n`
+  const guidance = guidanceFor(group.type)
+  return `${header}${bullets}${mechanismLine}${guidance}\n`
+}
+
+function humanLabel(kind: ParallelismKindValue): string {
+  switch (kind) {
+    case "dlp":
+      return "same operation over independent data items"
+    case "ilp":
+      return "independent tool calls batched in one LLM turn"
+    case "tlp":
+      return "independent sub-tasks dispatched to sub-agents"
+  }
+}
+
+function guidanceFor(kind: ParallelismKindValue): string {
+  switch (kind) {
+    case "dlp":
+      return "Execute the iteration concurrently using a language-level parallel primitive — shell `xargs -P`, GNU parallel, Python `multiprocessing.Pool`, or JavaScript `Promise.all` — instead of a sequential for-loop. Merge results after all items finish.\n"
+    case "ilp":
+      return "Issue the listed tool calls together in a single assistant turn (batched tool_use block). Do not narrate them one after another. Bind each tool result back to its downstream consumer before continuing.\n"
+    case "tlp":
+      return "Start one sub-agent per step in this group once their shared prerequisites are satisfied. Continue only after the required branch outputs are available, then merge.\n"
+  }
 }
 
 export function generateWorkflowDagDocument(dag: WorkflowDAG): string {
