@@ -104,17 +104,19 @@ This is the quickest way to make an OpenClaw environment self-host the SkVM tool
 
 ## Quick Start
 
-SkVM currently supports five external agent harnesses — `openclaw`, `opencode`, `hermes`, `jiuwenclaw`, and `pi` — plus a built-in `bare-agent` that talks to any OpenAI-compatible backend directly.
-
 Configure your agent harness, provider, and API key via the interactive wizard:
 
 ```bash
 skvm config init
 ```
 
-This writes `$SKVM_CACHE/skvm.config.json` (default `~/.skvm/skvm.config.json`). For non-interactive setups or alternative providers, see [docs/providers.md](docs/providers.md).
+This writes `$SKVM_CACHE/skvm.config.json` (default `~/.skvm/skvm.config.json`). For non-interactive setups, see [docs/providers.md](docs/providers.md).
 
-Model ids on the CLI take the form `<provider>/<model-id>` — the leading `<provider>` picks a route in `providers.routes` (skvm strips it before the backend SDK sees the id). For OpenRouter that means three segments, e.g. `openrouter/qwen/qwen3.5-35b-a3b`; for a native-SDK route two, e.g. `anthropic/claude-sonnet-4.6`.
+**Adapter config mode.** External harnesses run in one of two modes: `managed|native` (default `managed`):
+- **managed** — skvm provisions a fresh, minimal config inside the sandbox (e.g. a new openclaw agent, or a generated `hermes` `config.yaml`). Clean baseline, no reliance on host state.
+- **native** — skvm clones the user's existing harness config (e.g. an openclaw source agent under `~/.openclaw/agents/<name>`, or a hermes active profile). Requires the harness to be set up locally first.
+
+**Model id format.** Model parameters on the CLI take the form `<provider>/<model-id>` — the leading `<provider>` selects the model service provider, while `<model-id>` is how that provider refers to the model. For OpenRouter that's three segments, e.g. `openrouter/qwen/qwen3.5-35b-a3b`; for the Anthropic native API it's two, e.g. `anthropic/claude-sonnet-4.6`.
 
 ### 1. Profile a model's primitive capabilities
 
@@ -129,8 +131,10 @@ cp -R skvm-data/profiles/. ~/.skvm/profiles/
 
 ```bash
 skvm profile \
-  --model=<provider>/<model-id> \
-  --adapter=bare-agent
+  --adapter=bare-agent \
+  --model=<provider>/<model-id>
+  # e.g. --model=anthropic/claude-sonnet-4.6
+  # e.g. --model=openrouter/qwen/qwen3.5-35b-a3b
 ```
 
 With the default `--concurrency=1`, this example typically takes about 20 minutes for one full run. If you want it to finish faster, increase `--concurrency` to profile more primitives in parallel.
