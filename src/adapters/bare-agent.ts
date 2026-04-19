@@ -267,6 +267,11 @@ Available skills:
         maxIterations: this.maxSteps,
         timeoutMs: task.timeoutMs ?? this.timeoutMs,
         maxTokens: 16384,
+        // bare-agent's tool executor spawns isolated shell subprocesses per
+        // call — safe for ILP fan-out. Closes the runtime side of pass3's ILP
+        // annotation: when a skill hints the model to batch independent
+        // tool_use blocks in one turn, we actually execute them concurrently.
+        parallelToolExecution: true,
         onAfterLLM: async (response, iteration) => {
           if (skillMode === "discover" && task.skillContent && task.skillMeta && !discoverSkillLoaded) {
             const skillMatch = response.text.match(LOAD_SKILL_RE)
