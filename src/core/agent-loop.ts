@@ -32,6 +32,22 @@ export interface AgentLoopConfig {
 
   /** Called after each tool execution (for tracking) */
   onAfterTool?: (completedCall: ToolCall, iteration: number) => Promise<void> | void
+
+  /**
+   * ILP dispatch: when the LLM returns multiple tool_use blocks in a single
+   * response, execute them concurrently instead of serially.
+   *
+   * This materializes the pass3 ILP annotation: compilation tells the model to
+   * batch independent tool calls in one turn; the runtime then dispatches them
+   * in parallel. Tool-result ordering is preserved by index so the downstream
+   * `completeWithToolResults` contract (one tool_result per tool_use id) stays
+   * intact.
+   *
+   * Default `false` preserves legacy per-call serialization. Adapters whose
+   * `executeTool` is safe to run concurrently (shell subprocesses, CLI fan-out)
+   * should opt in.
+   */
+  parallelToolExecution?: boolean
 }
 
 export interface AgentLoopResult {
@@ -152,29 +168,54 @@ export async function runAgentLoop(
         break
       }
 
-      // Execute tool calls
+      // Execute tool calls. When ILP dispatch is enabled and the LLM batched
+      // multiple independent tool_use blocks in this turn, fan them out with
+      // Promise.all so wall-clock time equals the slowest call rather than the
+      // sum. Output order is preserved by indexing back into the original
+      // `response.toolCalls` array — matters both for human-readable traces
+      // and for any adapter that assumes stable ordering.
       const toolResults: LLMToolResult[] = []
       const toolStepCalls: ToolCall[] = []
 
-      for (const tc of response.toolCalls) {
+      const dispatchOne = async (tc: LLMToolCall): Promise<{ tr: LLMToolResult; completed: ToolCall }> => {
         log.debug(`Tool: ${tc.name}(${JSON.stringify(tc.arguments).slice(0, 100)})`)
         const result = await executeTool(tc)
-        toolResults.push({ toolCallId: tc.id, content: result.output })
-
-        const completedCall: ToolCall = {
-          id: tc.id,
-          name: tc.name,
-          input: tc.arguments,
-          output: result.output,
-          durationMs: result.durationMs,
-          exitCode: result.exitCode,
+        return {
+          tr: { toolCallId: tc.id, content: result.output },
+          completed: {
+            id: tc.id,
+            name: tc.name,
+            input: tc.arguments,
+            output: result.output,
+            durationMs: result.durationMs,
+            exitCode: result.exitCode,
+          },
         }
-        toolStepCalls.push(completedCall)
-        allToolCalls.push(completedCall)
+      }
 
-        // --- After-tool callback ---
+      const ilpEnabled = config.parallelToolExecution === true && response.toolCalls.length > 1
+      const dispatched = ilpEnabled
+        ? await Promise.all(response.toolCalls.map(dispatchOne))
+        : await (async () => {
+            const out: Array<{ tr: LLMToolResult; completed: ToolCall }> = []
+            for (const tc of response.toolCalls) {
+              out.push(await dispatchOne(tc))
+            }
+            return out
+          })()
+
+      if (ilpEnabled) {
+        log.debug(`ILP dispatch: ${response.toolCalls.length} tool calls executed in parallel`)
+      }
+
+      for (const { tr, completed } of dispatched) {
+        toolResults.push(tr)
+        toolStepCalls.push(completed)
+        allToolCalls.push(completed)
+        // After-tool callbacks still run sequentially to preserve ordering
+        // guarantees expected by JIT boost / monitoring consumers.
         if (config.onAfterTool) {
-          await config.onAfterTool(completedCall, iteration)
+          await config.onAfterTool(completed, iteration)
         }
       }
 
