@@ -1,15 +1,16 @@
 import path from "node:path"
 import { readdir } from "node:fs/promises"
-import type { SCR, TCP, CapabilityGap, TokenUsage } from "../../core/types.ts"
-import { emptyTokenUsage, addTokenUsage, LEVEL_ORDER } from "../../core/types.ts"
-import type { LLMProvider } from "../../providers/types.ts"
-import type { Pass1Result, FailureContext } from "../types.ts"
-import { runAgentLoop } from "../../core/agent-loop.ts"
-import { AGENT_TOOLS, createAgentToolExecutor } from "../../core/agent-tools.ts"
+import type { SCR, TCP, CapabilityGap } from "../../../core/types.ts"
+import { LEVEL_ORDER } from "../../../core/types.ts"
+import type { LLMProvider } from "../../../providers/types.ts"
+import type { Pass1Result, FailureContext } from "../../types.ts"
+import { ARTIFACT_DIR } from "../../artifacts.ts"
+import { runAgentLoop } from "../../../core/agent-loop.ts"
+import { AGENT_TOOLS, createAgentToolExecutor } from "../../../core/agent-tools.ts"
 import { extractSCR } from "./extractor.ts"
 import { analyzeGaps } from "./gap-analyzer.ts"
-import { getPrimitive } from "../../core/primitives.ts"
-import { createLogger } from "../../core/logger.ts"
+import { getPrimitive } from "../../../core/primitives.ts"
+import { createLogger } from "../../../core/logger.ts"
 
 const log = createLogger("compiler-agent")
 
@@ -24,6 +25,7 @@ interface WorkDirFile {
 
 const TEXT_EXTENSIONS = new Set([".md", ".json", ".py", ".sh", ".txt", ".yaml", ".yml", ".toml"])
 const SKIP_FILES = new Set(["compilation-plan.json", "meta.json", "env-setup.sh", "jit-candidates.json"])
+const SKIP_DIRS = new Set([ARTIFACT_DIR])
 const MAX_FILE_SIZE = 10 * 1024   // 10KB per bundle file
 const MAX_TOTAL_SIZE = 100 * 1024 // 100KB total (bundle + profiling artifacts)
 
@@ -50,8 +52,10 @@ async function readWorkDirFiles(workDir: string): Promise<WorkDirFile[]> {
     // Skip SKILL.md — provided via skillContent parameter
     if (relPath === "SKILL.md") continue
 
-    // Skip compilation artifacts from previous runs
+    // Skip compilation artifacts from previous runs (top-level metadata files
+    // and the _artifacts directory written by the orchestrator).
     if (SKIP_FILES.has(relPath)) continue
+    if (relPath.split(path.sep).some((seg) => SKIP_DIRS.has(seg))) continue
 
     // Skip non-text files (but allow .jsonl under _profiling/)
     const ext = path.extname(entry.name).toLowerCase()
@@ -412,27 +416,16 @@ export async function runPass1Agentic(
   workDir: string,
   failureContext?: FailureContext,
 ): Promise<Pass1Result> {
-  // Step 1: Extract SCR (still uses structured extraction — fast and reliable)
-  const { scr, tokens: scrTokens } = await extractSCR(skillContent, provider)
+  const scr = await extractSCR(skillContent, provider)
   log.info(`SCR: ${scr.purposes.length} purposes`)
 
-  // Step 2: Analyze gaps (pure computation)
   const gaps = analyzeGaps(scr, tcp)
   log.info(`Gaps: ${gaps.length}`)
 
-  // No gaps → return original unchanged
   if (gaps.length === 0) {
-    return {
-      scr,
-      gaps,
-      pathSelections: [],
-      transforms: [],
-      compiledSkill: skillContent,
-      tokens: scrTokens,
-    }
+    return { scr, gaps, compiledSkill: skillContent }
   }
 
-  // Step 3: Pre-load workDir files and run compiler agent
   const bundledFiles = await readWorkDirFiles(workDir)
   const system = buildSystemPrompt(tcp)
   const initialMessage = buildInitialMessage(scr, gaps, tcp, skillContent, bundledFiles, failureContext)
@@ -453,9 +446,6 @@ export async function runPass1Agentic(
     [{ role: "user", content: initialMessage }],
   )
 
-  const totalTokens = addTokenUsage(scrTokens, loopResult.tokens)
-
-  // Read back compiled SKILL.md from disk
   const compiledSkillFile = Bun.file(path.join(workDir, "SKILL.md"))
   let compiledSkill: string
   if (await compiledSkillFile.exists()) {
@@ -467,12 +457,5 @@ export async function runPass1Agentic(
 
   log.info(`Agent completed in ${loopResult.iterations} iterations`)
 
-  return {
-    scr,
-    gaps,
-    pathSelections: [],
-    transforms: [],
-    compiledSkill,
-    tokens: totalTokens,
-  }
+  return { scr, gaps, compiledSkill }
 }

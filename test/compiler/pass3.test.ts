@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { CompletionParams, LLMProvider, LLMResponse, LLMToolResult } from "../../src/providers/types.ts"
-import { generateParallelismSection, generateWorkflowDagDocument, runPass3 } from "../../src/compiler/pass3/index.ts"
-import type { SCR, TCP, TokenUsage } from "../../src/core/types.ts"
+import { generateParallelismSection, generateWorkflowDagDocument, runPass3 } from "../../src/compiler/passes/extract-parallelism/parallelism.ts"
+import type { TokenUsage } from "../../src/core/types.ts"
 
 class MockProvider implements LLMProvider {
   readonly name = "mock"
@@ -31,42 +31,6 @@ function emptyTokens(): TokenUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 }
 
-function mockSCR(): SCR {
-  return {
-    skillName: "demo-skill",
-    purposes: [
-      {
-        id: "main",
-        description: "Execute the skill workflow",
-        currentPath: {
-          primitives: [
-            { id: "reason.planning", minLevel: "L1", evidence: "The skill defines ordered execution steps." },
-            { id: "tool.exec", minLevel: "L1", evidence: "The skill runs commands and scripts." },
-          ],
-        },
-        alternativePaths: [],
-      },
-    ],
-  }
-}
-
-function mockTCP(): TCP {
-  return {
-    version: "1.0",
-    model: "test/model",
-    harness: "bare-agent",
-    profiledAt: new Date().toISOString(),
-    capabilities: { "reason.planning": "L2", "tool.exec": "L2" },
-    details: [],
-    cost: {
-      totalUsd: 0,
-      totalTokens: emptyTokens(),
-      durationMs: 0,
-    },
-    isPartial: false,
-  }
-}
-
 describe("runPass3", () => {
   test("returns no parallelism for a linear workflow", async () => {
     const provider = new MockProvider(JSON.stringify({
@@ -76,7 +40,7 @@ describe("runPass3", () => {
       parallelGroups: [],
     }))
 
-    const result = await runPass3("# Skill\nDo one thing after another.", mockSCR(), mockTCP(), provider)
+    const result = await runPass3("# Skill\nDo one thing after another.", provider)
     expect(result.dag.steps).toHaveLength(0)
     expect(result.dag.parallelism).toHaveLength(0)
     expect(generateParallelismSection(result.dag)).toBe("")
@@ -97,7 +61,7 @@ describe("runPass3", () => {
       ],
     }))
 
-    const result = await runPass3("# Skill\nScope, research, draft, then merge.", mockSCR(), mockTCP(), provider)
+    const result = await runPass3("# Skill\nScope, research, draft, then merge.", provider)
     expect(result.dag.steps).toHaveLength(4)
     expect(result.dag.parallelism).toHaveLength(1)
     expect(result.dag.parallelism[0]?.type).toBe("tlp")
@@ -130,7 +94,7 @@ describe("runPass3", () => {
       ],
     }))
 
-    const result = await runPass3("# Skill\nAnalyze each CSV.", mockSCR(), mockTCP(), provider)
+    const result = await runPass3("# Skill\nAnalyze each CSV.", provider)
     expect(result.dag.parallelism).toHaveLength(1)
     expect(result.dag.parallelism[0]?.type).toBe("dlp")
     expect(result.dag.parallelism[0]?.steps).toEqual(["analyze-each"])
@@ -155,7 +119,7 @@ describe("runPass3", () => {
       ],
     }))
 
-    const result = await runPass3("# Skill\nSearch and collect logs.", mockSCR(), mockTCP(), provider)
+    const result = await runPass3("# Skill\nSearch and collect logs.", provider)
     expect(result.dag.parallelism).toHaveLength(1)
     expect(result.dag.parallelism[0]?.type).toBe("ilp")
     expect(result.dag.parallelism[0]?.steps).toEqual(["search-jira", "collect-logs"])
@@ -179,7 +143,7 @@ describe("runPass3", () => {
       ],
     }))
 
-    const result = await runPass3("# Skill", mockSCR(), mockTCP(), provider)
+    const result = await runPass3("# Skill", provider)
     expect(result.dag.parallelism).toHaveLength(0)
   })
 })

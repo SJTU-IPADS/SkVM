@@ -1,11 +1,9 @@
-import { z } from "zod"
-import type { SCR, TokenUsage } from "../../core/types.ts"
-import { SCRSchema } from "../../core/types.ts"
-import type { LLMProvider } from "../../providers/types.ts"
-import type { CompilerLLMCall } from "../types.ts"
-import { extractStructured } from "../../providers/structured.ts"
-import { ALL_PRIMITIVE_IDS } from "../../core/primitives.ts"
-import { createLogger } from "../../core/logger.ts"
+import type { SCR } from "../../../core/types.ts"
+import { SCRSchema } from "../../../core/types.ts"
+import type { LLMProvider } from "../../../providers/types.ts"
+import { extractStructured } from "../../../providers/structured.ts"
+import { ALL_PRIMITIVE_IDS } from "../../../core/primitives.ts"
+import { createLogger } from "../../../core/logger.ts"
 import scrTemplateObj from "./scr-template.json"
 
 const log = createLogger("extractor")
@@ -20,7 +18,7 @@ const scrTemplate = JSON.stringify(scrTemplateObj, null, 2)
 export async function extractSCR(
   skillContent: string,
   provider: LLMProvider,
-): Promise<{ scr: SCR; tokens: TokenUsage; llmCalls: CompilerLLMCall[] }> {
+): Promise<SCR> {
   const primitiveList = ALL_PRIMITIVE_IDS.map((id) => `  - ${id}`).join("\n")
 
   const prompt = `Analyze the following skill document and extract its capability requirements.
@@ -55,7 +53,7 @@ ${scrTemplate}
 
   const system = "You are a skill compiler analyzing capability requirements. Be precise about which primitives are needed and at what level."
 
-  const { result, rawResponse, tokens } = await extractStructured({
+  const { result } = await extractStructured({
     provider,
     schema: SCRSchema,
     schemaName: "extract_scr",
@@ -72,6 +70,5 @@ ${scrTemplate}
   }
 
   log.info(`Extracted SCR: ${result.skillName} (${result.purposes.length} purposes)`)
-  const llmCalls: CompilerLLMCall[] = [{ phase: "extractor", prompt, system, rawResponse }]
-  return { scr: result as SCR, tokens, llmCalls }
+  return result as SCR
 }

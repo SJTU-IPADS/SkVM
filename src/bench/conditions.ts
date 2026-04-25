@@ -8,6 +8,7 @@ import { runTask } from "../framework/runner.ts"
 import type { EvaluatorConfig, EvaluateAllOptions } from "../framework/evaluator.ts"
 import { evaluateAll } from "../framework/evaluator.ts"
 import { compileSkill, writeVariant } from "../compiler/index.ts"
+import { ARTIFACT_DIR } from "../compiler/artifacts.ts"
 import { AOT_COMPILE_DIR, toPassTag, safeModelName } from "../core/config.ts"
 import type { BenchTask, BenchCondition, ConditionResult, JitRunReport, EvalDetail } from "./types.ts"
 import { contentHash, copySkillBundle } from "../core/skill-loader.ts"
@@ -505,7 +506,7 @@ export async function runAOTVariant(
         tcp,
         model: adapterConfig.model,
         harness,
-        passes,
+        passes: passes.map(String),
       }, compilerProvider, { showSpinner: false })
       compiledContent = result.compiledSkill
       await writeVariant(result)
@@ -527,6 +528,7 @@ export async function runAOTVariant(
 
   // Copy compiled bundled files to workDir (if the compiled variant has them)
   const compiledDir = path.dirname(compiledPath)
+  const SKIP_FILES = new Set(["SKILL.md", "compilation-plan.json", "meta.json", "env-setup.sh", "jit-candidates.json"])
   try {
     const { readdir: readdirAsync } = await import("node:fs/promises")
     const entries = await readdirAsync(compiledDir, { withFileTypes: true, recursive: true })
@@ -534,8 +536,10 @@ export async function runAOTVariant(
       if (!entry.isFile()) continue
       const fullPath = path.join(entry.parentPath ?? compiledDir, entry.name)
       const relPath = path.relative(compiledDir, fullPath)
-      // Skip compiler metadata files
-      if (["SKILL.md", "compilation-plan.json", "meta.json", "env-setup.sh", "jit-candidates.json"].includes(relPath)) continue
+      if (SKIP_FILES.has(relPath)) continue
+      // Skip compiler-internal directories (e.g. _artifacts/scr.json,
+      // _artifacts/_meta/*.json) — they are not part of the skill bundle.
+      if (relPath.split(path.sep).some((seg) => seg === ARTIFACT_DIR)) continue
       const dest = path.join(workDir, relPath)
       await mkdir(path.dirname(dest), { recursive: true })
       await copyFile(fullPath, dest)

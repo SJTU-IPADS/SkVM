@@ -504,10 +504,17 @@ Options:
   --model=<id,...>      Target model(s), comma-separated (required)
   --adapter=<name,...>  Harness name(s), comma-separated (${ALL_ADAPTERS.join(" | ")}; default: ${CLI_DEFAULTS.adapter})
   --profile=<path>      Path to TCP JSON (single-job only; default: load from cache)
-  --pass=<list>         Which passes to run, comma-separated (default: ${CLI_DEFAULTS.compilerPasses.join(",")})
+  --pass=<list>         Which passes to run, comma-separated. Each token is a numeric id (1, 2, 3) or a string id (rewrite-skill, bind-env, extract-parallelism). Default: every registered pass.
+  --list-passes         Print the pass registry and exit
   --concurrency=<n>     Parallel compilations (default: ${CLI_DEFAULTS.concurrency})
   --dry-run             Show plan without applying
   --compiler-model=<id> Compiler model via OpenRouter (default: ${MODEL_DEFAULTS.compiler})`)
+    process.exit(0)
+  }
+
+  if (flags["list-passes"] === "true") {
+    const { formatRegistry } = await import("./compiler/registry.ts")
+    console.log(formatRegistry())
     process.exit(0)
   }
 
@@ -519,9 +526,9 @@ Options:
   const skillInputs = flags.skill.split(",").map(s => s.trim())
   const models = flags.model.split(",").map(m => m.trim())
   const adapters = (flags.adapter ?? CLI_DEFAULTS.adapter).split(",").map(a => a.trim())
-  const passes: number[] = flags.pass
-    ? flags.pass.split(",").map(p => Number(p.trim()))
-    : [...CLI_DEFAULTS.compilerPasses]
+  const passes: string[] = flags.pass
+    ? flags.pass.split(",").map((p) => p.trim()).filter(Boolean)
+    : CLI_DEFAULTS.compilerPasses.map(String)
   const concurrency = flags.concurrency ? parseInt(flags.concurrency) : CLI_DEFAULTS.concurrency
   const dryRun = flags["dry-run"] === "true"
 
@@ -675,12 +682,13 @@ Options:
 
       completed++
       const guardStr = result.guardPassed ? "PASS" : "FAIL"
-      spinnerLog(`  [${completed}/${jobs.length}] ${label}: ${result.pass1.gaps.length} gaps, guard=${guardStr}, ${(result.durationMs / 1000).toFixed(1)}s`)
+      const gapCount = result.artifacts.gaps?.length ?? 0
+      spinnerLog(`  [${completed}/${jobs.length}] ${label}: ${gapCount} gaps, guard=${guardStr}, ${(result.durationMs / 1000).toFixed(1)}s`)
       compileProgress.tick(`Compiled ${jobs.length} job(s)`)
 
       results.push({
         skill: job.skill.name, model: job.model, adapter: job.adapter,
-        gaps: result.pass1.gaps.length, guard: result.guardPassed, durationMs: result.durationMs,
+        gaps: gapCount, guard: result.guardPassed, durationMs: result.durationMs,
       })
     } catch (err) {
       completed++
@@ -751,7 +759,9 @@ Options:
   }
   const harness: AdapterName = harnessStr
 
-  const passes = flags.pass ? flags.pass.split(",").map(Number) : [...CLI_DEFAULTS.compilerPasses]
+  const passes: string[] = flags.pass
+    ? flags.pass.split(",").map((p) => p.trim()).filter(Boolean)
+    : CLI_DEFAULTS.compilerPasses.map(String)
   const pipelineCompilerModel = flags["compiler-model"] ?? MODEL_DEFAULTS.compiler
 
   {
@@ -875,12 +885,15 @@ Options:
   if (result.guardViolations.length > 0) {
     for (const v of result.guardViolations) console.log(`  Violation: ${v}`)
   }
-  console.log(`SCR: ${result.pass1.scr.purposes.length} purposes`)
-  console.log(`Gaps: ${result.pass1.gaps.length}`)
-  console.log(`Transforms: ${result.pass1.transforms.length}`)
-  console.log(`Dependencies: ${result.pass2.dependencies.length}`)
-  console.log(`DAG steps: ${result.pass3.dag.steps.length}`)
-  console.log(`Parallelism: ${result.pass3.dag.parallelism.length}`)
+  const scr = result.artifacts.scr
+  const gaps = result.artifacts.gaps ?? []
+  const deps = result.artifacts.deps ?? []
+  const dag = result.artifacts.dag ?? { steps: [], parallelism: [] }
+  if (scr) console.log(`SCR: ${scr.purposes.length} purposes`)
+  console.log(`Gaps: ${gaps.length}`)
+  console.log(`Dependencies: ${deps.length}`)
+  console.log(`DAG steps: ${dag.steps.length}`)
+  console.log(`Parallelism: ${dag.parallelism.length}`)
 
   // Write variant
   if (flags["dry-run"] !== "true") {
@@ -888,7 +901,7 @@ Options:
     console.log(`\nVariant written to: ${dir}`)
   }
 
-  await pipelineSession.complete(`${result.pass1.gaps.length} gaps, guard=${result.guardPassed ? "pass" : "fail"}`)
+  await pipelineSession.complete(`${gaps.length} gaps, guard=${result.guardPassed ? "pass" : "fail"}`)
 }
 
 async function runBenchCmd(flags: Record<string, string>) {

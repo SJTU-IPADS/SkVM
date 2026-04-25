@@ -1,4 +1,4 @@
-import { createLogger } from "../../core/logger.ts"
+import { createLogger } from "../../../core/logger.ts"
 
 const log = createLogger("pass2:platform")
 

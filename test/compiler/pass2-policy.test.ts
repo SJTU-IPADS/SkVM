@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test"
-import { createInstallPolicy, normalizeDependenciesForPlatform } from "../../src/compiler/pass2/install-policy.ts"
-import type { PlatformContext } from "../../src/compiler/pass2/platform.ts"
+import { createInstallPolicy, normalizeDependenciesForPlatform } from "../../src/compiler/passes/bind-env/install-policy.ts"
+import type { PlatformContext } from "../../src/compiler/passes/bind-env/platform.ts"
 import type { DependencyEntry } from "../../src/core/types.ts"
 
 function mkPlatform(os: PlatformContext["os"], overrides?: Partial<PlatformContext>): PlatformContext {

@@ -1,5 +1,5 @@
-import type { SCR, TCP, CapabilityGap, Level } from "../../core/types.ts"
-import { LEVEL_ORDER } from "../../core/types.ts"
+import type { SCR, TCP, CapabilityGap, Level } from "../../../core/types.ts"
+import { LEVEL_ORDER } from "../../../core/types.ts"
 
 /**
  * Analyze gaps between a skill's capability requirements (SCR) and

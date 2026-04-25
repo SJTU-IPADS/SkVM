@@ -1,8 +1,8 @@
 import path from "node:path"
 import { readdir, unlink } from "node:fs/promises"
-import { createLogger } from "../../core/logger.ts"
-import type { LLMProvider } from "../../providers/types.ts"
-import type { DependencyEntry } from "../../core/types.ts"
+import { createLogger } from "../../../core/logger.ts"
+import type { LLMProvider } from "../../../providers/types.ts"
+import type { DependencyEntry } from "../../../core/types.ts"
 import type { PlatformContext } from "./platform.ts"
 
 const log = createLogger("pass2:simulate")

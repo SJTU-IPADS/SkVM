@@ -62,8 +62,8 @@ export const CLI_DEFAULTS = {
   jitOptimizeTaskConcurrency: 1,
   syntheticTrainCount: 2,
   syntheticTestCount: 1,
-  // AOT-compile / pipeline
-  compilerPasses: [1] as readonly number[],
+  // AOT-compile / pipeline — default runs every registered pass
+  compilerPasses: [1, 2, 3] as readonly number[],
   // Profile
   profileInstances: 3,
   // List

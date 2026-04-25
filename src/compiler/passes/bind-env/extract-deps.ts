@@ -1,14 +1,15 @@
 import path from "node:path"
 import { readdir } from "node:fs/promises"
 import { z } from "zod"
-import type { LLMProvider } from "../../providers/types.ts"
-import type { DependencyEntry, TokenUsage } from "../../core/types.ts"
-import { extractStructured } from "../../providers/structured.ts"
-import { createLogger } from "../../core/logger.ts"
+import type { LLMProvider } from "../../../providers/types.ts"
+import type { DependencyEntry, TokenUsage } from "../../../core/types.ts"
+import { extractStructured } from "../../../providers/structured.ts"
+import { createLogger } from "../../../core/logger.ts"
+import { ARTIFACT_DIR } from "../../artifacts.ts"
 
 const log = createLogger("pass2:extract")
 
-const SKIP_DIRS = new Set(["_profiling", "node_modules", ".git"])
+const SKIP_DIRS = new Set(["_profiling", "node_modules", ".git", ARTIFACT_DIR])
 const BINARY_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".tar", ".gz", ".bin", ".exe", ".woff", ".woff2", ".ttf"])
 const MAX_FILE_SIZE = 64 * 1024 // 64 KB
 

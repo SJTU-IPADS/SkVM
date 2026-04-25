@@ -1,4 +1,4 @@
-import type { DependencyEntry } from "../../core/types.ts"
+import type { DependencyEntry } from "../../../core/types.ts"
 import type { PlatformContext } from "./platform.ts"
 
 export interface InstallPolicy {

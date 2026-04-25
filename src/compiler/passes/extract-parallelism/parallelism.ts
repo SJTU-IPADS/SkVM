@@ -1,11 +1,11 @@
 import { z } from "zod"
-import type { LLMProvider } from "../../providers/types.ts"
-import { extractStructured } from "../../providers/structured.ts"
-import { isProviderError } from "../../providers/errors.ts"
-import type { SCR, TCP, WorkflowDAG, WorkflowStep, ParallelismAnnotation } from "../../core/types.ts"
-import { WorkflowStepSchema } from "../../core/types.ts"
-import type { Pass3Result } from "../types.ts"
-import { createLogger } from "../../core/logger.ts"
+import type { LLMProvider } from "../../../providers/types.ts"
+import { extractStructured } from "../../../providers/structured.ts"
+import { isProviderError } from "../../../providers/errors.ts"
+import type { WorkflowDAG, WorkflowStep, ParallelismAnnotation } from "../../../core/types.ts"
+import { WorkflowStepSchema } from "../../../core/types.ts"
+import type { Pass3Result } from "../../types.ts"
+import { createLogger } from "../../../core/logger.ts"
 
 const log = createLogger("pass3")
 
@@ -35,14 +35,8 @@ interface RawParallelGroup {
 
 export async function runPass3(
   skillContent: string,
-  scr: SCR,
-  tcp: TCP,
   provider: LLMProvider,
-  bundleFiles?: Map<string, string>,
 ): Promise<Pass3Result> {
-  void tcp
-  void bundleFiles
-
   try {
     const { result } = await extractStructured({
       provider,
@@ -50,7 +44,7 @@ export async function runPass3(
       schemaName: "pass3_parallel_plan",
       schemaDescription: "Classified parallelism plan (DLP/ILP/TLP) for a skill workflow",
       system: buildSystemPrompt(),
-      prompt: buildUserPrompt(skillContent, scr),
+      prompt: buildUserPrompt(skillContent),
       maxRetries: 2,
       maxTokens: 4000,
     })
@@ -102,18 +96,12 @@ function buildSystemPrompt(): string {
   ].join("\n")
 }
 
-function buildUserPrompt(skillContent: string, scr: SCR): string {
-  const purposeSummary = scr.purposes
-    .map((purpose) => {
-      const primitives = purpose.currentPath.primitives
-        .map((prim) => `${prim.id}(${prim.minLevel})`)
-        .join(", ")
-      return `- ${purpose.id}: ${purpose.description}\n  Primitives: ${primitives}`
-    })
-    .join("\n")
-
+function buildUserPrompt(skillContent: string): string {
   return [
     "Analyze this skill for parallelism opportunities and classify each as DLP, ILP, or TLP.",
+    "",
+    "Identify the skill's distinct workflow steps from the SKILL.md text below — focus on the",
+    "main procedure or numbered/bulleted instructions. Use 2-6 meaningful workflow nodes.",
     "",
     "Return hasParallelism=false when:",
     "- the workflow is linear with no iteration and no independent sibling steps",
@@ -127,9 +115,6 @@ function buildUserPrompt(skillContent: string, scr: SCR): string {
     '  - "mechanism": a short phrase naming the concrete parallel primitive (e.g., "xargs -P", ',
     '    "Promise.all", "batched tool_use in one turn", "sub-agent per branch")',
     '  - "reason": why these items are independent',
-    "",
-    "Skill purposes:",
-    purposeSummary,
     "",
     "Skill content:",
     "```markdown",

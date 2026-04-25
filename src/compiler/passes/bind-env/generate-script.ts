@@ -1,6 +1,6 @@
-import type { LLMProvider } from "../../providers/types.ts"
-import type { DependencyEntry, TokenUsage } from "../../core/types.ts"
-import { createLogger } from "../../core/logger.ts"
+import type { LLMProvider } from "../../../providers/types.ts"
+import type { DependencyEntry, TokenUsage } from "../../../core/types.ts"
+import { createLogger } from "../../../core/logger.ts"
 import type { PlatformContext } from "./platform.ts"
 import type { InstallPolicy } from "./install-policy.ts"
 

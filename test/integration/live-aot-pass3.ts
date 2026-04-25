@@ -12,8 +12,7 @@
  */
 
 import "../../src/core/env-bootstrap.ts"
-import { runPass3, generateParallelismSection } from "../../src/compiler/pass3/index.ts"
-import type { SCR, TCP } from "../../src/core/types.ts"
+import { runPass3, generateParallelismSection } from "../../src/compiler/passes/extract-parallelism/parallelism.ts"
 import { AnthropicProvider } from "../../src/providers/anthropic.ts"
 import { OpenRouterProvider } from "../../src/providers/openrouter.ts"
 import type { LLMProvider } from "../../src/providers/types.ts"
@@ -113,74 +112,6 @@ with open('report.md', 'w') as f:
 \`\`\`
 `
 
-// Minimal SCR for the synthetic skill
-const SYNTHETIC_SCR: SCR = {
-  skillName: "multi-source-report",
-  purposes: [
-    {
-      id: "fetch-weather",
-      description: "Download and parse weather data",
-      currentPath: {
-        primitives: [
-          { id: "tool.web_fetch", minLevel: "L1", evidence: "curl API call" },
-          { id: "gen.code.python", minLevel: "L1", evidence: "parse JSON" },
-        ],
-      },
-      alternativePaths: [],
-    },
-    {
-      id: "fetch-stocks",
-      description: "Download and parse stock data",
-      currentPath: {
-        primitives: [
-          { id: "tool.web_fetch", minLevel: "L1", evidence: "curl API call" },
-          { id: "gen.code.python", minLevel: "L1", evidence: "parse JSON" },
-        ],
-      },
-      alternativePaths: [],
-    },
-    {
-      id: "fetch-news",
-      description: "Download and parse news headlines",
-      currentPath: {
-        primitives: [
-          { id: "tool.web_fetch", minLevel: "L1", evidence: "curl API call" },
-          { id: "gen.code.python", minLevel: "L1", evidence: "parse JSON" },
-        ],
-      },
-      alternativePaths: [],
-    },
-    {
-      id: "combine-report",
-      description: "Combine all data sources into a report",
-      currentPath: {
-        primitives: [
-          { id: "gen.code.python", minLevel: "L2", evidence: "read + write files" },
-        ],
-      },
-      alternativePaths: [],
-    },
-  ],
-}
-
-// Minimal TCP — capabilities don't matter much for Pass 3 decomposition
-const MINIMAL_TCP: TCP = {
-  version: "1.0",
-  model: "test-model",
-  harness: "bare-agent",
-  profiledAt: new Date().toISOString(),
-  capabilities: {
-    "gen.code.python": "L2",
-    "tool.web_fetch": "L2",
-    "tool.execute": "L2",
-    "tool.read_file": "L2",
-    "tool.write_file": "L2",
-  },
-  details: [],
-  cost: { totalUsd: 0, totalTokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, durationMs: 0 },
-  isPartial: false,
-}
-
 // ---------------------------------------------------------------------------
 // Run Pass 3
 // ---------------------------------------------------------------------------
@@ -191,7 +122,7 @@ console.log(`Skill: multi-source-report (synthetic, ${SYNTHETIC_SKILL.length} ch
 const provider = createCompilerProvider()
 const startMs = performance.now()
 
-const result = await runPass3(SYNTHETIC_SKILL, SYNTHETIC_SCR, MINIMAL_TCP, provider)
+const result = await runPass3(SYNTHETIC_SKILL, provider)
 
 const durationMs = performance.now() - startMs
 console.log(`\nDuration: ${(durationMs / 1000).toFixed(1)}s`)

@@ -1,23 +1,23 @@
 import path from "node:path"
-import { mkdir, writeFile, copyFile, rm } from "node:fs/promises"
+import { mkdir, writeFile, copyFile, rm, appendFile } from "node:fs/promises"
 import type { LLMProvider } from "../providers/types.ts"
-import type { TCP } from "../core/types.ts"
 import { emptyTokenUsage, addTokenUsage } from "../core/types.ts"
 import { copyDirRecursive } from "../core/fs-utils.ts"
 import { AOT_COMPILE_DIR, toPassTag, safeModelName, getCompileLogDir } from "../core/config.ts"
 import { createLogger } from "../core/logger.ts"
-import { createSpinner, type Spinner } from "../core/spinner.ts"
+import { createSpinner } from "../core/spinner.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { LoggingProvider } from "../core/logging-provider.ts"
-import type { CompileOptions, CompilationResult, Pass1Result, Pass2Result, Pass3Result } from "./types.ts"
-import { runPass1 } from "./pass1/index.ts"
-import { runPass2 } from "./pass2/index.ts"
-import { runPass3, generateParallelismSection, generateWorkflowDagDocument } from "./pass3/index.ts"
+import type { CompileOptions, CompilationResult } from "./types.ts"
+import type { ArtifactKey, PassRunMeta } from "./artifacts.ts"
+import { ArtifactStore } from "./artifacts.ts"
+import type { CompilerPass, PassContext, SkillPatch } from "./passes/types.ts"
+import { defaultPasses, resolvePassTokens, topoSort, validateDeps } from "./registry.ts"
+import { generateWorkflowDagDocument } from "./passes/extract-parallelism/parallelism.ts"
 import { validateGuard } from "./guard.ts"
 
 const log = createLogger("compiler")
 
-/** Extract skill name from the skill directory path or SKILL.md file path. */
 function extractSkillName(_skillContent: string, skillPath: string): string {
   const base = path.basename(skillPath)
   return base.replace(/\.md$/i, "")
@@ -26,10 +26,10 @@ function extractSkillName(_skillContent: string, skillPath: string): string {
 /**
  * Compile a skill for a target (model + harness).
  *
- * Runs 3 sequential agentic passes:
- * 1. Capability-Based Compilation (agent explores skill, analyzes gaps, writes compiled files)
- * 2. Environment Binding (agent checks dependencies, generates install script)
- * 3. Concurrency Extraction (agent decomposes workflow → pure DAG + parallelism)
+ * Resolves the requested passes from the registry, populates a per-job
+ * `workDir`, then runs each pass in topological order. Each pass produces
+ * `artifacts` (persisted under `workDir/_artifacts/{key}.json`) and may emit
+ * a `skillPatch` that mutates SKILL.md on disk and in memory.
  */
 export async function compileSkill(
   opts: CompileOptions,
@@ -37,21 +37,25 @@ export async function compileSkill(
   options?: { showSpinner?: boolean },
 ): Promise<CompilationResult> {
   const startMs = performance.now()
-  const passes = opts.passes ?? [1, 2, 3]
+  const showSpinner = options?.showSpinner !== false
+
+  const requestedPasses = opts.passes && opts.passes.length > 0
+    ? resolvePassTokens(opts.passes)
+    : defaultPasses()
+  const orderedPasses = topoSort(requestedPasses)
+  const numericPasses = orderedPasses.map((p) => p.number)
 
   log.info(`Compiling skill for ${opts.model}--${opts.harness}`)
 
-  // Compute workDir for the compiler agent to operate on real files
   const skillName = opts.skillName ?? extractSkillName(opts.skillContent, opts.skillDir ?? opts.skillPath)
-  const passTag = toPassTag(passes)
+  const passTag = toPassTag(numericPasses)
   const workDir = path.join(AOT_COMPILE_DIR, opts.harness, safeModelName(opts.model), skillName, passTag)
-  await mkdir(workDir, { recursive: true })
-
-  // Conversation log directory: logs/compile/{harness}/{safeModel}/{skill}/
   const compileLogDir = getCompileLogDir(opts.harness, opts.model, skillName)
-  await mkdir(compileLogDir, { recursive: true })
+  await Promise.all([
+    mkdir(workDir, { recursive: true }),
+    mkdir(compileLogDir, { recursive: true }),
+  ])
 
-  // Pre-copy: populate workDir with skill files
   if (opts.skillDir) {
     await copyDirRecursive(opts.skillDir, workDir)
     log.info(`Pre-copied skill dir ${opts.skillDir} → ${workDir}`)
@@ -59,7 +63,102 @@ export async function compileSkill(
     await Bun.write(path.join(workDir, "SKILL.md"), opts.skillContent)
   }
 
-  // Copy profiling artifacts (conv logs + eval scripts) to workDir/_profiling/
+  await copyProfilingArtifacts(opts, workDir)
+
+  const store = await ArtifactStore.load(workDir)
+
+  const cachedKeys = new Set<ArtifactKey>(Object.keys(store.snapshot()) as ArtifactKey[])
+  const depErrors = validateDeps(orderedPasses, cachedKeys)
+  if (depErrors.length > 0) {
+    throw new Error(`Pass dependency check failed:\n  - ${depErrors.join("\n  - ")}`)
+  }
+
+  // Canonical SKILL.md text held in memory across passes; flushed to disk by
+  // applySkillPatch when a pass emits a SkillPatch. Avoids re-reading the
+  // file in every pass and at the end.
+  let skillContent = await Bun.file(path.join(workDir, "SKILL.md")).text()
+
+  const passRuns: Record<string, PassRunMeta> = {}
+  let totalTokens = emptyTokenUsage()
+
+  for (const pass of orderedPasses) {
+    const passStart = performance.now()
+    const convLog = new ConversationLog(path.join(compileLogDir, `${pass.id}.jsonl`))
+    const wrappedProvider = new LoggingProvider(provider, convLog)
+    const ctx: PassContext = {
+      skillName,
+      workDir,
+      skillContent,
+      tcp: opts.tcp,
+      model: opts.model,
+      harness: opts.harness,
+      provider: wrappedProvider,
+      failureContext: opts.failureContext,
+      artifacts: store,
+    }
+    const sp = showSpinner ? createSpinner(`Compiling — ${pass.id}...`) : null
+    if (!sp) log.info(`Pass ${pass.number} (${pass.id})`)
+
+    try {
+      const out = await pass.run(ctx)
+      await store.merge(out.artifacts)
+      if (out.skillPatch) {
+        skillContent = await applySkillPatch(workDir, skillContent, out.skillPatch)
+      }
+      const tokens = wrappedProvider.tokens
+      totalTokens = addTokenUsage(totalTokens, tokens)
+      const meta: PassRunMeta = {
+        passId: pass.id,
+        status: "ok",
+        tokens,
+        durationMs: performance.now() - passStart,
+        ...(out.iterations !== undefined ? { iterations: out.iterations } : {}),
+      }
+      passRuns[pass.id] = meta
+      await store.writeMeta(meta)
+      sp?.succeed(`${pass.id}: ${summarizePass(pass, out.artifacts)}`)
+    } catch (err) {
+      const meta: PassRunMeta = {
+        passId: pass.id,
+        status: "failed",
+        tokens: wrappedProvider.tokens,
+        durationMs: performance.now() - passStart,
+        error: err instanceof Error ? err.message : String(err),
+      }
+      passRuns[pass.id] = meta
+      await store.writeMeta(meta).catch(() => {})
+      sp?.fail(`${pass.id}: failed`)
+      throw err
+    } finally {
+      await convLog.finalize()
+    }
+  }
+
+  const guard = validateGuard(opts.skillContent, skillContent)
+  if (!guard.passed) {
+    log.warn(`Guard failed: ${guard.violations.join("; ")}`)
+  }
+
+  return {
+    skillName,
+    model: opts.model,
+    harness: opts.harness,
+    compiledAt: new Date().toISOString(),
+    compiledSkill: skillContent,
+    artifacts: store.snapshot(),
+    passRuns,
+    guardPassed: guard.passed,
+    guardViolations: guard.violations,
+    tokens: totalTokens,
+    passes: numericPasses,
+    costUsd: 0,
+    durationMs: performance.now() - startMs,
+  }
+}
+
+async function copyProfilingArtifacts(opts: CompileOptions, workDir: string): Promise<void> {
+  type CopyJob = { src: string; dest: string }
+  const jobs: CopyJob[] = []
   for (const detail of opts.tcp.details) {
     if (!detail.convLogDir) continue
     for (const lr of detail.levelResults) {
@@ -67,153 +166,77 @@ export async function compileSkill(
       for (const artifact of lr.failureArtifacts) {
         for (const src of [artifact.convLog, artifact.evalScript]) {
           const rel = path.relative(detail.convLogDir, src)
-          const dest = path.join(workDir, "_profiling", detail.primitiveId, rel)
-          try {
-            await mkdir(path.dirname(dest), { recursive: true })
-            await copyFile(src, dest)
-          } catch { /* source may not exist for older profiles */ }
+          jobs.push({ src, dest: path.join(workDir, "_profiling", detail.primitiveId, rel) })
         }
       }
     }
   }
-
-  let compiledSkill = opts.skillContent
-  let totalTokens = emptyTokenUsage()
-
-  // Pass 1: Capability-Based Compilation
-  let pass1: Pass1Result = {
-    scr: { skillName: "", purposes: [] },
-    gaps: [],
-    pathSelections: [],
-    transforms: [],
-    compiledSkill: opts.skillContent,
-    tokens: emptyTokenUsage(),
-  }
-
-  const showSpinner = options?.showSpinner !== false
-
-  if (passes.includes(1)) {
-    const sp = showSpinner ? createSpinner("Compiling — Pass 1: capability analysis...") : null
-    if (!sp) log.info("Pass 1: Capability-Based Compilation")
+  await Promise.all(jobs.map(async (job) => {
     try {
-      const p1Log = new ConversationLog(path.join(compileLogDir, "pass1.jsonl"))
-      const p1Provider = new LoggingProvider(provider, p1Log)
-      pass1 = await runPass1(opts.skillContent, opts.tcp, p1Provider, workDir, opts.failureContext)
-      await p1Log.finalize()
-      compiledSkill = pass1.compiledSkill
-      totalTokens = addTokenUsage(totalTokens, pass1.tokens)
-      if (sp) sp.succeed(`Pass 1: ${pass1.scr.purposes.length} purposes, ${pass1.gaps.length} gaps`)
-    } catch (err) {
-      sp?.fail("Pass 1: failed")
-      throw err
-    }
-    log.info(`  SCR: ${pass1.scr.purposes.length} purposes`)
-    log.info(`  Gaps: ${pass1.gaps.length}`)
-  }
+      await mkdir(path.dirname(job.dest), { recursive: true })
+      await copyFile(job.src, job.dest)
+    } catch { /* source may not exist for older profiles */ }
+  }))
+}
 
-  // Pass 2: Environment Binding
-  let pass2: Pass2Result = {
-    dependencies: [],
-    presenceResults: new Map(),
-    bindingScript: "#!/bin/bash\n# No dependencies detected\nexit 0\n",
-    simulation: {
-      attemptCount: 0,
-      success: true,
-      finalScriptValidated: true,
-    },
-  }
-
-  if (passes.includes(2)) {
-    const sp = showSpinner ? createSpinner("Compiling — Pass 2: environment binding...") : null
-    if (!sp) log.info("Pass 2: Environment Binding")
-    try {
-      const p2Log = new ConversationLog(path.join(compileLogDir, "pass2.jsonl"))
-      const p2Provider = new LoggingProvider(provider, p2Log)
-      pass2 = await runPass2(compiledSkill, workDir, p2Provider)
-      await p2Log.finalize()
-      if (sp) {
-        const missing = [...pass2.presenceResults.entries()].filter(([_, v]) => !v).length
-        sp.succeed(`Pass 2: ${pass2.dependencies.length} deps, ${missing} missing`)
-      }
-    } catch (err) {
-      sp?.fail("Pass 2: failed")
-      throw err
-    }
-    log.info(`  Dependencies: ${pass2.dependencies.length}`)
-    const missing = [...pass2.presenceResults.entries()].filter(([_, v]) => !v).length
-    log.info(`  Missing: ${missing}`)
-  }
-
-  // Pass 3: Parallel Opportunity Detection
-  let pass3: Pass3Result = {
-    dag: { steps: [], parallelism: [] },
-  }
-
-  if (passes.includes(3)) {
-    const sp = showSpinner ? createSpinner("Compiling — Pass 3: parallel extraction...") : null
-    if (!sp) log.info("Pass 3: Parallel Opportunity Detection")
-    try {
-      const p3Log = new ConversationLog(path.join(compileLogDir, "pass3.jsonl"))
-      const p3Provider = new LoggingProvider(provider, p3Log)
-      pass3 = await runPass3(compiledSkill, pass1.scr, opts.tcp, p3Provider)
-      await p3Log.finalize()
-      const parallelismSection = generateParallelismSection(pass3.dag)
-      if (parallelismSection) {
-        compiledSkill += parallelismSection
-      }
-      if (sp) sp.succeed(`Pass 3: ${pass3.dag.steps.length} DAG nodes, ${pass3.dag.parallelism.length} groups`)
-    } catch (err) {
-      sp?.fail("Pass 3: failed")
-      throw err
-    }
-    log.info(`  DAG nodes: ${pass3.dag.steps.length}`)
-    log.info(`  Parallel groups: ${pass3.dag.parallelism.length}`)
-    log.info(`  Guidance injected: ${pass3.dag.parallelism.length > 0 ? "yes" : "no"}`)
-  }
-
-  // Guard
-  const guard = validateGuard(opts.skillContent, compiledSkill)
-  if (!guard.passed) {
-    log.warn(`Guard failed: ${guard.violations.join("; ")}`)
-  }
-
-  const durationMs = performance.now() - startMs
-
-  return {
-    skillName,
-    model: opts.model,
-    harness: opts.harness,
-    compiledAt: new Date().toISOString(),
-    pass1,
-    pass2,
-    pass3,
-    compiledSkill,
-    guardPassed: guard.passed,
-    guardViolations: guard.violations,
-    tokens: totalTokens,
-    passes,
-    costUsd: 0,
-    durationMs,
+async function applySkillPatch(workDir: string, current: string, patch: SkillPatch): Promise<string> {
+  const skillPath = path.join(workDir, "SKILL.md")
+  switch (patch.kind) {
+    case "rewrite":
+      await Bun.write(skillPath, patch.content)
+      return patch.content
+    case "append":
+      await appendFile(skillPath, patch.content)
+      return current + patch.content
   }
 }
 
-/**
- * Write a compiled skill variant to disk.
- */
+function summarizePass(pass: CompilerPass, artifacts: Record<string, unknown>): string {
+  const parts: string[] = []
+  for (const key of pass.produces) {
+    const value = artifacts[key]
+    if (value === undefined) continue
+    if (Array.isArray(value)) {
+      parts.push(`${key}=${value.length}`)
+    } else if (key === "dag" && isDag(value)) {
+      parts.push(`dag.steps=${value.steps.length}`, `dag.parallelism=${value.parallelism.length}`)
+    } else if (key === "envSimulation" && isEnvSim(value)) {
+      parts.push(`env=${value.success ? "ok" : "fail"}(${value.attemptCount})`)
+    } else if (typeof value === "string") {
+      parts.push(`${key}=${value.length}b`)
+    } else {
+      parts.push(`${key}=set`)
+    }
+  }
+  return parts.length > 0 ? parts.join(", ") : "ok"
+}
+
+function isDag(value: unknown): value is { steps: unknown[]; parallelism: unknown[] } {
+  return typeof value === "object" && value !== null && "steps" in value && "parallelism" in value
+}
+
+function isEnvSim(value: unknown): value is { success: boolean; attemptCount: number } {
+  return typeof value === "object" && value !== null && "success" in value && "attemptCount" in value
+}
+
+/** Write a compiled skill variant to disk under AOT_COMPILE_DIR. */
 export async function writeVariant(result: CompilationResult): Promise<string> {
   const safeModel = result.model.replace(/\//g, "--")
   const passTag = toPassTag(result.passes)
   const dir = path.join(AOT_COMPILE_DIR, result.harness, safeModel, result.skillName, passTag)
   await mkdir(dir, { recursive: true })
 
-  await writeFile(path.join(dir, "SKILL.md"), result.compiledSkill)
+  const writes: Promise<unknown>[] = [
+    writeFile(path.join(dir, "SKILL.md"), result.compiledSkill),
+  ]
 
+  const dag = result.artifacts.dag
   const workflowDagPath = path.join(dir, "workflow-dag.md")
-  const workflowDagDocument = generateWorkflowDagDocument(result.pass3.dag)
+  const workflowDagDocument = dag ? generateWorkflowDagDocument(dag) : ""
   if (workflowDagDocument) {
-    await writeFile(workflowDagPath, workflowDagDocument)
+    writes.push(writeFile(workflowDagPath, workflowDagDocument))
   } else {
-    await rm(workflowDagPath, { force: true })
+    writes.push(rm(workflowDagPath, { force: true }))
   }
 
   const plan = {
@@ -221,21 +244,16 @@ export async function writeVariant(result: CompilationResult): Promise<string> {
     model: result.model,
     harness: result.harness,
     compiledAt: result.compiledAt,
-    scr: result.pass1.scr,
-    gaps: result.pass1.gaps,
-    dependencies: result.pass2.dependencies,
-    pass3: {
-      hasParallelism: result.pass3.dag.parallelism.length > 0,
-      dagNodeCount: result.pass3.dag.steps.length,
-      parallelGroupCount: result.pass3.dag.parallelism.length,
-      dag: result.pass3.dag,
-    },
+    artifacts: result.artifacts,
+    passRuns: result.passRuns,
     guardPassed: result.guardPassed,
     guardViolations: result.guardViolations,
   }
-  await writeFile(path.join(dir, "compilation-plan.json"), JSON.stringify(plan, null, 2))
+  writes.push(writeFile(path.join(dir, "compilation-plan.json"), JSON.stringify(plan, null, 2)))
 
-  await writeFile(path.join(dir, "env-setup.sh"), result.pass2.bindingScript)
+  if (result.artifacts.envScript !== undefined) {
+    writes.push(writeFile(path.join(dir, "env-setup.sh"), result.artifacts.envScript))
+  }
 
   const meta = {
     compiledAt: result.compiledAt,
@@ -247,8 +265,9 @@ export async function writeVariant(result: CompilationResult): Promise<string> {
     durationMs: result.durationMs,
     guardPassed: result.guardPassed,
   }
-  await writeFile(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2))
+  writes.push(writeFile(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2)))
 
+  await Promise.all(writes)
   log.info(`Variant written to ${dir}`)
   return dir
 }

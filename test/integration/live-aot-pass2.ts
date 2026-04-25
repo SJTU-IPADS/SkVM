@@ -13,7 +13,7 @@
 import "../../src/core/env-bootstrap.ts"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
-import { runPass2 } from "../../src/compiler/pass2/index.ts"
+import { runPass2 } from "../../src/compiler/passes/bind-env/runner.ts"
 import { AnthropicProvider } from "../../src/providers/anthropic.ts"
 import { OpenRouterProvider } from "../../src/providers/openrouter.ts"
 import type { LLMProvider } from "../../src/providers/types.ts"
@@ -90,8 +90,7 @@ function check(name: string, condition: boolean, details?: string) {
 
 console.log("\n--- Dependencies ---")
 for (const dep of result.dependencies) {
-  const present = result.presenceResults.get(dep.name)
-  console.log(`  ${dep.name} (${dep.type}): ${present ? "present" : "missing"} — check: ${dep.checkCommand}`)
+  console.log(`  ${dep.name} (${dep.type}): check: ${dep.checkCommand}`)
 }
 
 console.log("\n--- Assertions ---")
