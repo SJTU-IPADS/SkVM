@@ -12,6 +12,22 @@ import {
 import type { CompilerPass } from "../../src/compiler/passes/types.ts"
 import type { ArtifactKey } from "../../src/compiler/artifacts.ts"
 
+describe("registry invariants", () => {
+  test("ALL_PASSES has unique ids", () => {
+    const ids = ALL_PASSES.map((p) => p.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  test("ALL_PASSES has unique positive numbers", () => {
+    const numbers = ALL_PASSES.map((p) => p.number)
+    expect(new Set(numbers).size).toBe(numbers.length)
+    for (const n of numbers) {
+      expect(Number.isInteger(n)).toBe(true)
+      expect(n).toBeGreaterThanOrEqual(1)
+    }
+  })
+})
+
 describe("registry token resolution", () => {
   test("resolves numeric tokens to passes by number", () => {
     const passes = resolvePassTokens(["1", "2", "3"])

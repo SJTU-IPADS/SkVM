@@ -14,6 +14,29 @@ export const ALL_PASSES: readonly CompilerPass[] = [
   extractParallelismPass,
 ]
 
+// Module-load-time invariants. Catches the common authoring mistakes
+// (duplicate id, duplicate number, non-positive number) before any compile
+// or CLI invocation runs.
+validateRegistry(ALL_PASSES)
+
+function validateRegistry(passes: readonly CompilerPass[]): void {
+  const seenIds = new Set<string>()
+  const seenNumbers = new Set<number>()
+  for (const p of passes) {
+    if (!Number.isInteger(p.number) || p.number < 1) {
+      throw new Error(`Pass "${p.id}" has invalid number ${p.number}; must be a positive integer`)
+    }
+    if (seenIds.has(p.id)) {
+      throw new Error(`Pass registry: duplicate id "${p.id}"`)
+    }
+    if (seenNumbers.has(p.number)) {
+      throw new Error(`Pass registry: duplicate number ${p.number} (used by "${p.id}")`)
+    }
+    seenIds.add(p.id)
+    seenNumbers.add(p.number)
+  }
+}
+
 export function getPassById(id: string): CompilerPass | undefined {
   return ALL_PASSES.find((p) => p.id === id)
 }
