@@ -50,37 +50,32 @@ every `bun test` / `bunx tsc --noEmit` fails loudly.
 
 ### `PassContext`
 
-What your `run` receives:
+`PassContext` (defined in `src/compiler/passes/types.ts`) is the
+envelope handed to `run`. The fields that need extra guidance beyond
+their JSDoc:
 
-| Field | Meaning |
-|---|---|
-| `skillName` | Name segment used in the variant path. Don't override. |
-| `workDir` | Per-job working dir, already populated with the skill bundle. Free to write inside, but **never** under `_artifacts/` or `_profiling/` (reserved for the orchestrator). |
-| `skillContent` | Canonical SKILL.md text. Reflects every prior `SkillPatch`. Don't re-read from disk — use this. |
-| `tcp` | Target capability profile. Useful if your pass adapts to model capabilities (rewrite-skill does); ignore otherwise. |
-| `model`, `harness` | Target model/adapter, mostly informational. |
-| `provider` | An `LLMProvider` already wrapped with conversation logging and per-pass token accounting. Use it for any LLM call — tokens are tallied automatically. |
-| `failureContext` | Only set during JIT recompilation. Currently consumed by `rewrite-skill` only. Other passes may ignore it. |
-| `artifacts` | Read upstream artifacts via `ctx.artifacts.get("scr")` etc. |
+- `skillContent` — canonical SKILL.md text, reflects every prior
+  `SkillPatch`. **Don't re-read from disk.** Use this.
+- `workDir` — free to write inside, but **never** under `_artifacts/`
+  or `_profiling/` (reserved for the orchestrator and prior compiles).
+- `provider` — already wrapped with conversation logging and per-pass
+  token accounting. Use it for every LLM call; tokens tally
+  automatically.
+- `failureContext` — only set during JIT recompilation. Currently
+  consumed by `rewrite-skill` only; other passes may ignore.
+
+The other fields (`skillName`, `tcp`, `model`, `harness`, `artifacts`)
+have descriptive comments at the type definition.
 
 ### `PassOutput`
 
-```ts
-export interface PassOutput {
-  artifacts: Partial<ArtifactBag>     // merged into store + persisted
-  skillPatch?: SkillPatch              // optional SKILL.md mutation
-  iterations?: number                  // for agent-loop passes (informational)
-}
+See `src/compiler/passes/types.ts`. Two things to know:
 
-export type SkillPatch =
-  | { kind: "rewrite"; content: string }
-  | { kind: "append"; content: string }
-```
-
-The orchestrator merges your `artifacts` into the typed store (one JSON
-file per key under `{workDir}/_artifacts/{key}.json`), applies any
-`SkillPatch`, and writes per-pass execution metadata to
-`_artifacts/_meta/{passId}.json`.
+- The `artifacts` you return are merged into the store and persisted
+  one-JSON-per-key under `{workDir}/_artifacts/{key}.json`.
+- A `SkillPatch` is the only sanctioned way to mutate SKILL.md. The
+  orchestrator applies it both to disk and to the in-memory
+  `skillContent` that downstream passes will receive.
 
 ## Folder convention
 
@@ -117,10 +112,11 @@ What a pass must **not** touch:
 ## Default `--pass`
 
 `CLI_DEFAULTS.compilerPasses` in `src/core/ui-defaults.ts` controls
-which passes run when the user omits `--pass`. Currently `[1]` — only
-`rewrite-skill` runs by default to keep the bare `skvm aot-compile`
-cheap. If your new pass should be in the default set, change that
-array; otherwise users opt in via `--pass=1,N` or `--pass=<your-id>`.
+which passes run when the user omits `--pass`. The default is
+intentionally narrow to keep a bare `skvm aot-compile` cheap — passes
+with non-trivial cost (extra LLM calls, sandbox simulation) should
+not be added to the default unless they are essential. Users opt
+into heavier passes explicitly via `--pass=1,N` or `--pass=<your-id>`.
 
 ## Import paths
 

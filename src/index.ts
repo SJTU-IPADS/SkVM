@@ -504,7 +504,7 @@ Options:
   --model=<id,...>      Target model(s), comma-separated (required)
   --adapter=<name,...>  Harness name(s), comma-separated (${ALL_ADAPTERS.join(" | ")}; default: ${CLI_DEFAULTS.adapter})
   --profile=<path>      Path to TCP JSON (single-job only; default: load from cache)
-  --pass=<list>         Which passes to run, comma-separated. Each token is a numeric id (1, 2, 3) or a string id (rewrite-skill, bind-env, extract-parallelism). Default: ${CLI_DEFAULTS.compilerPasses.join(",")}
+  --pass=<list>         Compiler passes, comma-separated (numeric or string ids; see --list-passes for the registry). Default: ${CLI_DEFAULTS.compilerPasses.join(",")}
   --list-passes         Print the pass registry and exit
   --concurrency=<n>     Parallel compilations (default: ${CLI_DEFAULTS.concurrency})
   --dry-run             Show plan without applying

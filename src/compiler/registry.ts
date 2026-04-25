@@ -14,27 +14,34 @@ export const ALL_PASSES: readonly CompilerPass[] = [
   extractParallelismPass,
 ]
 
-// Module-load-time invariants. Catches the common authoring mistakes
-// (duplicate id, duplicate number, non-positive number) before any compile
-// or CLI invocation runs.
-validateRegistry(ALL_PASSES)
+const registryErrors = validateRegistry(ALL_PASSES)
+if (registryErrors.length > 0) {
+  throw new Error(`Pass registry invariants violated:\n  - ${registryErrors.join("\n  - ")}`)
+}
 
-function validateRegistry(passes: readonly CompilerPass[]): void {
-  const seenIds = new Set<string>()
-  const seenNumbers = new Set<number>()
+/** Collect all id/number violations in `passes`. Empty array means OK. */
+export function validateRegistry(passes: readonly CompilerPass[]): string[] {
+  const errors: string[] = []
+  const idOwners = new Map<string, string>()
+  const numberOwners = new Map<number, string>()
   for (const p of passes) {
     if (!Number.isInteger(p.number) || p.number < 1) {
-      throw new Error(`Pass "${p.id}" has invalid number ${p.number}; must be a positive integer`)
+      errors.push(`pass "${p.id}" has invalid number ${p.number}; must be a positive integer`)
     }
-    if (seenIds.has(p.id)) {
-      throw new Error(`Pass registry: duplicate id "${p.id}"`)
+    const idOwner = idOwners.get(p.id)
+    if (idOwner !== undefined) {
+      errors.push(`duplicate id "${p.id}" used by passes #${idOwner} and #${p.number}`)
+    } else {
+      idOwners.set(p.id, String(p.number))
     }
-    if (seenNumbers.has(p.number)) {
-      throw new Error(`Pass registry: duplicate number ${p.number} (used by "${p.id}")`)
+    const numOwner = numberOwners.get(p.number)
+    if (numOwner !== undefined) {
+      errors.push(`duplicate number ${p.number} used by passes "${numOwner}" and "${p.id}"`)
+    } else {
+      numberOwners.set(p.number, p.id)
     }
-    seenIds.add(p.id)
-    seenNumbers.add(p.number)
   }
+  return errors
 }
 
 export function getPassById(id: string): CompilerPass | undefined {
