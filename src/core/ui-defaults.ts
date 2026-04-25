@@ -62,8 +62,10 @@ export const CLI_DEFAULTS = {
   jitOptimizeTaskConcurrency: 1,
   syntheticTrainCount: 2,
   syntheticTestCount: 1,
-  // AOT-compile / pipeline — default runs every registered pass
-  compilerPasses: [1, 2, 3] as readonly number[],
+  // AOT-compile / pipeline — default runs only rewrite-skill (pass 1).
+  // Pass 2 (bind-env) and pass 3 (extract-parallelism) cost extra LLM
+  // calls + a sandbox install simulation; users opt in via --pass=1,2,3.
+  compilerPasses: [1] as readonly number[],
   // Profile
   profileInstances: 3,
   // List
