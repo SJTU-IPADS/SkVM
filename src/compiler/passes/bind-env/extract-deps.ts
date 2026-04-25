@@ -91,15 +91,19 @@ function buildFileContext(skillContent: string, bundleFiles: Map<string, string>
   return parts.join("\n\n")
 }
 
-function extractPythonImportHints(bundleFiles: Map<string, string>): PythonImportHint[] {
+// Single-line capture: `\s` in a character class also matches newlines, so
+// a naive `[..\s]+` would let a greedy capture span across multiple `import`
+// lines. Use literal space + tab instead.
+const IMPORT_RE = /^[\t ]*import[\t ]+([a-zA-Z0-9_.,\t ]+)$/gm
+const FROM_RE = /^[\t ]*from[\t ]+([a-zA-Z0-9_.]+)[\t ]+import[\t ]+/gm
+
+export function extractPythonImportHints(bundleFiles: Map<string, string>): PythonImportHint[] {
   const counts = new Map<string, number>()
-  const importRe = /^\s*import\s+([a-zA-Z0-9_.,\s]+)$/gm
-  const fromRe = /^\s*from\s+([a-zA-Z0-9_.]+)\s+import\s+/gm
 
   for (const [relPath, content] of bundleFiles) {
     if (!relPath.endsWith(".py") && !relPath.endsWith("SKILL.md") && !relPath.endsWith(".md")) continue
 
-    for (const m of content.matchAll(importRe)) {
+    for (const m of content.matchAll(IMPORT_RE)) {
       const raw = m[1] ?? ""
       for (const seg of raw.split(",")) {
         const name = seg.trim().split(" as ")[0]?.trim()
@@ -110,7 +114,7 @@ function extractPythonImportHints(bundleFiles: Map<string, string>): PythonImpor
       }
     }
 
-    for (const m of content.matchAll(fromRe)) {
+    for (const m of content.matchAll(FROM_RE)) {
       const raw = m[1] ?? ""
       const top = raw.split(".")[0] ?? raw
       if (!top || PYTHON_STDLIB.has(top)) continue
@@ -121,6 +125,47 @@ function extractPythonImportHints(bundleFiles: Map<string, string>): PythonImpor
   return [...counts.entries()]
     .map(([module, count]) => ({ module, count }))
     .sort((a, b) => b.count - a.count)
+}
+
+const VALID_PACKAGE_NAME = /^[a-zA-Z0-9._\-]+$/
+
+/**
+ * Drop entries the LLM clearly hallucinated:
+ *  - names containing whitespace or characters not allowed in a real package
+ *    name (signals the LLM concatenated multiple imports into one `name`),
+ *  - Python stdlib top-level modules tagged as `pip` deps,
+ *  - low-confidence pip deps the LLM attributed to `python-import` but
+ *    the local import scan didn't find — these are typically hallucinated
+ *    package names invented from non-stdlib-looking identifiers.
+ */
+export function sanitizeDependencies(
+  deps: DependencyEntry[],
+  importHints: PythonImportHint[],
+): DependencyEntry[] {
+  const localPipNames = new Set(importHints.map((h) => h.module.toLowerCase()))
+  const cleaned: DependencyEntry[] = []
+  for (const dep of deps) {
+    const name = dep.name.trim()
+    if (!VALID_PACKAGE_NAME.test(name)) {
+      log.warn(`Dropping dependency with malformed name ${JSON.stringify(name)} (likely LLM parser confusion)`)
+      continue
+    }
+    if (dep.type === "pip" && PYTHON_STDLIB.has(name.toLowerCase())) {
+      log.debug(`Dropping Python stdlib module from pip deps: ${name}`)
+      continue
+    }
+    if (
+      dep.type === "pip" &&
+      dep.source === "python-import" &&
+      !localPipNames.has(name.toLowerCase()) &&
+      (dep.confidence ?? 0) < 0.9
+    ) {
+      log.debug(`Dropping unverified pip dep "${name}" (LLM-claimed import not found in local scan)`)
+      continue
+    }
+    cleaned.push({ ...dep, name })
+  }
+  return cleaned
 }
 
 function dedupeDependencies(dependencies: DependencyEntry[]): DependencyEntry[] {
@@ -248,7 +293,8 @@ ${fileContext}`,
     confidence: dep.confidence ?? 0.7,
   }))
 
-  const enriched = mergeImportHints(normalized, pythonImportHints)
-  log.info(`Extracted ${enriched.length} dependencies (post-merge)`)
+  const sanitized = sanitizeDependencies(normalized, pythonImportHints)
+  const enriched = mergeImportHints(sanitized, pythonImportHints)
+  log.info(`Extracted ${enriched.length} dependencies (post-merge, ${normalized.length - sanitized.length} dropped)`)
   return { dependencies: enriched, tokens }
 }
