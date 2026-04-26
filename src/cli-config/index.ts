@@ -11,7 +11,7 @@
  * copy on subsequent runs).
  */
 
-import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync, chmodSync, accessSync, readdirSync, constants as fsConst } from "node:fs"
+import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync, chmodSync, accessSync, readdirSync, unlinkSync, constants as fsConst } from "node:fs"
 import path from "node:path"
 import { stdin } from "node:process"
 
@@ -298,6 +298,34 @@ function smokeTestModelId(routes: readonly RouteDraft[]): string {
 // `init` — interactive wizard (arrow-key menus via @inquirer/prompts)
 // ---------------------------------------------------------------------------
 
+/** Cap on the number of `skvm.config.json.bak.<ts>` files kept alongside the
+ *  active config. Older backups are pruned after each successful `init` write
+ *  so repeated re-runs do not accumulate forever. */
+const MAX_CONFIG_BACKUPS = 5
+
+function pruneOldConfigBackups(): number {
+  const dir = path.dirname(CONFIG_WRITE_PATH)
+  const prefix = `${path.basename(CONFIG_WRITE_PATH)}.bak.`
+  let entries: string[]
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return 0
+  }
+  const backups = entries
+    .filter(name => name.startsWith(prefix) && /^\d+$/.test(name.slice(prefix.length)))
+    .map(name => ({ name, ts: Number(name.slice(prefix.length)) }))
+    .sort((a, b) => b.ts - a.ts)
+  let removed = 0
+  for (const stale of backups.slice(MAX_CONFIG_BACKUPS)) {
+    try {
+      unlinkSync(path.join(dir, stale.name))
+      removed += 1
+    } catch { /* best-effort */ }
+  }
+  return removed
+}
+
 async function runInit(): Promise<void> {
   if (!stdin.isTTY) {
     console.error(c.red("skvm config init requires an interactive terminal (TTY)."))
@@ -343,6 +371,10 @@ async function runInit(): Promise<void> {
       copyFileSync(CONFIG_WRITE_PATH, backup)
       try { chmodSync(backup, 0o600) } catch { /* best-effort, not fatal on Windows */ }
       console.log(c.dim(`Backed up previous config → ${shortenPath(backup)}`))
+      const pruned = pruneOldConfigBackups()
+      if (pruned > 0) {
+        console.log(c.dim(`Pruned ${pruned} older backup${pruned === 1 ? "" : "s"} (keeping ${MAX_CONFIG_BACKUPS} most recent).`))
+      }
     }
     const json = serialize(draft)
     writeFileSync(CONFIG_WRITE_PATH, json + "\n")
