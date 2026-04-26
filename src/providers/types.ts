@@ -41,6 +41,16 @@ export interface LLMResponse {
   costUsd?: number
   durationMs: number
   stopReason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence"
+  /**
+   * Reasoning trace returned alongside `text` by thinking-mode models
+   * (deepseek-v4, deepseek-reasoner, …). Per deepseek's contract, this must be
+   * echoed back in the assistant message of the NEXT request whenever the
+   * response also produced tool_calls — otherwise the API rejects subsequent
+   * turns with `reasoning_content in the thinking mode must be passed back`.
+   * Carries through `completeWithToolResults` only; not needed when the
+   * previous turn had no tool_calls.
+   */
+  reasoningContent?: string
 }
 
 /**

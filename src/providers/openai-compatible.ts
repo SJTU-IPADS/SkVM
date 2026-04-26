@@ -16,6 +16,12 @@ interface OAIMessage {
     type: "function"
     function: { name: string; arguments: string }
   }>
+  /**
+   * deepseek thinking-mode chain-of-thought, echoed back on the next request
+   * for the immediately previous assistant turn IFF that turn produced
+   * tool_calls. Plain text turns must NOT include it (per deepseek's contract).
+   */
+  reasoning_content?: string
 }
 
 function toOpenAIToolChoice(tc: ToolChoice | undefined): unknown | undefined {
@@ -96,6 +102,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
           arguments: JSON.stringify(tc.arguments),
         },
       })),
+    }
+    // Deepseek thinking-mode contract: when the previous assistant turn issued
+    // tool_calls, we must echo `reasoning_content` back on the next request,
+    // otherwise the API returns 400 ("reasoning_content in the thinking mode
+    // must be passed back to the API"). Non-thinking models simply ignore the
+    // extra field, so this is safe to send unconditionally when present.
+    if (previousResponse.reasoningContent && previousResponse.toolCalls.length > 0) {
+      assistantMsg.reasoning_content = previousResponse.reasoningContent
     }
     messages.push(assistantMsg)
 
@@ -268,7 +282,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
         ? "max_tokens" as const
         : "end_turn" as const
 
-    return { text, toolCalls, tokens, costUsd: undefined, durationMs, stopReason }
+    const rawReasoning = (message?.reasoning_content as string | null | undefined) ?? undefined
+    const reasoningContent = typeof rawReasoning === "string" && rawReasoning.length > 0
+      ? rawReasoning
+      : undefined
+
+    return { text, toolCalls, tokens, costUsd: undefined, durationMs, stopReason, reasoningContent }
   }
 }
 
