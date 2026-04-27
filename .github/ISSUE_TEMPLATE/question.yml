@@ -1,0 +1,22 @@
+name: Question / discussion
+description: Open-ended design discussion or usage question that doesn't fit the bug / feature templates.
+title: "[discuss] <short summary>"
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: What's on your mind?
+      description: Describe the question, the context, and what you've already tried or read.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and discussions.
+          required: true
+        - label: I checked [`README.md`](../blob/main/README.md) and [`CONTRIBUTING.md`](../blob/main/CONTRIBUTING.md).
+          required: true

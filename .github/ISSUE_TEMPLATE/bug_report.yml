@@ -1,0 +1,71 @@
+name: Bug report
+description: Something in SkVM is broken or behaves unexpectedly.
+title: "[bug] <short summary>"
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in as much as you can — the more reproducible the report, the faster we can fix it.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A clear description of the bug. What did you expect, and what did you actually see?
+      placeholder: |
+        I ran `skvm bench ...` and expected X, but got Y.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Exact command(s) you ran, and any minimal skill / task / config needed to reproduce.
+      render: shell
+      placeholder: |
+        bun run skvm jit-optimize --skill=... --target-model=anthropic/claude-sonnet-4.6 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Relevant CLI output, stack trace, or excerpts from `~/.skvm/log/`. Trim to the interesting parts.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: SkVM version / commit
+      description: Output of `bun run skvm --version`, or the commit SHA you're on.
+      placeholder: "e.g. 0.x.y or commit aa21571"
+    validations:
+      required: true
+
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime
+      description: Bun version, OS, architecture.
+      placeholder: "e.g. Bun 1.1.x, macOS 14 arm64"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that might help — model id, adapter, provider route, recent config changes, etc.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I read [`CONTRIBUTING.md`](../blob/main/CONTRIBUTING.md).
+          required: true

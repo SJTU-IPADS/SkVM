@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Read the contribution guide
+    url: https://github.com/SJTU-IPADS/SkVM/blob/main/CONTRIBUTING.md
+    about: Workflow, commit style, and PR checklist before you file.
+  - name: Project README
+    url: https://github.com/SJTU-IPADS/SkVM/blob/main/README.md
+    about: Project overview, installation, and quick start.

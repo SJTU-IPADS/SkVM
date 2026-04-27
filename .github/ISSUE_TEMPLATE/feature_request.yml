@@ -1,0 +1,58 @@
+name: Feature request
+description: Propose a new feature, refactor, or breaking change. Required before sending a PR for non-trivial changes.
+title: "[feature] <short summary>"
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Per [`CONTRIBUTING.md`](../blob/main/CONTRIBUTING.md), please open this issue **before** starting work on a feature, refactor, or change that touches public CLI flags, on-disk layouts, or the adapter / provider interfaces. The goal is to align on design before code is written.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What are you trying to do, and why is the current state insufficient? Describe the use case before the implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like SkVM to behave? Sketch the CLI surface, on-disk layout, or API shape if relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about, and why you ruled them out.
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact / blast radius
+      description: Which modules does this touch? Any breaking changes? Migration concerns for existing `~/.skvm/` caches?
+
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Are you planning to send a PR for this?
+      options:
+        - "Yes, I'd like to implement it"
+        - "Maybe, depending on the discussion"
+        - "No, just proposing"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I read [`CONTRIBUTING.md`](../blob/main/CONTRIBUTING.md).
+          required: true
