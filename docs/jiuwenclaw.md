@@ -2,13 +2,15 @@
 
 SkVM's `jiuwenclaw` adapter wraps [jiuwenclaw](https://github.com/openJiuwen-ai/jiuwenclaw) by launching `python -m jiuwenclaw.app` as a sidecar and driving it over ACP (Agent Client Protocol) JSON-RPC on `127.0.0.1:19001`.
 
-> **Required upstream patch** — jiuwenclaw as of commit `2ca9ce3` has a bug on the ACP envelope path that drops all streaming events and hangs the session. Apply the patch in [Required patch](#required-patch) before running.
-
 ## Prerequisites
 
 - Python **3.11+** (jiuwenclaw's `pyproject.toml` pins `>=3.11,<3.14`).
 - A jiuwenclaw source checkout — the adapter runs it from source, not from a pip install.
-- `OPENROUTER_API_KEY` in your environment. The adapter writes a deterministic `.env` at setup time that routes jiuwenclaw's LLM calls through OpenRouter with this key.
+- `OPENROUTER_API_KEY` (or whichever provider env var matches your `--model=`'s `providers.routes` entry) in your environment. The adapter writes a deterministic `.env` at sidecar boot time that pins the resolved API base / key / model name on the AgentServer side.
+- A jiuwenclaw build that supports `params.workspace_dir` on `session/prompt` and emits `chat.usage_metadata` stream events. Sanity-check with:
+  ```bash
+  python -m jiuwenclaw.app_cli acp --help | grep workspace-dir
+  ```
 
 ## Install jiuwenclaw
 
@@ -22,10 +24,11 @@ uv venv --python 3.12
 uv sync
 ```
 
-Verify the install resolves imports:
+Verify the install resolves imports and exposes the workspace flag:
 
 ```bash
 "$JIUWENCLAW_DIR/.venv/bin/python" -c "import jiuwenclaw.app_cli; import jiuwenclaw.app"
+"$JIUWENCLAW_DIR/.venv/bin/python" -m jiuwenclaw.app_cli acp --help | grep workspace-dir
 ```
 
 ## Configure SkVM
@@ -51,13 +54,15 @@ which python3   # → $JIUWENCLAW_DIR/.venv/bin/python3
 bun run skvm run \
   --task=skvm-data/tasks/file-operations_task_01/task.json \
   --adapter=jiuwenclaw \
-  --model=openrouter/z-ai/glm-5.1 \
-  --verbose
+  --adapter-config=managed \
+  --model=deepseek/deepseek-chat
 ```
+
+`--adapter-config=managed` is required (or `defaults.adapterConfigMode=managed` in `skvm.config.json`); jiuwenclaw rejects native mode because its `set_user_home()` Python API only scopes config for the in-process side, not for the spawned `app_agentserver` + `app_gateway` children.
 
 ## How setup/teardown works
 
-On each run the adapter acquires a cross-process file lock at `~/.jiuwenclaw/jiuwenclaw.sidecar.lock` — port 19001 and `~/.jiuwenclaw/config/.env` are both user-global singletons, so at most one sidecar may live at a time across all skvm processes on the host.
+On each adapter `setup()` the SkVM driver acquires a cross-process file lock at `~/.jiuwenclaw/jiuwenclaw.sidecar.lock` — port 19001 and `~/.jiuwenclaw/config/.env` are both user-global singletons, so at most one sidecar may live at a time across all skvm processes on the host.
 
 It then:
 
@@ -67,52 +72,38 @@ It then:
 
 On teardown the backup is restored and the sidecar process is killed. If a previous run crashed hard and left a stale `.env.skvm-backup`, the new run treats that backup as the true original — user credentials are never silently lost.
 
+`setup()` and `teardown()` are reference-counted on the adapter side: the bench / jit-optimize stack calls both at the orchestrator level *and* inside `runTask`, and reentrant invocations no-op while the outermost setup is still active. This is invisible to non-jiuwenclaw adapters whose setup is cheap to repeat; for jiuwenclaw it prevents the inner setup from deadlocking on the host-wide sidecar lock the orchestrator already owns.
+
+## Per-request workspace
+
+Each `run()` passes the SkVM-allocated `task.workDir` as `--workspace-dir` to `app_cli`, and the patched AgentServer scopes `sys_operation.work_dir` to that directory for the duration of the prompt. Filesystem and shell tools inside the agent then resolve relative paths against `task.workDir`, which is what bench's `file-check` evaluators read after the run.
+
+The driver also prepends a one-line working-directory hint to the prompt (`Your working directory is X. Use relative paths …`). The hint is advisory — see [Agent may bypass the workspace override](#agent-may-bypass-the-workspace-override).
+
+## Token, cost, and error reporting
+
+Per-LLM-call usage flows through `chat.usage_metadata` events written into `~/.jiuwenclaw/agent/sessions/<id>/history.json`. The adapter sums them into `RunResult.tokens` (`input` / `output`) and accumulates `total_cost` per call into `RunResult.cost`. Cost is only populated when the underlying provider client surfaces it via `_extract_cost_info` (currently OpenAI / OpenRouter routes). DeepSeek and other plain `openai-compatible` routes report tokens correctly but cost as `$0`.
+
+`chat.error` events carry an `error_type` field (the originating Python exception class). `diagnoseJiuwenclaw` prefixes the failure summary with `[ErrorType] …` so the SkVM bench post-mortem groups failures structurally.
+
 ## Known limitations
 
-### Token/cost not reported
+### History.json is keyed by an internal session id
 
-jiuwenclaw's AgentServer does not surface per-request token/cost totals to ACP clients, so bench and profile aggregators will report `$0` and `tokens: in=0 out=0` for every jiuwenclaw run. This is by design in the adapter — don't use jiuwenclaw for cost/throughput benchmarks.
+jiuwenclaw's AgentServer remaps the client-supplied session_id to an internal `acp_*` id before writing `history.json`. The adapter snapshots the `~/.jiuwenclaw/agent/sessions/` directory before each run and picks the freshly-created entry as the path to read; this is robust but synthetic. Tracking upstream change to surface the internal id directly on `chat.final`.
 
-### Files are written to jiuwenclaw's workspace, not SkVM's workDir
+### Agent may bypass the workspace override
 
-Every filesystem tool call from jiuwenclaw's agent resolves paths against its own workspace (`~/.jiuwenclaw/agent/jiuwenclaw_workspace/`), not the `workDir` skvm allocates per task. Any eval that reads the task's `workDir` (e.g. `file-check`) will find nothing and fail.
+`sys_operation.work_dir` is scoped per request, but jiuwenclaw's *system prompt* (built by `prompt_builder.py` at sidecar startup) still references the static home-dir workspace. A model that follows the system prompt over the per-request hint may emit absolute paths under `~/.jiuwenclaw/agent/jiuwenclaw_workspace/` instead of relative paths — and absolute paths bypass `work_dir`. In practice this is non-deterministic: file landing in `task.workDir` works for most runs but is not guaranteed for every model + prompt combination. A future jiuwenclaw PR injecting `workspace_dir` into `runtime_prompt_rail`'s system-prompt template would close this gap.
 
-Until this is fixed (either in jiuwenclaw by honoring a session-level cwd, or in the adapter by plumbing `workDir` through and rewriting paths), jiuwenclaw runs are best used for **execution smoke tests** with `skvm run`, not for `skvm bench` with automated grading.
+### Subagents inherit the static workspace
 
-## Required patch
+`Workspace(root_path=…)` is built once at sidecar startup and passed into code / research subagents. The per-request override only mutates `sys_operation.work_dir`, so any subagent path resolution that goes through `Workspace.root_path` still resolves under the home-dir workspace. Tasks that don't trigger subagents are unaffected; benchmarks that do should expect mixed file landing.
 
-**Upstream**: `jiuwenclaw/channel/acp_channel.py`, commit [`2ca9ce3`](https://github.com/openJiuwen-ai/jiuwenclaw/commit/2ca9ce3e0eaa60d46b4026bf25000b172c5bff8e).
+### Non-streaming `process_message_impl` doesn't carry `error_type`
 
-**Symptom without the patch**: the sidecar boots, the ACP session is created, the LLM is invoked, but SkVM's request hangs indefinitely waiting for a final frame. Verbose logs show streaming chunks being generated on the server side but never arriving at the client.
+The streaming aggregator in `interface.py:process_message_stream` and the streaming exception handler in `interface_deep.py` both attach `error_type` on `chat.error`. Non-streaming `process_message_impl` returns an `AgentResponse` without an analogous error classification; SkVM uses streaming exclusively so this has no impact today.
 
-**Root cause**: the JSON-RPC `session.create`/`prompt` path in `AcpChannel` populates `_active_prompt_request_by_session[session_id] = msg.id`, which is what `_message_from_gateway_event` consults to route gateway event chunks back to an originating request. The **envelope path** (`_handle_raw_line` when the peer is using E2AEnvelope instead of raw JSON-RPC — this includes `jiuwenclaw.app_cli` itself, which SkVM drives) only populates `_request_ctx[msg.id]` and skips the session→request mapping, so streaming events are silently dropped and the final frame is never emitted.
+### macOS teardown can leave orphans
 
-**Fix**: mirror the same registration on the envelope path. Insert the block below in `_handle_raw_line`, immediately after the `_request_ctx[msg.id] = _AcpRequestContext(...)` assignment and before `await self._dispatch_message(msg)`:
-
-```python
-# jiuwenclaw/channel/acp_channel.py — _handle_raw_line, ~line 178
-self._request_ctx[msg.id] = _AcpRequestContext(
-    jsonrpc_id=env.jsonrpc_id,
-    method=env.method,
-    response_mode="e2a",
-    session_id=msg.session_id,
-)
-# Mirror the JSON-RPC session/prompt path: register the session→request
-# mapping so gateway event chunks (_message_from_gateway_event) can
-# resolve their request_id and emit responses. Without this, streaming
-# events on the envelope path are silently dropped and the channel
-# hangs waiting for a final frame that never arrives.
-if msg.session_id:
-    self._active_prompt_request_by_session[msg.session_id] = msg.id
-
-await self._dispatch_message(msg)
-```
-
-Until this lands upstream, apply it in your local checkout:
-
-```bash
-cd "$JIUWENCLAW_DIR"
-git fetch origin
-git cherry-pick 2ca9ce3   # if it's on a branch you haven't merged
-# or pull from whichever branch carries the fix
-```
+`jiuwenclaw.app/main()` only runs its `_terminate_all()` finally block on `KeyboardInterrupt`, not on `SIGTERM` — so killing the orchestrator pid leaves `app_agentserver` and `app_gateway` as orphans. The adapter mitigates with a post-teardown `pkill -f 'jiuwenclaw\.app'` sweep and waits up to 5s for port 19001 to clear.

@@ -1,9 +1,9 @@
-import { mkdir, copyFile, writeFile, unlink } from "node:fs/promises"
+import { mkdir, copyFile, writeFile, unlink, readdir, stat } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import net from "node:net"
-import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, SkillBundle } from "../core/types.ts"
-import { emptyTokenUsage } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, SkillBundle, SkillMode, TokenUsage } from "../core/types.ts"
+import { emptyTokenUsage, addTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, stripRoutingPrefix } from "../core/config.ts"
 import { acquireFileLock, releaseFileLock } from "../core/file-lock.ts"
@@ -58,9 +58,10 @@ const SIDECAR_SHUTDOWN_TIMEOUT_MS = 15_000
 /**
  * A single record in ~/.jiuwenclaw/agent/sessions/{session_id}/history.json.
  *
- * For streaming events, `event_type` and `event_payload` are present.
- * See jiuwenclaw/agentserver/session_history.py for the write logic and
- * jiuwenclaw/agentserver/deep_agent/interface_deep.py for event payload format.
+ * Upstream writes per-event fields directly on the record (flat shape); the
+ * fields below are populated based on `event_type`. See
+ * jiuwenclaw/agentserver/session_history.py and
+ * jiuwenclaw/agentserver/deep_agent/interface_deep.py for the write logic.
  */
 interface HistoryRecord {
   id: string
@@ -70,8 +71,16 @@ interface HistoryRecord {
   timestamp: number
   content: string
   event_type?: string
-  /** Present for stream events — contains the full event payload dict. */
-  event_payload?: Record<string, unknown>
+  /** chat.tool_call: function name, arguments JSON, tool_call_id */
+  tool_call?: { name?: string; arguments?: string; tool_call_id?: string }
+  /** chat.tool_result */
+  result?: string
+  tool_name?: string
+  tool_call_id?: string
+  /** chat.usage_metadata */
+  metadata?: { usage_metadata?: Record<string, unknown> }
+  /** chat.error: exception class (e.g. "ValueError") */
+  error_type?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -81,14 +90,11 @@ interface HistoryRecord {
 /**
  * Parse jiuwenclaw history.json records into a RunResult.
  *
- * History records include event_type-tagged entries for tool calls, tool results,
- * delta text, and final responses.
- *
- * Note: `tokens` and `cost` are always zero. jiuwenclaw upstream does not
- * persist per-message usage in history.json, and no per-request generation ID
- * is exposed to query OpenRouter post-hoc. Downstream aggregators (bench cost
- * totals, proposal meta, profile cost summaries) will therefore under-report
- * spend for jiuwenclaw runs until upstream adds usage persistence.
+ * Tokens and cost are summed from `chat.usage_metadata` events emitted per
+ * LLM round-trip; the trailing `chat.usage_summary` aggregate is ignored
+ * (redundant with the per-call sum and lacks cost). Tool calls and tool
+ * results stream as flat fields on each record (upstream stopped nesting
+ * under `event_payload` -- see jiuwenclaw `session_history.append_history_record`).
  */
 export function parseJiuwenClawHistory(
   records: HistoryRecord[],
@@ -97,69 +103,75 @@ export function parseJiuwenClawHistory(
 ): RunResult {
   const steps: AgentStep[] = []
   let finalText = ""
-  const toolCallMap = new Map<string, ToolCall>()
+  let tokens: TokenUsage = emptyTokenUsage()
+  let cost = 0
 
   for (const rec of records) {
     if (rec.role === "user") continue
 
-    const et = rec.event_type
-    const payload = rec.event_payload ?? {}
-
-    if (et === "chat.tool_call") {
-      // Tool call event — payload: {event_type, tool_call: {name, arguments, id, ...}}
-      const tcInfo = (payload.tool_call as Record<string, unknown>) ?? payload
-      const name = (tcInfo.name as string) ?? ""
-      const id = (tcInfo.id as string) ?? (tcInfo.tool_call_id as string) ?? `tc-${rec.timestamp}`
-      let input: Record<string, unknown> = {}
-      const rawArgs = tcInfo.arguments ?? tcInfo.args
-      if (typeof rawArgs === "string") {
-        try { input = JSON.parse(rawArgs) } catch { /* keep empty */ }
-      } else if (typeof rawArgs === "object" && rawArgs !== null) {
-        input = rawArgs as Record<string, unknown>
+    switch (rec.event_type) {
+      case "chat.tool_call": {
+        const tc = rec.tool_call ?? {}
+        const id = tc.tool_call_id ?? `tc-${rec.timestamp}`
+        const name = tc.name ?? ""
+        let input: Record<string, unknown> = {}
+        if (typeof tc.arguments === "string") {
+          try { input = JSON.parse(tc.arguments) } catch { /* keep empty */ }
+        }
+        steps.push({
+          role: "assistant",
+          toolCalls: [{ id, name, input }],
+          timestamp: rec.timestamp * 1000,
+        })
+        break
       }
-
-      const toolCall: ToolCall = { id, name, input }
-      toolCallMap.set(id, toolCall)
-
-      steps.push({
-        role: "assistant",
-        toolCalls: [toolCall],
-        timestamp: rec.timestamp * 1000,
-      })
-    } else if (et === "chat.tool_result") {
-      // Tool result event — payload: {event_type, result, tool_name, tool_call_id}
-      const result = (payload.result as string) ?? rec.content ?? ""
-      const toolName = (payload.tool_name as string) ?? ""
-      const toolCallId = (payload.tool_call_id as string) ?? ""
-
-      // Enrich matching ToolCall
-      if (toolCallId) {
-        const tc = toolCallMap.get(toolCallId)
-        if (tc) tc.output = result
+      case "chat.tool_result": {
+        const id = rec.tool_call_id ?? `tr-${rec.timestamp}`
+        steps.push({
+          role: "tool",
+          toolCalls: [{
+            id,
+            name: rec.tool_name ?? "",
+            input: {},
+            output: rec.result ?? rec.content ?? "",
+          }],
+          timestamp: rec.timestamp * 1000,
+        })
+        break
       }
-
-      steps.push({
-        role: "tool",
-        toolCalls: [{
-          id: toolCallId || `tr-${rec.timestamp}`,
-          name: toolName,
-          input: {},
-          output: result,
-        }],
-        timestamp: rec.timestamp * 1000,
-      })
-    } else if (et === "chat.final") {
-      finalText = rec.content
-      steps.push({
-        role: "assistant",
-        text: rec.content,
-        toolCalls: [],
-        timestamp: rec.timestamp * 1000,
-      })
-    } else if (et === "chat.error") {
-      log.warn(`JiuwenClaw error event: ${rec.content}`)
+      case "chat.usage_metadata": {
+        const usage = rec.metadata?.usage_metadata ?? {}
+        const inT = Number(usage.input_tokens ?? 0)
+        const outT = Number(usage.output_tokens ?? 0)
+        tokens = addTokenUsage(tokens, {
+          input: Number.isFinite(inT) ? inT : 0,
+          output: Number.isFinite(outT) ? outT : 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+        })
+        const c = Number(usage.total_cost ?? 0)
+        if (Number.isFinite(c)) cost += c
+        break
+      }
+      case "chat.final": {
+        finalText = rec.content
+        steps.push({
+          role: "assistant",
+          text: rec.content,
+          toolCalls: [],
+          timestamp: rec.timestamp * 1000,
+        })
+        break
+      }
+      case "chat.error": {
+        const prefix = rec.error_type ? `[${rec.error_type}] ` : ""
+        log.warn(`JiuwenClaw error event: ${prefix}${rec.content}`)
+        break
+      }
+      // chat.delta, chat.tool_update (in-progress), chat.usage_summary (aggregate),
+      // chat.processing_status: deliberately skipped — they don't add signal beyond
+      // the per-event records above.
     }
-    // Skip chat.delta, chat.processing_status, etc.
   }
 
   // Fallback: if no chat.final, use the last assistant content
@@ -176,8 +188,8 @@ export function parseJiuwenClawHistory(
   return {
     text: finalText,
     steps,
-    tokens: emptyTokenUsage(),
-    cost: 0,
+    tokens,
+    cost,
     durationMs,
     llmDurationMs: 0,
     workDir,
@@ -298,8 +310,18 @@ export class JiuwenClawAdapter implements AgentAdapter {
   private envWritten = false
   private lockHeld = false
   private sidecarPython = "python3"
+  // setup/teardown are refcounted so the bench orchestrator can hold a
+  // session-long sidecar across many task runs while `runTask` (which does
+  // its own setup/teardown around each task) becomes a no-op for the
+  // jiuwenclaw adapter. Without this, the inner setup() blocks on the
+  // host-wide sidecar lock the orchestrator already owns.
+  private setupCount = 0
 
   async setup(config: AdapterConfig): Promise<void> {
+    if (this.setupCount > 0) {
+      this.setupCount += 1
+      return
+    }
     this.model = config.model
     this.apiKey = config.apiKey
     this.timeoutMs = config.timeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs
@@ -348,6 +370,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
       registerLiveAdapter(this)
 
       await this.startSidecar()
+      this.setupCount = 1
     } catch (err) {
       log.warn(`jiuwenclaw setup failed: ${(err as Error).message}; rolling back`)
       await this.teardownInternal()
@@ -366,6 +389,11 @@ export class JiuwenClawAdapter implements AgentAdapter {
     let skillLoaded: boolean | undefined
     let prompt = `IMPORTANT: Do not ask clarifying questions. Proceed directly with implementation. Execute all steps immediately without waiting for user input.\n\n`
 
+    // Filesystem tools resolve relative paths against sys_operation.work_dir
+    // (mutated to task.workDir via --workspace-dir below); the hint nudges
+    // the model to use them instead of hard-coding home-dir paths.
+    prompt += `Your working directory is ${task.workDir}. Use relative paths (or absolute paths under that directory) for all file operations.\n\n`
+
     // --- Skill handling ---
     if (task.skill) {
       // Both modes use prompt prepend for v1 (jiuwenclaw has no well-known skill path for CLI mode)
@@ -377,12 +405,22 @@ export class JiuwenClawAdapter implements AgentAdapter {
 
     const startMs = performance.now()
     const sessionId = `bench_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    // jiuwenclaw's AgentServer maps the client-supplied session_id to an
+    // internal `acp_*` id and writes history.json under the internal path.
+    // The wire protocol surfaces only the external id back to the client, so
+    // we observe the sessions/ directory pre/post-run and pick the newly
+    // created entry as the correct path. Workaround pending an upstream fix
+    // that surfaces the internal mapping (or writes history under the
+    // external id directly).
+    const sessionsRoot = path.join(JIUWEN_DIR, "agent", "sessions")
+    const sessionsBefore = await snapshotSessionDirs(sessionsRoot)
 
     // --- Build command ---
     const cmd = [
       ...this.cmdPrefix,
       "acp",
       "--session-id", sessionId,
+      "--workspace-dir", task.workDir,
       prompt,
     ]
 
@@ -431,37 +469,52 @@ export class JiuwenClawAdapter implements AgentAdapter {
       responseText = stdout.trim()
     }
 
-    // --- Read history.json for detailed conversation data ---
-    const historyPath = path.join(
-      process.env.HOME ?? "",
-      ".jiuwenclaw", "agent", "sessions", responseSessionId, "history.json",
+    // --- Read history.json ---
+    // history.json is auxiliary: the primary run signal is responseText +
+    // workDir contents, so missing/malformed history downgrades telemetry
+    // but stays runStatus=ok. Subprocess-level failures (timeout / non-zero
+    // exit) override below. We try the externally-known session id first,
+    // then fall back to a freshly-created session dir (see snapshotSessionDirs
+    // above) because AgentServer writes history under an internal id we
+    // don't see on the wire.
+    let result: RunResult | undefined
+    let usedHistoryPath: string | undefined
+    let usedHistoryText: string | undefined
+    const candidates = await historyCandidatePaths(
+      path.join(sessionsRoot, responseSessionId, "history.json"),
+      sessionsRoot,
+      sessionsBefore,
     )
-
-    // history.json is the AUXILIARY source for richer per-step data. The
-    // primary signal that the agent ran is the JSON-RPC `responseText` and
-    // the populated workDir — when history.json is missing or malformed we
-    // lose telemetry but the workDir is still trustworthy. Mark 'ok' so the
-    // runner gate evaluates normally; subprocess-level failures (timeout,
-    // non-zero exit) are upgraded to non-ok further down. Per CLAUDE.md the
-    // upstream CLI does not always persist token/cost data — this branch is
-    // jiuwenclaw's normal reduced-telemetry mode, NOT a failure. See round-3
-    // Codex review for the regression that drove this fix.
-    let result: RunResult
-    const historyFile = Bun.file(historyPath)
-    if (await historyFile.exists()) {
+    for (const candidate of candidates) {
+      let text: string
       try {
-        const historyData = await historyFile.json() as HistoryRecord[]
-        result = parseJiuwenClawHistory(historyData, task.workDir, durationMs)
-        log.debug(`Parsed ${historyData.length} history records from ${historyPath}`)
+        text = await Bun.file(candidate).text()
       } catch (err) {
-        log.warn(`Failed to parse jiuwenclaw history.json: ${err}`)
+        const code = (err as NodeJS.ErrnoException).code
+        if (code !== "ENOENT") {
+          log.warn(`Failed to read jiuwenclaw history.json at ${candidate}: ${err}`)
+        }
+        continue
+      }
+      try {
+        const historyData = JSON.parse(text) as HistoryRecord[]
+        result = parseJiuwenClawHistory(historyData, task.workDir, durationMs)
+        usedHistoryPath = candidate
+        usedHistoryText = text
+        log.debug(`Parsed ${historyData.length} history records from ${candidate}`)
+        break
+      } catch (err) {
+        log.warn(`Failed to parse jiuwenclaw history.json at ${candidate}: ${err}`)
         result = buildMinimalResult(responseText, task.workDir, durationMs, "ok",
           `jiuwenclaw history.json invalid: ${String(err).slice(0, 200)} — telemetry unavailable, workDir scored as-is`)
+        usedHistoryPath = candidate
+        break
       }
-    } else {
-      log.debug(`No history.json found at ${historyPath}, using JSON-RPC response only`)
+    }
+    if (!result) {
+      log.debug(`No history.json near ${candidates[0]}, using JSON-RPC response only`)
       result = buildMinimalResult(responseText, task.workDir, durationMs, "ok",
-        `jiuwenclaw history.json not written at ${historyPath} — telemetry unavailable, workDir scored as-is`)
+        `jiuwenclaw history.json not written for session ${responseSessionId} — telemetry unavailable, workDir scored as-is`)
     }
 
     // --- Save conv log ---
@@ -469,14 +522,14 @@ export class JiuwenClawAdapter implements AgentAdapter {
       try {
         const destDir = path.dirname(task.convLog.filePath)
         await mkdir(destDir, { recursive: true })
-        // Save both JSON-RPC response and history.json if available
         let logContent = stdout
-        if (await historyFile.exists()) {
-          const historyText = await historyFile.text()
-          logContent = JSON.stringify({
-            jsonrpc_response: stdout.trim(),
-            history: JSON.parse(historyText),
-          }, null, 2)
+        if (usedHistoryText !== undefined) {
+          try {
+            logContent = JSON.stringify({
+              jsonrpc_response: stdout.trim(),
+              history: JSON.parse(usedHistoryText),
+            }, null, 2)
+          } catch { /* fall back to plain stdout */ }
         }
         await Bun.write(task.convLog.filePath, logContent)
         log.debug(`Saved jiuwenclaw conv log to ${task.convLog.filePath}`)
@@ -535,6 +588,11 @@ export class JiuwenClawAdapter implements AgentAdapter {
   }
 
   async teardown(): Promise<void> {
+    if (this.setupCount > 1) {
+      this.setupCount -= 1
+      return
+    }
+    this.setupCount = 0
     await this.teardownInternal()
   }
 
@@ -885,6 +943,69 @@ function installProcessExitHook(): void {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Snapshot session dir names so we can detect which one a fresh run wrote to. */
+async function snapshotSessionDirs(sessionsRoot: string): Promise<Set<string>> {
+  try {
+    return new Set(await readdir(sessionsRoot))
+  } catch {
+    return new Set()
+  }
+}
+
+/**
+ * Pick the most recently created session dir that wasn't in `before`. Returns
+ * `undefined` when no new dir appeared.
+ */
+async function pickNewSessionDir(
+  sessionsRoot: string,
+  before: Set<string>,
+): Promise<string | undefined> {
+  let names: string[]
+  try {
+    names = await readdir(sessionsRoot)
+  } catch {
+    return undefined
+  }
+  const fresh = names.filter((n) => !before.has(n))
+  if (fresh.length === 0) return undefined
+  if (fresh.length === 1) return fresh[0]
+  const stats = await Promise.all(fresh.map(async (n) => {
+    try {
+      return { name: n, mtime: (await stat(path.join(sessionsRoot, n))).mtimeMs }
+    } catch {
+      return undefined
+    }
+  }))
+  let bestName: string | undefined
+  let bestMtime = -Infinity
+  for (const s of stats) {
+    if (s && s.mtime > bestMtime) {
+      bestMtime = s.mtime
+      bestName = s.name
+    }
+  }
+  return bestName
+}
+
+/**
+ * Ordered candidate paths for history.json: the externally-known session id
+ * first, then any session dir created during the run (covers the
+ * external→internal id remap that AgentServer applies before writing).
+ */
+async function historyCandidatePaths(
+  primaryPath: string,
+  sessionsRoot: string,
+  before: Set<string>,
+): Promise<string[]> {
+  const paths = [primaryPath]
+  const fallback = await pickNewSessionDir(sessionsRoot, before)
+  if (fallback) {
+    const fallbackPath = path.join(sessionsRoot, fallback, "history.json")
+    if (fallbackPath !== primaryPath) paths.push(fallbackPath)
+  }
+  return paths
+}
 
 function buildMinimalResult(
   text: string,

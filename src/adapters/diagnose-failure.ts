@@ -304,9 +304,11 @@ export async function diagnoseJiuwenclaw(input: DiagnoseInput): Promise<FailureD
           for (let i = records.length - 1; i >= 0; i--) {
             const rec = records[i] as Record<string, unknown> | undefined
             if (rec && rec.event_type === "chat.error") {
-              const content = rec.content
-              if (typeof content === "string") {
-                return { summary: `jiuwenclaw: ${content}`, source: "jiuwenclaw:history" }
+              const content = typeof rec.content === "string" ? rec.content : ""
+              const errorType = typeof rec.error_type === "string" ? rec.error_type : ""
+              if (content) {
+                const prefix = errorType ? `[${errorType}] ` : ""
+                return { summary: `jiuwenclaw: ${prefix}${content}`, source: "jiuwenclaw:history" }
               }
             }
           }
