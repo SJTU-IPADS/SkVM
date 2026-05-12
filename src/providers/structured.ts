@@ -2,7 +2,7 @@ import { z, type ZodType } from "zod"
 import type { LLMProvider } from "./types.ts"
 import type { TokenUsage } from "../core/types.ts"
 import { emptyTokenUsage, addTokenUsage } from "../core/types.ts"
-import { isProviderError } from "./errors.ts"
+import { isProviderError, isToolChoiceUnsupportedError } from "./errors.ts"
 import { createLogger } from "../core/logger.ts"
 
 const log = createLogger("structured")
@@ -26,7 +26,10 @@ const log = createLogger("structured")
  * Provider-origin errors (`ProviderError` / `HeadlessAgentError`) are NOT
  * swallowed here: they propagate unchanged. Retrying the same broken provider
  * via a different extraction strategy just masks the real failure and corrupts
- * downstream signals (jit-optimize's evidence most of all).
+ * downstream signals (jit-optimize's evidence most of all). The one exception
+ * is a 400 that rejects Layer 1's forced `tool_choice` (thinking-mode models
+ * do this): that's a capability signal, not infra — Layer 2 sends no
+ * `tool_choice`, so it's handled like a content miss and the fallback runs.
  *
  * Callers pass a Zod schema and get back validated typed data.
  */
@@ -46,11 +49,19 @@ export async function extractStructured<T>(opts: {
   try {
     return await extractViaToolUse({ provider, schema, schemaName, schemaDescription, prompt, system, maxTokens })
   } catch (err) {
-    // Infrastructure errors propagate. They mean "the provider itself is
-    // broken"; retrying via prompt+parse on the same provider will just fail
-    // again with a more confusing error.
-    if (isProviderError(err)) throw err
-    log.warn(`tool_use extraction failed, falling back to prompt+parse: ${err}`)
+    // A 400 that rejects our forced tool_choice (thinking-mode models do this)
+    // is a capability limit, not an infra failure — Layer 2 sends no
+    // tool_choice, so prompt+parse on the same provider can still succeed.
+    if (isToolChoiceUnsupportedError(err)) {
+      log.warn(`provider rejected forced tool_choice (likely a thinking-mode model); falling back to prompt+parse`)
+    } else if (isProviderError(err)) {
+      // Other infrastructure errors propagate. They mean "the provider itself
+      // is broken"; retrying via prompt+parse on the same provider will just
+      // fail again with a more confusing error.
+      throw err
+    } else {
+      log.warn(`tool_use extraction failed, falling back to prompt+parse: ${err}`)
+    }
   }
 
   // Layer 2: prompt + parse fallback.

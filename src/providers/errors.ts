@@ -77,6 +77,24 @@ export function isProviderError(err: unknown): err is ProviderError {
   return err instanceof ProviderError
 }
 
+/**
+ * Recognizes a 400 that rejects a *forced* `tool_choice` — what thinking-mode
+ * models do (DeepSeek reasoner / v4, GLM-5, Anthropic extended thinking all
+ * refuse `tool_choice: "required"` / `{tool}`). This is a capability limit,
+ * not an infra failure: a request without `tool_choice` on the SAME provider
+ * works fine. Callers that have a tool_choice-free fallback (prompt+parse in
+ * `extractStructured`) should treat it like a content-layer miss rather than
+ * a fatal provider error. Matches on the literal `tool_choice` token, which
+ * appears in every observed phrasing:
+ *   - DeepSeek:  "deepseek-reasoner does not support this tool_choice"
+ *   - DashScope: "The tool_choice parameter does not support being set to
+ *                 required or object in thinking mode"
+ */
+export function isToolChoiceUnsupportedError(err: unknown): boolean {
+  if (!(err instanceof ProviderHttpError) || err.status !== 400) return false
+  return err.message.toLowerCase().includes("tool_choice")
+}
+
 /** Substring hints suggesting `fetch()` threw a transient network error. */
 const NETWORK_ERROR_HINTS = [
   "socket",

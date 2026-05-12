@@ -5,6 +5,7 @@ import {
   ProviderNetworkError,
   ProviderAuthError,
   isProviderError,
+  isToolChoiceUnsupportedError,
   isRetryableStatus,
   looksLikeNetworkError,
 } from "../../src/providers/errors.ts"
@@ -38,6 +39,41 @@ describe("ProviderError classification", () => {
     expect(isProviderError(new Error("generic"))).toBe(false)
     expect(isProviderError("string")).toBe(false)
     expect(isProviderError(undefined)).toBe(false)
+  })
+})
+
+describe("isToolChoiceUnsupportedError", () => {
+  test("matches a 400 mentioning tool_choice (DeepSeek phrasing)", () => {
+    const e = new ProviderHttpError(
+      "openai-compatible(api.deepseek.com) API error 400: deepseek-reasoner does not support this tool_choice",
+      "openai-compatible",
+      400,
+    )
+    expect(isToolChoiceUnsupportedError(e)).toBe(true)
+  })
+
+  test("matches a 400 mentioning tool_choice (DashScope/thinking-mode phrasing)", () => {
+    const e = new ProviderHttpError(
+      "Anthropic API error 400: The tool_choice parameter does not support being set to required or object in thinking mode",
+      "anthropic",
+      400,
+    )
+    expect(isToolChoiceUnsupportedError(e)).toBe(true)
+  })
+
+  test("rejects non-400 HTTP errors even if they mention tool_choice", () => {
+    expect(isToolChoiceUnsupportedError(new ProviderHttpError("502 tool_choice gateway weirdness", "x", 502))).toBe(false)
+  })
+
+  test("rejects a 400 that does not mention tool_choice", () => {
+    expect(isToolChoiceUnsupportedError(new ProviderHttpError("400 invalid request: bad max_tokens", "x", 400))).toBe(false)
+  })
+
+  test("rejects non-HTTP provider errors and plain values", () => {
+    expect(isToolChoiceUnsupportedError(new ProviderAuthError("401 tool_choice", "x"))).toBe(false)
+    expect(isToolChoiceUnsupportedError(new Error("tool_choice 400"))).toBe(false)
+    expect(isToolChoiceUnsupportedError("tool_choice")).toBe(false)
+    expect(isToolChoiceUnsupportedError(undefined)).toBe(false)
   })
 })
 

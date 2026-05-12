@@ -52,6 +52,21 @@ function unhelpfulProvider(): LLMProvider {
   }
 }
 
+function thinkingModeProvider(err: ProviderHttpError): LLMProvider {
+  // Mimics a thinking-mode model: rejects Layer 1's forced tool_choice with a
+  // 400, but answers a plain (tool_choice-free) request — i.e. Layer 2.
+  return {
+    name: "thinking-mode",
+    async complete(params: CompletionParams): Promise<LLMResponse> {
+      if (params.toolChoice !== undefined) throw err  // Layer 1
+      return { ...stubResponse(), text: '{"x": 1}' }  // Layer 2
+    },
+    async completeWithToolResults(): Promise<LLMResponse> {
+      throw new Error("not reached")
+    },
+  }
+}
+
 describe("extractStructured propagates ProviderError", () => {
   const schema = z.object({ x: z.number() })
   const opts = {
@@ -99,6 +114,16 @@ describe("extractStructured propagates ProviderError", () => {
     // which then succeeds. This preserves the empirical-discovery behavior
     // for models that simply don't honor tools.
     const result = await extractStructured({ provider: unhelpfulProvider(), ...opts })
+    expect(result.result.x).toBe(1)
+  })
+
+  test("a 400 rejecting forced tool_choice falls back to Layer 2 (thinking-mode models)", async () => {
+    const err = new ProviderHttpError(
+      "openai-compatible(api.deepseek.com) API error 400: deepseek-reasoner does not support this tool_choice",
+      "openai-compatible",
+      400,
+    )
+    const result = await extractStructured({ provider: thinkingModeProvider(err), ...opts })
     expect(result.result.x).toBe(1)
   })
 })
