@@ -1169,7 +1169,14 @@ Notes:
 // Command: logs
 // ---------------------------------------------------------------------------
 
+const LOGS_KNOWN_FLAGS: ReadonlySet<string> = new Set([
+  "type",
+  "limit",
+  "all",
+])
+
 async function runLogs(flags: Record<string, string>) {
+  assertKnownFlags("logs", flags, LOGS_KNOWN_FLAGS)
   if (flags.help === "true") {
     console.log(`skvm logs - List recent runs across all subsystems
 

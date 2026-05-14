@@ -92,4 +92,11 @@ describe("CLI rejects unknown flags", () => {
     expect(stderr).toContain("Unknown flag --adpter")
     expect(stderr).toContain("Did you mean --adapter?")
   })
+
+  test("logs rejects --lmit (typo for --limit)", async () => {
+    const { exitCode, stderr } = await runCli(["logs", "--lmit=5"])
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("Unknown flag --lmit")
+    expect(stderr).toContain("Did you mean --limit?")
+  })
 })
