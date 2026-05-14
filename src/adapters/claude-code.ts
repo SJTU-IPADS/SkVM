@@ -434,15 +434,37 @@ export function detectSkillInject(events: ClaudeCodeEvent[], snippet: string): b
   return false
 }
 
-export function detectSkillDiscover(events: ClaudeCodeEvent[], skillName: string): boolean {
-  const matchesName = (s: unknown): boolean =>
-    typeof s === "string" && (s === skillName || s.endsWith(`:${skillName}`))
-
+/**
+ * Structural signal for discover mode: does CC's `system.init` event
+ * announce that the named skill was loaded into its registry? This is
+ * independent of any model behavior — `true` here means CC knows about
+ * the skill regardless of whether the model invoked it.
+ *
+ * Matches both bare names ("bench-skill") and plugin-namespaced names
+ * ("plugin-x:bench-skill") that CC emits when a plugin registers a skill.
+ */
+export function detectSkillProvided_Discover(events: ClaudeCodeEvent[], skillName: string): boolean {
   for (const ev of events) {
-    if (ev.type === "system" && ev.subtype === "init") {
-      const skills = Array.isArray(ev.skills) ? ev.skills : []
-      if (skills.some(matchesName)) return true
+    if (ev.type !== "system" || ev.subtype !== "init") continue
+    const skills = Array.isArray(ev.skills) ? ev.skills : []
+    for (const s of skills) {
+      if (typeof s !== "string") continue
+      if (s === skillName || s.endsWith(`:${skillName}`)) return true
     }
+  }
+  return false
+}
+
+/**
+ * Behavioral signal for discover mode: did the model invoke the `Skill`
+ * (or lowercase `skill`) tool with input matching this skill's name?
+ * A tool_use without an `input.name`/`input.skill` is NOT counted — the
+ * older permissive heuristic conflated "model invoked some Skill tool"
+ * with "model invoked OUR skill" and produced false positives in tests
+ * that share a sandbox across skills.
+ */
+export function detectSkillObserved_Discover(events: ClaudeCodeEvent[], skillName: string): boolean {
+  for (const ev of events) {
     if (ev.type !== "assistant" || !ev.message) continue
     const content = Array.isArray(ev.message.content) ? ev.message.content : []
     for (const c of content) {
@@ -451,10 +473,21 @@ export function detectSkillDiscover(events: ClaudeCodeEvent[], skillName: string
       if (tu.name !== "Skill" && tu.name !== "skill") continue
       const inputName = (tu.input as { name?: string; skill?: string })?.name
         ?? (tu.input as { name?: string; skill?: string })?.skill
-      if (!inputName || matchesName(inputName)) return true
+      if (!inputName) continue
+      if (inputName === skillName || inputName.endsWith(`:${skillName}`)) return true
     }
   }
   return false
+}
+
+/** @deprecated Since 2026-05. Use `detectSkillProvided_Discover` and
+ *  `detectSkillObserved_Discover` separately — they answer the structural
+ *  ("did the harness register the skill?") and behavioral ("did the model
+ *  invoke it?") questions respectively, which the old combined predicate
+ *  conflated. This shim returns the OR of both helpers; remove in a
+ *  future release once no consumer relies on the unified predicate. */
+export function detectSkillDiscover(events: ClaudeCodeEvent[], skillName: string): boolean {
+  return detectSkillProvided_Discover(events, skillName) || detectSkillObserved_Discover(events, skillName)
 }
 
 // ---------------------------------------------------------------------------
