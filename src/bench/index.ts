@@ -16,10 +16,30 @@ import { mkdir, readdir } from "node:fs/promises"
 import { runDeferredJudge, readDeferredResults, mergeDeferredResults } from "../framework/deferred-eval.ts"
 import { ALL_ADAPTERS, type AdapterName, isAdapterName } from "../adapters/registry.ts"
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "../core/ui-defaults.ts"
+import { assertKnownFlags } from "../core/cli-flags.ts"
 
 const HOME = process.env.HOME ?? ""
 
+const BENCH_KNOWN_FLAGS: ReadonlySet<string> = new Set([
+  // Mode selectors
+  "import", "judge", "merge-judge", "list-sessions", "compare", "custom",
+  // Resume / sessions
+  "resume",
+  // Core run knobs
+  "model", "adapter", "tasks", "source", "conditions", "skill-mode",
+  "jit-runs", "timeout-mult", "max-steps", "judge-model", "compiler-model",
+  "profile", "keep-workdirs", "concurrency", "async-judge", "runs-per-task",
+  "adapter-config",
+  // Import mode
+  "path", "exclude", "dry-run",
+  // Judge / merge mode
+  "manifest", "report",
+  // Compare mode
+  "skill-path", "lhs", "rhs", "output-dir", "analyze-model",
+])
+
 export async function runBench(flags: Record<string, string>): Promise<void> {
+  assertKnownFlags("bench", flags, BENCH_KNOWN_FLAGS)
   if (flags.help) {
     printHelp()
     return

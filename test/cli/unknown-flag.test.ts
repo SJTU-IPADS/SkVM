@@ -56,4 +56,15 @@ describe("CLI rejects unknown flags", () => {
     expect(stderr).toContain("Unknown flag --modle")
     expect(stderr).toContain("Did you mean --model?")
   })
+
+  test("bench rejects --adpter (typo for --adapter)", async () => {
+    const { exitCode, stderr } = await runCli([
+      "bench",
+      "--adpter=bare-agent",
+      "--model=anthropic/claude-sonnet-4.6",
+    ])
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("Unknown flag --adpter")
+    expect(stderr).toContain("Did you mean --adapter?")
+  })
 })
