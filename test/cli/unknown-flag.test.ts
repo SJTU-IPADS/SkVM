@@ -113,4 +113,23 @@ describe("CLI rejects unknown flags", () => {
     expect(stderr).toContain("Unknown flag --ful")
     expect(stderr).toContain("Did you mean --full?")
   })
+
+  test("proposals with unknown sub-command still rejects unknown flags", async () => {
+    // Unknown sub-command falls through to an empty allow-set, so any flag is
+    // unknown. This guards against a regression where `proposals liist --skll=foo`
+    // silently skipped the flag check (the unknown sub gets reported by the
+    // existing sub-command dispatcher below).
+    const { exitCode, stderr } = await runCli(["proposals", "liist", "--skll=foo"])
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("Unknown flag --skll")
+  })
+
+  test("proposals serve rejects --hst (typo for --host) — unknown flag without close match shows no hint", async () => {
+    // Covers the no-hint code path end-to-end (unit-tested, but not via the
+    // real CLI before this).
+    const { exitCode, stderr } = await runCli(["proposals", "serve", "--xyzzy=1"])
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("Unknown flag --xyzzy")
+    expect(stderr).not.toContain("Did you mean")
+  })
 })

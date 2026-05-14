@@ -1230,26 +1230,27 @@ Options:
 // Command: proposals
 // ---------------------------------------------------------------------------
 
+const PROPOSALS_KNOWN_FLAGS: Record<string, ReadonlySet<string>> = {
+  list:   new Set(["harness", "target-model", "model", "skill", "status",
+                   "sort", "min-delta", "group-by", "no-color"]),
+  show:   new Set(["full", "no-color"]),
+  diff:   new Set(["round"]),
+  report: new Set(["harness", "target-model", "model", "skill", "status",
+                   "sort", "min-delta", "group-by", "out"]),
+  serve:  new Set(["port", "host", "no-open"]),
+  accept: new Set(["target", "round"]),
+  reject: new Set([]),
+  cancel: new Set([]),
+}
+
 async function runProposals(rawArgs: string[]) {
   const sub = rawArgs[0]
   const flags = parseFlags(rawArgs.slice(1))
   const positional = rawArgs.slice(1).filter((a) => !a.startsWith("--"))
 
-  const PROPOSALS_KNOWN_FLAGS: Record<string, ReadonlySet<string>> = {
-    list:   new Set(["harness", "target-model", "model", "skill", "status",
-                     "sort", "min-delta", "group-by", "no-color"]),
-    show:   new Set(["full", "no-color"]),
-    diff:   new Set(["round"]),
-    report: new Set(["harness", "target-model", "model", "skill", "status",
-                     "sort", "min-delta", "group-by", "out"]),
-    serve:  new Set(["port", "host", "no-open"]),
-    accept: new Set(["target", "round"]),
-    reject: new Set([]),
-    cancel: new Set([]),
-  }
-
-  if (sub && sub !== "help" && PROPOSALS_KNOWN_FLAGS[sub]) {
-    assertKnownFlags(`proposals ${sub}`, flags, PROPOSALS_KNOWN_FLAGS[sub]!)
+  if (sub && sub !== "help") {
+    const allowed = PROPOSALS_KNOWN_FLAGS[sub] ?? new Set<string>()
+    assertKnownFlags(`proposals ${sub}`, flags, allowed)
   }
 
   if (!sub || sub === "help" || flags.help === "true") {
