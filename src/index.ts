@@ -363,7 +363,19 @@ Options:
   }
 }
 
+const RUN_KNOWN_FLAGS: ReadonlySet<string> = new Set([
+  "task",
+  "skill",
+  "model",
+  "adapter",
+  "workdir",
+  "timeoutMs",
+  "maxSteps",
+  "adapter-config",
+])
+
 async function runRun(flags: Record<string, string>) {
+  assertKnownFlags("run", flags, RUN_KNOWN_FLAGS)
   if (flags.help === "true") {
     console.log(`skvm run - Run one task with an optional user-specified skill
 

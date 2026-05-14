@@ -23,4 +23,15 @@ describe("CLI rejects unknown flags", () => {
     expect(stderr).toContain("Unknown flag --adpter")
     expect(stderr).toContain("Did you mean --adapter?")
   })
+
+  test("run rejects --tsk (typo for --task)", async () => {
+    const { exitCode, stderr } = await runCli([
+      "run",
+      "--tsk=foo.json",
+      "--model=anthropic/claude-sonnet-4.6",
+    ])
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("Unknown flag --tsk")
+    expect(stderr).toContain("Did you mean --task?")
+  })
 })
