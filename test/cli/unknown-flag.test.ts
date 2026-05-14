@@ -34,4 +34,15 @@ describe("CLI rejects unknown flags", () => {
     expect(stderr).toContain("Unknown flag --tsk")
     expect(stderr).toContain("Did you mean --task?")
   })
+
+  test("aot-compile rejects --skll (typo for --skill)", async () => {
+    const { exitCode, stderr } = await runCli([
+      "aot-compile",
+      "--skll=foo",
+      "--model=anthropic/claude-sonnet-4.6",
+    ])
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("Unknown flag --skll")
+    expect(stderr).toContain("Did you mean --skill?")
+  })
 })

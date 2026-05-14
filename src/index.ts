@@ -519,7 +519,20 @@ Notes:
   }
 }
 
+const COMPILE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
+  "skill",
+  "model",
+  "adapter",
+  "profile",
+  "pass",
+  "list-passes",
+  "concurrency",
+  "dry-run",
+  "compiler-model",
+])
+
 async function runCompile(flags: Record<string, string>) {
+  assertKnownFlags("aot-compile", flags, COMPILE_KNOWN_FLAGS)
   if (flags.help === "true") {
     console.log(`skvm aot-compile - AOT-compile skill(s) for target model(s)
 
