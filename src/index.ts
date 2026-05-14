@@ -5,6 +5,7 @@ import { setLogLevel, createLogger, c, shouldUseColor } from "./core/logger.ts"
 import { createSpinner, createProgressSpinner, spinnerLog } from "./core/spinner.ts"
 import { ALL_ADAPTERS, type AdapterName, createAdapter, isAdapterName } from "./adapters/registry.ts"
 import { resolveAdapterConfigMode } from "./core/config.ts"
+import { assertKnownFlags } from "./core/cli-flags.ts"
 
 const noColor = (s: string) => s
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "./core/ui-defaults.ts"
@@ -140,7 +141,21 @@ function printProfileSummary(tcp: import("./core/types.ts").TCP) {
   }
 }
 
+const PROFILE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
+  "model",
+  "adapter",
+  "primitives",
+  "skip",
+  "instances",
+  "force",
+  "list",
+  "batch",
+  "concurrency",
+  "adapter-config",
+])
+
 async function runProfile(flags: Record<string, string>) {
+  assertKnownFlags("profile", flags, PROFILE_KNOWN_FLAGS)
   if (flags.help === "true") {
     console.log(`skvm profile - Profile a model's primitive capabilities
 
