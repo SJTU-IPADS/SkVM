@@ -1518,7 +1518,32 @@ Proposals root: $SKVM_PROPOSALS_DIR or ~/.skvm/proposals by default.`)
 // Command: jit-optimize
 // ---------------------------------------------------------------------------
 
+const JIT_OPTIMIZE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
+  // Skill selection
+  "skill", "skill-list",
+  // Source kind + per-source inputs
+  "task-source",
+  "synthetic-count", "synthetic-test-count",
+  "tasks", "test-tasks",
+  "logs", "failures",
+  // Target & optimizer
+  "optimizer-model", "compiler-model",
+  "target-model", "target-adapter",
+  "model", "adapter",          // deprecated aliases — see runJitOptimize
+  // Loop
+  "rounds", "runs-per-task", "task-concurrency", "convergence", "baseline",
+  // Delivery
+  "no-keep-all-rounds", "auto-apply",
+  // Batch
+  "concurrency",
+  // Adapter mode
+  "adapter-config",
+  // Detached invocation
+  "detach",
+])
+
 async function runJitOptimize(flags: Record<string, string>) {
+  assertKnownFlags("jit-optimize", flags, JIT_OPTIMIZE_KNOWN_FLAGS)
   if (flags.help === "true") {
     console.log(`skvm jit-optimize - Optimize a skill based on execution evidence
 

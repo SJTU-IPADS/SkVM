@@ -67,4 +67,18 @@ describe("CLI rejects unknown flags", () => {
     expect(stderr).toContain("Unknown flag --adpter")
     expect(stderr).toContain("Did you mean --adapter?")
   })
+
+  test("jit-optimize rejects --rouns (typo for --rounds)", async () => {
+    const { exitCode, stderr } = await runCli([
+      "jit-optimize",
+      "--skill=skvm-data/skills/calendar",
+      "--task-source=synthetic",
+      "--optimizer-model=anthropic/claude-sonnet-4.6",
+      "--target-model=anthropic/claude-sonnet-4.6",
+      "--rouns=3",
+    ])
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("Unknown flag --rouns")
+    expect(stderr).toContain("Did you mean --rounds?")
+  })
 })
