@@ -962,7 +962,16 @@ async function runBenchCmd(flags: Record<string, string>) {
   await runBench(flags)
 }
 
+const CLEAN_JIT_KNOWN_FLAGS: ReadonlySet<string> = new Set([
+  "model",
+  "adapter",
+  "dry-run",
+  "yes",
+  "include-bench-logs",
+])
+
 async function runCleanJIT(flags: Record<string, string>) {
+  assertKnownFlags("clean-jit", flags, CLEAN_JIT_KNOWN_FLAGS)
   if (flags.help === "true") {
     console.log(`skvm clean-jit - Clear persisted JIT artifacts for a model+adapter
 

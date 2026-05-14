@@ -81,4 +81,15 @@ describe("CLI rejects unknown flags", () => {
     expect(stderr).toContain("Unknown flag --rouns")
     expect(stderr).toContain("Did you mean --rounds?")
   })
+
+  test("clean-jit rejects --adpter (typo for --adapter)", async () => {
+    const { exitCode, stderr } = await runCli([
+      "clean-jit",
+      "--model=anthropic/claude-sonnet-4.6",
+      "--adpter=bare-agent",
+    ])
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("Unknown flag --adpter")
+    expect(stderr).toContain("Did you mean --adapter?")
+  })
 })
