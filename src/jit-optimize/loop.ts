@@ -58,6 +58,7 @@ import { isProviderError } from "../providers/errors.ts"
 import { isHeadlessAgentError } from "../core/headless-agent.ts"
 import { type AdapterName, createAdapter } from "../adapters/registry.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
+import { resolveTaskRuntime } from "../core/task-runtime.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { createLogger } from "../core/logger.ts"
 import { createSpinner } from "../core/spinner.ts"
@@ -324,10 +325,17 @@ export async function runLoop(
     ? [config.adapter]
     : Array.from({ length: taskConcurrency }, () => createAdapter(harness))
   const adapterPool = new Pool(adapterInstances)
+  // CLI absolute overrides for per-task timeoutMs / maxSteps. When undefined,
+  // each task's own task.timeoutMs / task.maxSteps wins at the runOne site
+  // inside runTasksForRound (resolved via resolveTaskRuntime). The fields on
+  // `adapterConfig` below are kept present (Zod schema requires them) for
+  // backwards compatibility, but are ignored at the per-task site below.
+  const cliTimeoutMs = config.targetAdapter.adapterConfig?.timeoutMs
+  const cliMaxSteps = config.targetAdapter.adapterConfig?.maxSteps
   const adapterConfig: AdapterConfig = {
     model: config.targetAdapter.model,
-    maxSteps: config.targetAdapter.adapterConfig?.maxSteps ?? TASK_FILE_DEFAULTS.maxSteps,
-    timeoutMs: config.targetAdapter.adapterConfig?.timeoutMs ?? 300_000,
+    maxSteps: cliMaxSteps ?? TASK_FILE_DEFAULTS.maxSteps,
+    timeoutMs: cliTimeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs,
     apiKey: config.targetAdapter.adapterConfig?.apiKey,
     providerOptions: config.targetAdapter.adapterConfig?.providerOptions,
     mode: config.targetAdapter.adapterConfig?.mode,
@@ -378,6 +386,8 @@ export async function runLoop(
         runsPerTask,
         adapterPool,
         adapterConfig,
+        cliTimeoutMs,
+        cliMaxSteps,
         evalConfig: roundEvalConfig,
         logDir: path.join(proposal.dir, `${roundLabel}-agent-logs`, setLabel),
         setLabel,
@@ -416,6 +426,8 @@ export async function runLoop(
       runsPerTask,
       adapterPool,
       adapterConfig,
+      cliTimeoutMs,
+      cliMaxSteps,
       evalConfig: makeRoundEvalConfig(judgeAcc),
       logDir: path.join(proposal.dir, `${roundLabel}-agent-logs`, "train"),
       setLabel: "train",
@@ -1160,6 +1172,16 @@ export interface RunTasksParams {
    */
   adapterPool: Pool<AgentAdapter>
   adapterConfig: AdapterConfig
+  /**
+   * CLI absolute overrides for per-task timeoutMs / maxSteps. When omitted,
+   * each task's own `task.timeoutMs` / `task.maxSteps` is used at the
+   * adapter setup/run boundary (see resolveTaskRuntime). The required
+   * `adapterConfig.timeoutMs` / `adapterConfig.maxSteps` fields are ignored
+   * at the per-task site — they're carried on the shared base for
+   * compatibility with the AgentAdapter setup contract only.
+   */
+  cliTimeoutMs?: number
+  cliMaxSteps?: number
   evalConfig: EvaluatorConfig
   logDir: string
   setLabel: "train" | "test"
@@ -1168,7 +1190,7 @@ export interface RunTasksParams {
 // Exported for unit tests of the runStatus gate (sweep G1) and task
 // concurrency. Production callers go through `runLoop`.
 export async function runTasksForRound(params: RunTasksParams): Promise<Evidence[]> {
-  const { tasks, skill, runsPerTask, adapterPool, adapterConfig, evalConfig, logDir, setLabel } = params
+  const { tasks, skill, runsPerTask, adapterPool, adapterConfig, cliTimeoutMs, cliMaxSteps, evalConfig, logDir, setLabel } = params
   await mkdir(logDir, { recursive: true })
 
   const skillContent = skill.skillContent
@@ -1194,13 +1216,22 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
       const convLogPath = path.join(logDir, `${task.id}-run${r}.jsonl`)
       const convLog = new ConversationLog(convLogPath)
 
-      await adapter.setup(adapterConfig)
+      const resolved = resolveTaskRuntime(task, {
+        timeoutMs: cliTimeoutMs,
+        maxSteps: cliMaxSteps,
+      })
+      const taskAdapterConfig: AdapterConfig = {
+        ...adapterConfig,
+        timeoutMs: resolved.timeoutMs,
+        maxSteps: resolved.maxSteps,
+      }
+      await adapter.setup(taskAdapterConfig)
       const result = await adapter.run({
         prompt: task.prompt,
         workDir: runWorkDir,
         skillContent,
         convLog,
-        timeoutMs: adapterConfig.timeoutMs,
+        timeoutMs: resolved.timeoutMs,
       })
       await adapter.teardown()
       await convLog.finalize()

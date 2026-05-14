@@ -421,10 +421,15 @@ Notes:
 
   const adapterModeRun = resolveAdapterConfigMode(flags["adapter-config"])
 
+  const { resolveTaskRuntime } = await import("./core/task-runtime.ts")
+  const runRuntime = resolveTaskRuntime(task, {
+    timeoutMs: flags.timeoutMs ? parseInt(flags.timeoutMs) : undefined,
+    maxSteps: flags.maxSteps ? parseInt(flags.maxSteps) : undefined,
+  })
   const adapterConfig: import("./core/types.ts").AdapterConfig = {
     model,
-    maxSteps: flags.maxSteps ? parseInt(flags.maxSteps) : task.maxSteps,
-    timeoutMs: flags.timeoutMs ? parseInt(flags.timeoutMs) : task.timeoutMs,
+    maxSteps: runRuntime.maxSteps,
+    timeoutMs: runRuntime.timeoutMs,
     mode: adapterModeRun,
   }
 
@@ -1532,6 +1537,11 @@ Adapter config:
   --adapter-config=<m>       native | managed (default: defaults.adapterConfigMode in
                              skvm.config.json, else managed). Applies to the target
                              adapter that runs tasks during optimization.
+  --timeoutMs=<n>            Absolute override for task timeout in ms. When omitted,
+                             each task's own timeoutMs from task.json is honored
+                             (synthetic tasks fall back to the loader default).
+  --maxSteps=<n>             Absolute override for max agent steps per task. When
+                             omitted, each task's own maxSteps is honored.
 
 Detached invocation:
   --detach                   Spawn a background worker and return as soon as
@@ -1578,10 +1588,32 @@ Detached invocation:
     process.exit(1)
   }
   const adapterModeJit = resolveAdapterConfigMode(flags["adapter-config"])
+  let timeoutMsJit: number | undefined
+  if (flags.timeoutMs !== undefined) {
+    const parsed = parseInt(flags.timeoutMs, 10)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      console.error(`jit-optimize: --timeoutMs must be a positive integer (got "${flags.timeoutMs}")`)
+      process.exit(1)
+    }
+    timeoutMsJit = parsed
+  }
+  let maxStepsJit: number | undefined
+  if (flags.maxSteps !== undefined) {
+    const parsed = parseInt(flags.maxSteps, 10)
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      console.error(`jit-optimize: --maxSteps must be a positive integer (got "${flags.maxSteps}")`)
+      process.exit(1)
+    }
+    maxStepsJit = parsed
+  }
   const targetAdapter: import("./jit-optimize/types.ts").JitOptimizeConfig["targetAdapter"] = {
     model: tModel,
     harness: tHarness,
-    adapterConfig: { mode: adapterModeJit },
+    adapterConfig: {
+      mode: adapterModeJit,
+      ...(timeoutMsJit !== undefined ? { timeoutMs: timeoutMsJit } : {}),
+      ...(maxStepsJit !== undefined ? { maxSteps: maxStepsJit } : {}),
+    },
   }
 
   const rounds = flags.rounds

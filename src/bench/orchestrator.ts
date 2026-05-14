@@ -26,6 +26,7 @@ import { ConversationLog } from "../core/conversation-logger.ts"
 import { createAsyncMutex, runScheduled, type WorkItem, type RunnerHandle } from "../core/concurrency.ts"
 import { RunSession, shortModel } from "../core/run-session.ts"
 import { TASK_FILE_DEFAULTS, MODEL_DEFAULTS } from "../core/ui-defaults.ts"
+import { resolveTaskRuntime } from "../core/task-runtime.ts"
 
 const log = createLogger("bench-orchestrator")
 
@@ -178,7 +179,12 @@ async function prepareBenchSession(config: BenchRunConfig): Promise<{
   const adapterConfig: AdapterConfig = {
     model: config.model,
     maxSteps: config.maxSteps,
-    timeoutMs: TASK_FILE_DEFAULTS.timeoutMs * config.timeoutMult,
+    // Setup-time fallback only. Per-task timeoutMs is computed at each
+    // adapter.run / direct setup site via resolveTaskRuntime, which honors
+    // task.timeoutMs, --timeout-mult, and --timeout-ms in the proper
+    // precedence. Adapters read this when adapter.run() omits its own
+    // `timeoutMs` argument (e.g. early-error paths).
+    timeoutMs: config.cliTimeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs,
     mode: config.adapterConfigMode,
   }
 
@@ -335,14 +341,27 @@ async function executeBenchItem(
   // jit-boost never defers — it needs synchronous eval for its feedback loop
   const eo = condition === "jit-boost" ? undefined : ctx.buildEvalOptions(task.id, condition)
 
+  // Resolve per-task timeoutMs (CLI absolute > task.timeoutMs * --timeout-mult).
+  // maxSteps stays uniform: bench has no per-task setup boundary that could
+  // accept a different value mid-session, so the orchestrator-level value
+  // from --max-steps (or CLI_DEFAULTS) carries through unchanged.
+  const resolved = resolveTaskRuntime(task, {
+    timeoutMs: ctx.config.cliTimeoutMs,
+    timeoutMult: ctx.config.timeoutMult,
+  })
+  const taskAdapterConfig: AdapterConfig = {
+    ...ctx.adapterConfig,
+    timeoutMs: resolved.timeoutMs,
+  }
+
   switch (condition) {
     case "no-skill":
-      return await runNoSkill(task, adapter, ctx.adapterConfig, ctx.evaluatorConfig,
+      return await runNoSkill(task, adapter, taskAdapterConfig, ctx.evaluatorConfig,
         await ctx.createConvLog(task.id, "no-skill"), eo)
 
     case "original": {
       return await runOriginal(
-        task, adapter, ctx.adapterConfig,
+        task, adapter, taskAdapterConfig,
         skills,
         ctx.evaluatorConfig,
         await ctx.createConvLog(task.id, "original"),
@@ -352,7 +371,7 @@ async function executeBenchItem(
 
     case "jit-optimized": {
       return await runJitOptimized(
-        task, adapter, ctx.adapterConfig,
+        task, adapter, taskAdapterConfig,
         skills,
         ctx.config.adapter, ctx.config.model,
         ctx.evaluatorConfig,
@@ -366,7 +385,7 @@ async function executeBenchItem(
       const combinedId = skills.map(s => s.skillId).join("+")
       const firstSkill = skills[0]!
       return await runJITBoost(
-        task, adapter, ctx.adapterConfig,
+        task, adapter, taskAdapterConfig,
         allContent,
         combinedId,
         firstSkill.skillDir,
@@ -383,7 +402,7 @@ async function executeBenchItem(
         const combinedId = skills.map(s => s.skillId).join("+")
         const firstSkill = skills[0]!
         return await runAOTVariant(
-          task, adapter, ctx.adapterConfig,
+          task, adapter, taskAdapterConfig,
           allContent,
           combinedId,
           firstSkill.skillPath,

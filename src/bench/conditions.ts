@@ -664,6 +664,7 @@ export async function runJITBoost(
         workDir,
         skillContent,
         convLog,
+        timeoutMs: adapterConfig.timeoutMs,
       })
       await adapter.teardown()
 
@@ -771,6 +772,7 @@ export async function runJITBoost(
         workDir,
         skillContent,
         convLog,
+        timeoutMs: adapterConfig.timeoutMs,
       })
       await adapter.teardown()
 

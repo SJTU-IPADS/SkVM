@@ -67,7 +67,10 @@ export async function runTask(opts: RunOptions): Promise<TestResult> {
       skillMeta: opts.skillMeta,
       taskId: task.id,
       convLog: opts.convLog,
-      timeoutMs: task.timeoutMs,
+      // Use the resolved per-task timeout from adapterConfig (set by bench's
+      // executeBenchItem or `skvm run`'s CLI parser). Reading task.timeoutMs
+      // directly here would silently shadow CLI --timeoutMs / --timeout-ms.
+      timeoutMs: adapterConfig.timeoutMs,
     })
 
     // 5. Gate on adapter runStatus.

@@ -105,7 +105,10 @@ export async function executeRun(opts: ExecuteRunOptions): Promise<ExecuteRunRes
       skillMode: skill ? "inject" : undefined,
       skillMeta: skill?.skillMeta,
       taskId: task.id,
-      timeoutMs: task.timeoutMs,
+      // Use the resolved timeout from adapterConfig (CLI override > task value)
+      // rather than reading task.timeoutMs directly — otherwise a CLI
+      // --timeoutMs would be silently shadowed by the task file's value.
+      timeoutMs: adapterConfig.timeoutMs,
     })
 
     return {

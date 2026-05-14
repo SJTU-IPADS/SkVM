@@ -95,6 +95,16 @@ export async function runBench(flags: Record<string, string>): Promise<void> {
   }
   const adapters = adapterRaw as AdapterName[]
 
+  let cliTimeoutMs: number | undefined
+  if (flags["timeout-ms"] !== undefined) {
+    const parsed = parseInt(flags["timeout-ms"], 10)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      console.error(`bench: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
+      process.exit(1)
+    }
+    cliTimeoutMs = parsed
+  }
+
   const baseConfig = {
     adapter: adapters[0]!,
     conditions,
@@ -103,6 +113,7 @@ export async function runBench(flags: Record<string, string>): Promise<void> {
     jitRuns: flags["jit-runs"] ? parseInt(flags["jit-runs"], 10) : CLI_DEFAULTS.jitRuns,
     timeoutMult: flags["timeout-mult"] ? parseFloat(flags["timeout-mult"]) : CLI_DEFAULTS.timeoutMult,
     maxSteps: flags["max-steps"] ? parseInt(flags["max-steps"], 10) : CLI_DEFAULTS.maxSteps,
+    cliTimeoutMs,
     judgeModel: flags["judge-model"] ?? MODEL_DEFAULTS.judge,
     compilerModel: flags["compiler-model"],
     source: flags.source ? flags.source.split(",").map(s => s.trim()) : undefined,
@@ -522,8 +533,12 @@ Benchmark Options:
                          the standard condition system entirely.
   --skill-mode=<mode>    inject | discover (default: ${CLI_DEFAULTS.skillMode})
   --jit-runs=<n>         JIT-boost warm-up runs (default: ${CLI_DEFAULTS.jitRuns})
-  --timeout-mult=<n>     Multiply task timeouts (default: ${CLI_DEFAULTS.timeoutMult.toFixed(1)})
-  --max-steps=<n>        Max agent steps per task (default: ${CLI_DEFAULTS.maxSteps})
+  --timeout-mult=<n>     Multiply each task's own timeoutMs (default: ${CLI_DEFAULTS.timeoutMult.toFixed(1)}).
+                         Ignored when --timeout-ms is set.
+  --timeout-ms=<n>       Absolute override for per-task timeout in ms.
+                         When set, wins over both task.timeoutMs and --timeout-mult.
+  --max-steps=<n>        Max agent steps per task (default: ${CLI_DEFAULTS.maxSteps}).
+                         Uniform across tasks; per-task task.maxSteps is not used in bench.
   --judge-model=<id>     LLM judge model (default: ${MODEL_DEFAULTS.judge})
   --compiler-model=<id>  Model for AOT compiler (default: ${MODEL_DEFAULTS.compiler})
   --profile=<path>       TCP JSON path (required for aot conditions)

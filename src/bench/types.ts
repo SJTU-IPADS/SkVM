@@ -276,8 +276,15 @@ export interface BenchRunConfig {
   source?: string | string[]
   skillMode?: SkillMode
   jitRuns: number
+  /**
+   * Multiplier applied to each task's own `task.timeoutMs` at the per-task
+   * site. CLI `--timeout-mult`. When `cliTimeoutMs` is set, it wins outright
+   * and the multiplier is ignored.
+   */
   timeoutMult: number
   maxSteps: number
+  /** Absolute CLI override for per-task timeout (`--timeout-ms`). When set, beats `task.timeoutMs` and ignores `timeoutMult`. */
+  cliTimeoutMs?: number
   /** LLM judge model (default: openrouter/anthropic/claude-sonnet-4.6) */
   judgeModel?: string
   /** Model for AOT/JIT compiler (default: openrouter/anthropic/claude-sonnet-4.6) */
