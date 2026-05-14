@@ -766,7 +766,20 @@ Options:
   }
 }
 
+const PIPELINE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
+  "skill",
+  "model",
+  "adapter",
+  "force-profile",
+  "profile",
+  "pass",
+  "compiler-model",
+  "dry-run",
+  "adapter-config",
+])
+
 async function runPipeline(flags: Record<string, string>) {
+  assertKnownFlags("pipeline", flags, PIPELINE_KNOWN_FLAGS)
   if (flags.help === "true") {
     console.log(`skvm pipeline - Profile (if needed) then compile a skill for a target model
 

@@ -45,4 +45,15 @@ describe("CLI rejects unknown flags", () => {
     expect(stderr).toContain("Unknown flag --skll")
     expect(stderr).toContain("Did you mean --skill?")
   })
+
+  test("pipeline rejects --modle (typo for --model)", async () => {
+    const { exitCode, stderr } = await runCli([
+      "pipeline",
+      "--skill=skvm-data/skills/calendar",
+      "--modle=anthropic/claude-sonnet-4.6",
+    ])
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("Unknown flag --modle")
+    expect(stderr).toContain("Did you mean --model?")
+  })
 })
