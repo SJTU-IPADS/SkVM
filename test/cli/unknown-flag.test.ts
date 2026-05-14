@@ -99,4 +99,18 @@ describe("CLI rejects unknown flags", () => {
     expect(stderr).toContain("Unknown flag --lmit")
     expect(stderr).toContain("Did you mean --limit?")
   })
+
+  test("proposals list rejects --skll (typo for --skill)", async () => {
+    const { exitCode, stderr } = await runCli(["proposals", "list", "--skll=foo"])
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("Unknown flag --skll")
+    expect(stderr).toContain("Did you mean --skill?")
+  })
+
+  test("proposals show rejects --ful (typo for --full)", async () => {
+    const { exitCode, stderr } = await runCli(["proposals", "show", "abc123", "--ful"])
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain("Unknown flag --ful")
+    expect(stderr).toContain("Did you mean --full?")
+  })
 })
