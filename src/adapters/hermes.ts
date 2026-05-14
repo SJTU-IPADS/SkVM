@@ -345,15 +345,18 @@ export class HermesAdapter implements AgentAdapter {
     timeoutMs?: number
   }): Promise<RunResult> {
     const skillMode = task.skillMode ?? "inject"
-    let skillLoaded: boolean | undefined
+    let skillProvided: boolean | undefined
+    let skillObserved: boolean | undefined
     let prompt = `IMPORTANT: Do not ask clarifying questions. Proceed directly with implementation. Execute all steps immediately without waiting for user input.\n\n`
 
     // --- Skill handling ---
     if (task.skillContent) {
       if (skillMode === "inject") {
-        // Inject mode: prepend skill content to prompt
+        // Inject mode: prepend skill content to prompt. The content lands in
+        // the agent's context the moment we concat it, so skillProvided is
+        // already true — no behavioral inference required.
         prompt += task.skillContent + "\n\n---\n\n"
-        skillLoaded = false
+        skillProvided = true
       } else {
         const skillName = task.skillMeta?.name ?? "bench-skill"
         if (!this.hermesHome) {
@@ -362,7 +365,9 @@ export class HermesAdapter implements AgentAdapter {
         const skillDir = path.join(this.hermesHome, "skills", skillName)
         await mkdir(skillDir, { recursive: true })
         await Bun.write(path.join(skillDir, "SKILL.md"), task.skillContent)
-        skillLoaded = false
+        // Discover mode: hermes registers SKILL.md via the -s flag below, so
+        // structurally the skill is wired up before the agent runs.
+        skillProvided = true
       }
     }
 
@@ -532,30 +537,28 @@ export class HermesAdapter implements AgentAdapter {
     // --- Save conv log (export JSON is richer than raw stdout when available) ---
     await saveConvLog(exportResult.exitCode === 0 ? exportResult.stdout : stdout)
 
-    // --- Verify skill loaded ---
-    if (task.skillContent && skillLoaded === false) {
+    // --- Skill observation (behavioral) ---
+    // skillProvided is already set at the inject/register step above. The only
+    // thing the post-run scan can add is behavioral evidence: did the agent
+    // actually use the skill? We look for echoed snippets in step text.
+    if (task.skillContent && skillProvided) {
       const skillSnippet = task.skillContent.replace(/^#.*\n/m, "").trim().slice(0, 60)
-
-      if (skillMode === "inject") {
-        // Inject: if agent produced any tool calls or steps, skill was loaded (it's in the prompt)
-        if (result.steps.length > 0) {
-          skillLoaded = true
-        }
-      }
-
-      // Check if any assistant text references skill content
-      if (!skillLoaded && skillSnippet.length > 20) {
+      if (skillSnippet.length > 20) {
         for (const step of result.steps) {
           if (step.text?.includes(skillSnippet)) {
-            skillLoaded = true
+            skillObserved = true
             break
           }
         }
       }
     }
 
-    if (skillLoaded !== undefined) {
-      result.skillLoaded = skillLoaded
+    if (task.skillContent) {
+      result.skillProvided = skillProvided ?? false
+      if (skillObserved !== undefined) result.skillObserved = skillObserved
+      result.skillMode = skillMode
+      // Deprecated mirror — kept for one release while consumers migrate.
+      result.skillLoaded = skillProvided ?? false
     }
     // Subprocess-level failure overrides whatever the parse path decided.
     // Rare on this branch (we already got a session_id) but possible if the
