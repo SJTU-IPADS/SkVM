@@ -387,8 +387,8 @@ const RUN_KNOWN_FLAGS: ReadonlySet<string> = new Set([
   "model",
   "adapter",
   "workdir",
-  "timeoutMs",
-  "maxSteps",
+  "timeout-ms",
+  "max-steps",
   "adapter-config",
 ])
 
@@ -409,8 +409,11 @@ Options:
   --skill=<path>        Optional path to a SKILL.md file
   --adapter=<name>      Agent adapter: ${ALL_ADAPTERS.join(" | ")} (default: ${CLI_DEFAULTS.adapter})
   --workdir=<path>      Use this directory instead of a temp work directory
-  --timeoutMs=<n>       Override task timeout in ms
-  --maxSteps=<n>        Override max steps for the adapter
+  --timeout-ms=<n>      Override the per-task agent execution timeout (ms).
+                        This caps how long the target adapter spends solving
+                        one task. Falls back to task.json's \`timeoutMs\`,
+                        then to the built-in default (${TIMEOUT_DEFAULTS.taskExec}).
+  --max-steps=<n>       Override max steps for the adapter
   --adapter-config=<m>  native | managed (default: from skvm.config.json, else managed)
   --verbose             Show detailed output
 
@@ -427,6 +430,26 @@ Notes:
   if (!taskPath || !model) {
     console.error("--task and --model are required. Example: skvm run --task=path/to/task.json --model=<provider>/<model-id> [--skill=path/to/SKILL.md]")
     process.exit(1)
+  }
+
+  let cliRunTimeoutMs: number | undefined
+  if (flags["timeout-ms"] !== undefined) {
+    const n = parseInt(flags["timeout-ms"], 10)
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`run: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
+      process.exit(1)
+    }
+    cliRunTimeoutMs = n
+  }
+
+  let cliRunMaxSteps: number | undefined
+  if (flags["max-steps"] !== undefined) {
+    const n = parseInt(flags["max-steps"], 10)
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`run: --max-steps must be a positive integer (got "${flags["max-steps"]}")`)
+      process.exit(1)
+    }
+    cliRunMaxSteps = n
   }
 
   const harnessStr = flags.adapter ?? CLI_DEFAULTS.adapter
@@ -468,8 +491,8 @@ Notes:
 
   const { resolveTaskRuntime } = await import("./core/task-runtime.ts")
   const runRuntime = resolveTaskRuntime(task, {
-    timeoutMs: flags.timeoutMs ? parseInt(flags.timeoutMs) : undefined,
-    maxSteps: flags.maxSteps ? parseInt(flags.maxSteps) : undefined,
+    timeoutMs: cliRunTimeoutMs,
+    maxSteps: cliRunMaxSteps,
   })
   const adapterConfig: import("./core/types.ts").AdapterConfig = {
     model,
