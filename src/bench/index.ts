@@ -556,7 +556,7 @@ Benchmark Options:
   --timeout-ms=<n>       Absolute override for per-task timeout in ms.
                          When set, wins over task.json's timeoutMs.
                          Also caps the jit-boost candidate-generation agent
-                         when --condition includes jit-boost.
+                         when --conditions includes jit-boost.
   --max-steps=<n>        Max agent steps per task (default: ${CLI_DEFAULTS.maxSteps}).
                          Uniform across tasks; per-task task.maxSteps is not used in bench.
   --judge-model=<id>     LLM judge model (default: ${MODEL_DEFAULTS.judge})
