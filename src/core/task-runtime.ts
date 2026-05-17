@@ -1,3 +1,5 @@
+import { resolveTaskTimeout } from "./timeouts.ts"
+
 /**
  * Resolve effective `timeoutMs` and `maxSteps` for a single task run.
  *
@@ -8,7 +10,8 @@
  *
  * The multiplier branch is used by `skvm bench`'s `--timeout-mult`. Other
  * commands pass `timeoutMult` undefined, in which case rule (2) collapses to
- * rule (3).
+ * rule (3). Timeout resolution itself is delegated to
+ * `src/core/timeouts.ts::resolveTaskTimeout`.
  */
 export interface TaskRuntimeOverrides {
   timeoutMs?: number
@@ -25,9 +28,12 @@ export function resolveTaskRuntime(
   task: { timeoutMs: number; maxSteps: number },
   overrides: TaskRuntimeOverrides = {},
 ): ResolvedTaskRuntime {
-  const mult = overrides.timeoutMult ?? 1
   return {
-    timeoutMs: overrides.timeoutMs ?? Math.round(task.timeoutMs * mult),
+    timeoutMs: resolveTaskTimeout({
+      cli: overrides.timeoutMs,
+      task: { timeoutMs: task.timeoutMs },
+      multiplier: overrides.timeoutMult,
+    }),
     maxSteps: overrides.maxSteps ?? task.maxSteps,
   }
 }

@@ -33,7 +33,7 @@ export function resolveTaskTimeout(opts: {
   multiplier?: number
 }): number {
   if (opts.cli !== undefined) return opts.cli
-  return opts.task.timeoutMs * (opts.multiplier ?? 1)
+  return Math.round(opts.task.timeoutMs * (opts.multiplier ?? 1))
 }
 
 export function resolveCompilerTimeout(opts: { cli?: number }): number {

@@ -37,6 +37,9 @@ describe("resolveTaskTimeout", () => {
   test("multiplier is ignored when cli is given", () => {
     expect(resolveTaskTimeout({ cli: 100, task: { timeoutMs: 1000 }, multiplier: 5 })).toBe(100)
   })
+  test("rounds the multiplied result to an integer", () => {
+    expect(resolveTaskTimeout({ task: { timeoutMs: 333 }, multiplier: 1.5 })).toBe(500)
+  })
 })
 
 describe("resolveCompilerTimeout", () => {
