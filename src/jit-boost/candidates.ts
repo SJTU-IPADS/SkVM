@@ -9,7 +9,7 @@ import { isProviderError } from "../providers/errors.ts"
 import { parseConvLog, type ExtractedToolCode } from "../core/conv-log-parser.ts"
 import { estimateCost } from "../core/cost.ts"
 import { createLogger } from "../core/logger.ts"
-import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
+import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
 
 const log = createLogger("boost-candidates")
 
@@ -36,7 +36,7 @@ export async function generateBoostCandidates(
   opts?: { model?: string; timeoutMs?: number; driver?: HeadlessAgentDriver },
 ): Promise<{ candidates: BoostCandidate[]; cost: number }> {
   const model = opts?.model ?? DEFAULT_MODEL
-  const timeoutMs = opts?.timeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs
+  const timeoutMs = opts?.timeoutMs ?? TIMEOUT_DEFAULTS.candidateGen
 
   // Headless agent requires absolute paths for its working directory
   const absSkillDir = path.resolve(skillDir)
@@ -335,7 +335,7 @@ export async function generateTemplates(
   }
 
   const model = opts?.model ?? DEFAULT_MODEL
-  const timeoutMs = opts?.timeoutMs ?? 180_000
+  const timeoutMs = opts?.timeoutMs ?? TIMEOUT_DEFAULTS.candidateGen
 
   const absSkillDir = path.resolve(skillDir)
   const absOutputDir = path.resolve(outputDir)
