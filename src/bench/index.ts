@@ -16,6 +16,7 @@ import { mkdir, readdir } from "node:fs/promises"
 import { runDeferredJudge, readDeferredResults, mergeDeferredResults } from "../framework/deferred-eval.ts"
 import { ALL_ADAPTERS, type AdapterName, isAdapterName } from "../adapters/registry.ts"
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "../core/ui-defaults.ts"
+import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
 import { assertKnownFlags } from "../core/cli-flags.ts"
 
 const HOME = process.env.HOME ?? ""
@@ -554,9 +555,11 @@ Benchmark Options:
   --skill-mode=<mode>    inject | discover (default: ${CLI_DEFAULTS.skillMode})
   --jit-runs=<n>         JIT-boost warm-up runs (default: ${CLI_DEFAULTS.jitRuns})
   --timeout-ms=<n>       Absolute override for per-task timeout in ms.
-                         When set, wins over task.json's timeoutMs.
+                         When set, wins over task.json's timeoutMs
+                         (which falls back to ${TIMEOUT_DEFAULTS.taskExec}).
                          Also caps the jit-boost candidate-generation agent
-                         when --conditions includes jit-boost.
+                         when --conditions includes jit-boost
+                         (default: ${TIMEOUT_DEFAULTS.candidateGen}).
   --max-steps=<n>        Max agent steps per task (default: ${CLI_DEFAULTS.maxSteps}).
                          Uniform across tasks; per-task task.maxSteps is not used in bench.
   --judge-model=<id>     LLM judge model (default: ${MODEL_DEFAULTS.judge})

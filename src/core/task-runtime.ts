@@ -8,7 +8,8 @@ import { resolveTaskTimeout } from "./timeouts.ts"
  *   2. Per-task value × multiplier (`task.timeoutMs * (overrides.timeoutMult ?? 1)`)
  *   3. Per-task value (when no multiplier)
  *
- * The multiplier branch is used by `skvm bench`'s `--timeout-mult`. Other
+ * The multiplier branch is used by custom-plan YAML's group-level
+ * `timeout-mult` (the CLI `--timeout-mult` flag no longer exists). Other
  * commands pass `timeoutMult` undefined, in which case rule (2) collapses to
  * rule (3). Timeout resolution itself is delegated to
  * `src/core/timeouts.ts::resolveTaskTimeout`.
