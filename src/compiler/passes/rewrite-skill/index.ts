@@ -20,6 +20,7 @@ export const rewriteSkillPass: CompilerPass = {
       ctx.provider,
       ctx.workDir,
       ctx.failureContext,
+      ctx.timeoutMs,
     )
     return {
       artifacts: { scr: result.scr, gaps: result.gaps },

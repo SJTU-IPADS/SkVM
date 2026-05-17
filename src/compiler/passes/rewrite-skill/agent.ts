@@ -414,7 +414,8 @@ export async function runPass1Agentic(
   tcp: TCP,
   provider: LLMProvider,
   workDir: string,
-  failureContext?: FailureContext,
+  failureContext: FailureContext | undefined,
+  timeoutMs: number,
 ): Promise<Pass1Result> {
   const scr = await extractSCR(skillContent, provider)
   log.info(`SCR: ${scr.purposes.length} purposes`)
@@ -439,7 +440,7 @@ export async function runPass1Agentic(
       executeTool,
       system,
       maxIterations: 15,
-      timeoutMs: 300_000,
+      timeoutMs,
       maxTokens: 32768,
       temperature: 0,
     },

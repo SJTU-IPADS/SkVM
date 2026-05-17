@@ -110,4 +110,7 @@ export interface CompileOptions {
   dryRun?: boolean
   /** Structured failure context surfaced into rewrite-skill's prompt for JIT recompilation. */
   failureContext?: FailureContext
+  /** Optional override for the per-pass agent-loop timeout in milliseconds.
+   *  When omitted, each pass uses TIMEOUT_DEFAULTS.compiler. */
+  timeoutMs?: number
 }
