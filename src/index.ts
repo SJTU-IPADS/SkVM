@@ -557,7 +557,7 @@ Options:
   --dry-run             Show plan without applying
   --compiler-model=<id> Compiler model via OpenRouter (default: ${MODEL_DEFAULTS.compiler})
   --timeout-ms=<n>      Cap on the compiler agent loop (Pass 1, rewrite-skill)
-                        while it edits SKILL.md (ms). Default: 300000.`)
+                        while it edits SKILL.md (ms). Default: ${TIMEOUT_DEFAULTS.compiler}.`)
     process.exit(0)
   }
 
@@ -820,7 +820,9 @@ Options:
                           Applies to BOTH the profile stage's per-probe agent
                           execution AND the compiler agent loop. Each is timed
                           independently — this is a per-loop ceiling, not a
-                          total wall time.`)
+                          total wall time.
+                          Default: ${TIMEOUT_DEFAULTS.taskExec} for profile,
+                          ${TIMEOUT_DEFAULTS.compiler} for compiler.`)
     process.exit(0)
   }
 
@@ -920,6 +922,9 @@ Options:
         adapterConfig: {
           model,
           maxSteps: 25,
+          // Profile probe default harmonizes with task-exec (120s); previously a
+          // standalone 300s literal. CLI --timeout-ms wins absolutely; see
+          // docs/skvm/2026-05-16-timeout-subsystem.md.
           timeoutMs: cliPipelineTimeoutMs ?? TIMEOUT_DEFAULTS.taskExec,
           mode: adapterModePipeline,
         },
