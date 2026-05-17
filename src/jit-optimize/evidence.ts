@@ -315,12 +315,25 @@ function tryJson(s: string): unknown {
 // ---------------------------------------------------------------------------
 
 export function buildRunMeta(result: RunResult): RunMeta {
+  // Forward-mirror only: when the producer sets `skillProvided`, mirror it
+  // into the deprecated `skillLoaded` so legacy readers keep working. We
+  // do NOT reverse-mirror legacy `skillLoaded` → `skillProvided`: an
+  // un-migrated adapter writing only `skillLoaded` should surface to
+  // downstream code as "skillProvided is unknown", not "skillProvided=X".
+  // Adapter migration (Tasks 5-12) replaces the producer side; until then
+  // any legacy `skillLoaded` flows through untouched.
   return {
     tokens: result.tokens,
     costUsd: result.cost,
     durationMs: result.durationMs,
     adapterError: result.adapterError,
-    skillLoaded: result.skillLoaded,
+    ...(result.skillProvided !== undefined
+      ? { skillProvided: result.skillProvided, skillLoaded: result.skillProvided }
+      : result.skillLoaded !== undefined
+        ? { skillLoaded: result.skillLoaded }
+        : {}),
+    ...(result.skillObserved !== undefined ? { skillObserved: result.skillObserved } : {}),
+    ...(result.skillMode !== undefined ? { skillMode: result.skillMode } : {}),
     runStatus: result.runStatus,
     ...(result.statusDetail ? { statusDetail: result.statusDetail } : {}),
   }

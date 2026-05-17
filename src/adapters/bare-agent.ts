@@ -164,7 +164,8 @@ export class BareAgentAdapter implements AgentAdapter {
       activeProvider = new LoggingProvider(this.provider, convLog)
     }
 
-    let skillLoaded = false
+    let skillProvided = false
+    let skillObserved: boolean | undefined
 
     // Build system prompt
     let system = "You are a helpful assistant that completes tasks by using tools. Work in the provided directory."
@@ -172,7 +173,8 @@ export class BareAgentAdapter implements AgentAdapter {
     if (task.skillContent && skillMode === "inject") {
       // Inject mode: embed full skill content in system prompt
       system += `\n\n<skill>\n${task.skillContent}\n</skill>`
-      skillLoaded = true
+      // Structural: the skill content is now in the model's context.
+      skillProvided = true
     } else if (task.skillContent && skillMode === "discover" && task.skillMeta) {
       // Discover mode: copy skill dir to workDir, show only name+description in prompt
       await copySkillToDiscoverDir(
@@ -199,8 +201,10 @@ Available skills:
     const beforeLLMHooks = this.hooks.beforeLLM
     const allToolCalls: ToolCall[] = []
 
-    // Discover-mode state that needs to be maintained across iterations
-    let discoverSkillLoaded = skillLoaded
+    // Discover-mode state that needs to be maintained across iterations.
+    // Tracks whether the once-only <load-skill> protocol has fired; renamed
+    // from discoverSkillLoaded as part of the skillProvided/skillObserved split.
+    let discoverSkillProvided = skillProvided
 
     // Create a wrapper provider that handles beforeLLM hooks and discover mode
     const wrappedProvider: LLMProvider = {
@@ -273,13 +277,18 @@ Available skills:
         // tool_use blocks in one turn, we actually execute them concurrently.
         parallelToolExecution: true,
         onAfterLLM: async (response, iteration) => {
-          if (skillMode === "discover" && task.skillContent && task.skillMeta && !discoverSkillLoaded) {
+          if (skillMode === "discover" && task.skillContent && task.skillMeta && !discoverSkillProvided) {
             const skillMatch = response.text.match(LOAD_SKILL_RE)
             if (skillMatch) {
               const requestedName = (skillMatch[1] ?? "").trim()
               if (requestedName === task.skillMeta.name) {
-                discoverSkillLoaded = true
-                skillLoaded = true
+                // <load-skill> firing is simultaneously structural (the harness
+                // is about to splice the skill content into the model's context
+                // on the next turn) and behavioral (the model just engaged with
+                // the skill registry by name).
+                discoverSkillProvided = true
+                skillProvided = true
+                skillObserved = true
               }
             }
           }
@@ -322,7 +331,17 @@ Available skills:
       durationMs,
       llmDurationMs: loopResult.llmDurationMs,
       workDir: task.workDir,
-      skillLoaded: task.skillContent ? skillLoaded : undefined,
+      ...(task.skillContent
+        ? {
+            skillProvided,
+            ...(skillObserved !== undefined ? { skillObserved } : {}),
+            skillMode,
+            // Deprecated mirror of skillProvided; kept for one release so
+            // downstream consumers can migrate. Remove once jit-optimize and
+            // bench consumers all read skillProvided.
+            skillLoaded: skillProvided,
+          }
+        : {}),
       runStatus,
       ...(statusDetail ? { statusDetail } : {}),
       ...(loopResult.error ? { adapterError: { exitCode: 1, stderr: loopResult.error.message } } : {}),

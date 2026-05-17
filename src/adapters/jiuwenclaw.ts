@@ -365,14 +365,20 @@ export class JiuwenClawAdapter implements AgentAdapter {
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
   }): Promise<RunResult> {
-    let skillLoaded: boolean | undefined
+    const skillMode = task.skillMode ?? "inject"
+    let skillProvided: boolean | undefined
+    let skillObserved: boolean | undefined
     let prompt = `IMPORTANT: Do not ask clarifying questions. Proceed directly with implementation. Execute all steps immediately without waiting for user input.\n\n`
 
     // --- Skill handling ---
     if (task.skillContent) {
-      // Both modes use prompt prepend for v1 (jiuwenclaw has no well-known skill path for CLI mode)
+      // Both modes use prompt prepend for v1 (jiuwenclaw has no well-known
+      // skill path for CLI mode). The content is in the agent's context the
+      // moment we concat it, so skillProvided flips to true immediately —
+      // skillMode is still reported so downstream consumers can distinguish
+      // the original intent.
       prompt += task.skillContent + "\n\n---\n\n"
-      skillLoaded = false
+      skillProvided = true
     }
 
     prompt += task.prompt
@@ -487,23 +493,24 @@ export class JiuwenClawAdapter implements AgentAdapter {
       }
     }
 
-    // --- Verify skill loaded ---
-    if (task.skillContent && skillLoaded === false) {
-      // Inject: if agent produced any steps, skill was loaded (it's in the prompt)
-      if (result.steps.length > 0) {
-        skillLoaded = true
-      }
-      // Check if response text references skill content
-      if (!skillLoaded) {
-        const skillSnippet = task.skillContent.replace(/^#.*\n/m, "").trim().slice(0, 60)
-        if (skillSnippet.length > 20 && result.text.includes(skillSnippet)) {
-          skillLoaded = true
-        }
+    // --- Skill observation (behavioral) ---
+    // skillProvided is already set at the prompt-concat step above. Drop the
+    // 'steps > 0 implies skill was used' heuristic — it conflated 'agent ran'
+    // with 'skill was used'. Snippet echo in response text remains genuine
+    // behavioral evidence and lands in skillObserved.
+    if (task.skillContent && skillProvided) {
+      const skillSnippet = task.skillContent.replace(/^#.*\n/m, "").trim().slice(0, 60)
+      if (skillSnippet.length > 20 && result.text.includes(skillSnippet)) {
+        skillObserved = true
       }
     }
 
-    if (skillLoaded !== undefined) {
-      result.skillLoaded = skillLoaded
+    if (task.skillContent) {
+      result.skillProvided = skillProvided ?? false
+      if (skillObserved !== undefined) result.skillObserved = skillObserved
+      result.skillMode = skillMode
+      // Deprecated mirror — kept for one release while consumers migrate.
+      result.skillLoaded = skillProvided ?? false
     }
     // jiuwenclaw's app_cli + acp_channel log INFO messages to stderr as a
     // matter of course (e.g. "[CLI] starting ACP stdio gateway"), so we can't

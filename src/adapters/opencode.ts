@@ -506,14 +506,16 @@ export class OpenCodeAdapter implements AgentAdapter {
     timeoutMs?: number
   }): Promise<RunResult> {
     const skillMode = task.skillMode ?? "inject"
-    let skillLoaded: boolean | undefined
+    let skillProvided: boolean | undefined
+    let skillObserved: boolean | undefined
 
     if (task.skillContent) {
       if (skillMode === "inject") {
         // Inject mode: write skill content to CONTEXT.md (opencode auto-loads into system prompt)
         await Bun.write(path.join(task.workDir, "CONTEXT.md"), task.skillContent)
-        // skillLoaded will be verified from NDJSON events below
-        skillLoaded = false
+        // Structural: CONTEXT.md is on disk; opencode will splice it into the
+        // system prompt at startup.
+        skillProvided = true
       } else {
         // Discover mode (current behavior): copy to .opencode/skills/<name>/
         const skillName = task.skillMeta?.name ?? "bench-skill"
@@ -522,8 +524,8 @@ export class OpenCodeAdapter implements AgentAdapter {
         await mkdir(skillDir, { recursive: true })
         const frontmatter = `---\nname: ${skillName}\ndescription: ${skillDesc}\n---\n\n`
         await Bun.write(path.join(skillDir, "SKILL.md"), frontmatter + task.skillContent)
-        // skillLoaded will be determined by checking NDJSON output below
-        skillLoaded = false
+        // Structural: SKILL.md is registered under .opencode/skills/<name>/.
+        skillProvided = true
       }
     }
 
@@ -571,49 +573,44 @@ export class OpenCodeAdapter implements AgentAdapter {
 
     const events = parseNDJSON(stdout)
 
-    // Verify skill was actually loaded from events
-    if (task.skillContent && skillLoaded === false) {
-      // Extract a recognizable snippet from skill content for matching
+    // Skill observation (behavioral)
+    // skillProvided is already set at the disk-write step above. The post-run
+    // scan only adds behavioral evidence: did the agent invoke the skill tool
+    // (discover mode) or echo skill content in its text? The previous
+    // 'step_finish + CONTEXT.md exists' check was structural — already covered
+    // by setting skillProvided at the write site — and is dropped.
+    if (task.skillContent && skillProvided) {
       const skillSnippet = task.skillContent.replace(/^#.*\n/m, "").trim().slice(0, 60)
 
       for (const event of events) {
-        if (skillLoaded) break
+        if (skillObserved) break
         const part = event.part ?? {}
 
         if (skillMode === "discover" && event.type === "tool_use") {
           // Discover: check if agent called the `skill` tool
           const toolName = (part.tool as string) ?? (part.name as string) ?? ""
           if (toolName === "skill") {
-            skillLoaded = true
+            skillObserved = true
           }
         }
 
-        if (skillMode === "inject") {
-          // Inject: CONTEXT.md loaded into system prompt — verify agent shows
-          // awareness by checking if any step_finish event exists (agent ran with
-          // the instructions), AND if the CONTEXT.md file was consumed
-          if (event.type === "step_finish") {
-            // Agent completed at least one step with the injected instructions
-            const contextFile = Bun.file(path.join(task.workDir, "CONTEXT.md"))
-            if (await contextFile.exists()) {
-              skillLoaded = true
-            }
-          }
-        }
-
-        // Both modes: check if agent text references skill content
+        // Both modes: check if agent text echoes skill content
         if (event.type === "text" && skillSnippet.length > 20) {
           const text = (part.text as string) ?? ""
           if (text.includes(skillSnippet)) {
-            skillLoaded = true
+            skillObserved = true
           }
         }
       }
     }
 
     const result = eventsToRunResult(events, task.workDir, durationMs)
-    if (skillLoaded !== undefined) {
-      result.skillLoaded = skillLoaded
+    if (task.skillContent) {
+      result.skillProvided = skillProvided ?? false
+      if (skillObserved !== undefined) result.skillObserved = skillObserved
+      result.skillMode = skillMode
+      // Deprecated mirror — kept for one release while consumers migrate.
+      result.skillLoaded = skillProvided ?? false
     }
     // Subprocess-level failure overrides whatever eventsToRunResult decided.
     if (timedOut) {

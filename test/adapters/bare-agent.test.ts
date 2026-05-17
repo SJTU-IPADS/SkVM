@@ -344,6 +344,8 @@ describe("BareAgentAdapter", () => {
       expect(capturedSystem).toContain("# File Ops")
       expect(capturedSystem).not.toContain("Available Skills")
       expect(result.skillLoaded).toBe(true)
+      expect(result.skillProvided).toBe(true)
+      expect(result.skillMode).toBe("inject")
     })
 
     test("defaults to inject when skillMode is undefined", async () => {
@@ -376,6 +378,8 @@ describe("BareAgentAdapter", () => {
 
       expect(capturedSystem).toContain("<skill>")
       expect(result.skillLoaded).toBe(true)
+      expect(result.skillProvided).toBe(true)
+      expect(result.skillMode).toBe("inject")
     })
   })
 
@@ -416,15 +420,20 @@ describe("BareAgentAdapter", () => {
       expect(capturedSystem).toContain("File operations skill")
       expect(capturedSystem).not.toContain("<skill>")
 
-      // skillLoaded flips to true as soon as the agent emits the correct <load-skill> marker.
+      // skillProvided + skillObserved both flip to true on <load-skill> fire:
+      // the harness is about to splice content into context (structural) and
+      // the agent just engaged with the skill registry by name (behavioral).
       expect(result.skillLoaded).toBe(true)
+      expect(result.skillProvided).toBe(true)
+      expect(result.skillObserved).toBe(true)
+      expect(result.skillMode).toBe("discover")
 
       // Skill dir is materialized in workDir at setup time so the agent can read it via tools.
       const skillFile = Bun.file(path.join(workDir, "skills", "file-ops", "SKILL.md"))
       expect(await skillFile.exists()).toBe(true)
     })
 
-    test("skillLoaded=false when agent never requests skill", async () => {
+    test("skillProvided=false when agent never requests skill", async () => {
       const provider = createSequenceProvider([
         {
           text: "Done without skill.",
@@ -446,7 +455,13 @@ describe("BareAgentAdapter", () => {
         skillMeta: { name: "file-ops", description: "File operations" },
       })
 
+      // In bare-agent discover mode, skillProvided only flips true on a
+      // matching <load-skill> fire — the skill is registered in the prompt
+      // but its content is never spliced into the model's context.
       expect(result.skillLoaded).toBe(false)
+      expect(result.skillProvided).toBe(false)
+      expect(result.skillObserved).toBeUndefined()
+      expect(result.skillMode).toBe("discover")
     })
 
     test("wrong skill name is silently ignored", async () => {
@@ -472,10 +487,13 @@ describe("BareAgentAdapter", () => {
       })
 
       expect(result.skillLoaded).toBe(false)
+      expect(result.skillProvided).toBe(false)
+      expect(result.skillObserved).toBeUndefined()
+      expect(result.skillMode).toBe("discover")
     })
   })
 
-  test("skillLoaded is undefined when no skill content provided", async () => {
+  test("skill fields are undefined when no skill content provided", async () => {
     const provider = createSequenceProvider([
       {
         text: "Done",
@@ -491,5 +509,8 @@ describe("BareAgentAdapter", () => {
 
     const result = await adapter.run({ prompt: "Do task", workDir })
     expect(result.skillLoaded).toBeUndefined()
+    expect(result.skillProvided).toBeUndefined()
+    expect(result.skillObserved).toBeUndefined()
+    expect(result.skillMode).toBeUndefined()
   })
 })

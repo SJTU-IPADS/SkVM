@@ -652,7 +652,8 @@ export class OpenClawAdapter implements AgentAdapter {
     const pool = this.pool!
     const ws = agent.workspaceDir
     const skillMode = task.skillMode ?? "inject"
-    let skillLoaded: boolean | undefined
+    let skillProvided: boolean | undefined
+    let skillObserved: boolean | undefined
 
     // 1. Clean workspace + sessions
     await rm(ws, { recursive: true, force: true })
@@ -690,13 +691,15 @@ export class OpenClawAdapter implements AgentAdapter {
         } catch { /* no existing file */ }
         const separator = existing ? "\n\n" : ""
         await Bun.write(bootstrapPath, existing + separator + task.skillContent)
-        skillLoaded = false
+        // Structural: BOOTSTRAP.md is on disk, openclaw will read it on startup.
+        skillProvided = true
       } else {
         const skillName = task.skillMeta?.name ?? "bench-skill"
         const skillDir = path.join(ws, "skills", skillName)
         await mkdir(skillDir, { recursive: true })
         await Bun.write(path.join(skillDir, "SKILL.md"), task.skillContent)
-        skillLoaded = false
+        // Structural: SKILL.md is on disk and registered under skills/<name>/.
+        skillProvided = true
       }
     }
 
@@ -757,69 +760,68 @@ export class OpenClawAdapter implements AgentAdapter {
       }
     }
 
-    // 7. Verify skill load
-    if (task.skillContent && skillLoaded === false) {
+    // 7. Skill observation (behavioral)
+    // skillProvided is already set at the inject/register write site above.
+    // Drop the 'hasAssistantMessage implies skill loaded' inference — it
+    // conflated 'agent ran' with 'skill was used'. Behavioral evidence
+    // (skill/load_skill tool call, SKILL.md path in assistant text, or
+    // skill snippet echoed in a tool result) now populates skillObserved.
+    if (task.skillContent && skillProvided) {
       const skillName = task.skillMeta?.name ?? "bench-skill"
-
-      if (skillMode === "inject") {
-        const hasAssistantMessage = transcript.some(
-          e => e.type === "message" && e.message?.role === "assistant",
-        )
-        if (hasAssistantMessage) skillLoaded = true
-      }
-
-      if (!skillLoaded) {
-        for (const entry of transcript) {
-          if (entry.type !== "message" || !entry.message) continue
-          const msg = entry.message
-          if (msg.role === "assistant") {
-            const contentItems = Array.isArray(msg.content)
-              ? msg.content
-              : typeof msg.content === "string"
-                ? [{ type: "text", text: msg.content }]
-                : []
-            for (const item of contentItems as Record<string, unknown>[]) {
-              if (item.type === "toolCall" || item.type === "tool_use") {
-                const toolName = (item.name as string) ?? ""
-                if (toolName === "skill" || toolName === "load_skill") {
-                  skillLoaded = true
-                  break
-                }
-              }
-              if (item.type === "text" && typeof item.text === "string") {
-                if (item.text.includes(`skills/${skillName}/SKILL.md`)) {
-                  skillLoaded = true
-                  break
-                }
-              }
-            }
-            if (skillLoaded) break
-          }
-          if (msg.role === "toolResult" || msg.role === "tool") {
-            const contentItems = Array.isArray(msg.content)
-              ? msg.content
-              : typeof msg.content === "string"
-                ? [{ type: "text", text: msg.content }]
-                : []
-            for (const item of contentItems as Record<string, unknown>[]) {
-              const output = typeof item.text === "string" ? item.text
-                : typeof item.output === "string" ? item.output
-                : typeof item.content === "string" ? item.content
-                : ""
-              if (output.length > 100 && task.skillContent && output.includes(task.skillContent.slice(0, 50))) {
-                skillLoaded = true
+      for (const entry of transcript) {
+        if (entry.type !== "message" || !entry.message) continue
+        const msg = entry.message
+        if (msg.role === "assistant") {
+          const contentItems = Array.isArray(msg.content)
+            ? msg.content
+            : typeof msg.content === "string"
+              ? [{ type: "text", text: msg.content }]
+              : []
+          for (const item of contentItems as Record<string, unknown>[]) {
+            if (item.type === "toolCall" || item.type === "tool_use") {
+              const toolName = (item.name as string) ?? ""
+              if (toolName === "skill" || toolName === "load_skill") {
+                skillObserved = true
                 break
               }
             }
-            if (skillLoaded) break
+            if (item.type === "text" && typeof item.text === "string") {
+              if (item.text.includes(`skills/${skillName}/SKILL.md`)) {
+                skillObserved = true
+                break
+              }
+            }
           }
+          if (skillObserved) break
+        }
+        if (msg.role === "toolResult" || msg.role === "tool") {
+          const contentItems = Array.isArray(msg.content)
+            ? msg.content
+            : typeof msg.content === "string"
+              ? [{ type: "text", text: msg.content }]
+              : []
+          for (const item of contentItems as Record<string, unknown>[]) {
+            const output = typeof item.text === "string" ? item.text
+              : typeof item.output === "string" ? item.output
+              : typeof item.content === "string" ? item.content
+              : ""
+            if (output.length > 100 && task.skillContent && output.includes(task.skillContent.slice(0, 50))) {
+              skillObserved = true
+              break
+            }
+          }
+          if (skillObserved) break
         }
       }
     }
 
     const result = transcriptToRunResult(transcript, task.workDir, durationMs)
-    if (skillLoaded !== undefined) {
-      result.skillLoaded = skillLoaded
+    if (task.skillContent) {
+      result.skillProvided = skillProvided ?? false
+      if (skillObserved !== undefined) result.skillObserved = skillObserved
+      result.skillMode = skillMode
+      // Deprecated mirror — kept for one release while consumers migrate.
+      result.skillLoaded = skillProvided ?? false
     }
     if (timedOut) {
       result.runStatus = "timeout"

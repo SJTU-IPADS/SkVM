@@ -203,6 +203,33 @@ export const RunResultSchema = z.object({
   durationMs: z.number(),
   llmDurationMs: z.number().default(0),
   workDir: z.string(),
+  /**
+   * Structural signal: was the skill placed in the agent's effective input
+   * context for this run? For inject-mode adapters this is `true` once the
+   * injection step (writing CONTEXT.md / `--append-system-prompt` / system
+   * message concat / etc.) completed without throwing. For discover-mode
+   * adapters that get a harness-side confirmation (claude-code init event,
+   * pi `--skill` flag passed, …) this reflects that confirmation; otherwise
+   * `undefined` (unknown).
+   */
+  skillProvided: z.boolean().optional(),
+  /**
+   * Behavioral signal: did the run produce positive trace evidence that
+   * the model engaged with the skill (Skill tool invoked, skill content
+   * echoed in assistant text, etc.)? Best-effort heuristic — `false` does
+   * NOT mean the model ignored the skill (thinking-mode models reason
+   * silently). Diagnostic only — does NOT drive abstain decisions.
+   */
+  skillObserved: z.boolean().optional(),
+  /** Which mode the adapter was invoked in. Plumbed through so consumers
+   *  (jit-optimize workspace) can apply mode-aware gating to `skillProvided`. */
+  skillMode: z.enum(["inject", "discover"]).optional(),
+  /**
+   * @deprecated since 2026-05. Mirror of `skillProvided` kept for one
+   * release so on-disk evidence files (~/.skvm/proposals/) parse against
+   * the new schema. New code should read `skillProvided` (with fallback
+   * to `skillLoaded` for older evidence). Remove after a deprecation cycle.
+   */
   skillLoaded: z.boolean().optional(),
   runStatus: RunStatusSchema,
   statusDetail: z.string().optional(),

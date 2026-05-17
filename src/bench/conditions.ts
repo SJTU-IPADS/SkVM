@@ -236,6 +236,8 @@ function toConditionResult(
     skillPath: opts?.skillPath,
     skillPaths: opts?.skillPaths,
     skillContentHash: opts?.skillContentHash,
+    ...(runResult.skillProvided !== undefined ? { skillProvided: runResult.skillProvided } : {}),
+    ...(runResult.skillObserved !== undefined ? { skillObserved: runResult.skillObserved } : {}),
     ...(runResult.skillLoaded !== undefined ? { skillLoaded: runResult.skillLoaded } : {}),
     ...(error ? { error } : {}),
     runStatus: runResult.runStatus,

@@ -472,21 +472,25 @@ export class PiAdapter implements AgentAdapter {
     timeoutMs?: number
   }): Promise<RunResult> {
     const skillMode = task.skillMode ?? "inject"
-    let skillLoaded: boolean | undefined
+    let skillProvided: boolean | undefined
+    let skillObserved: boolean | undefined
     let skillPath: string | undefined
 
     if (task.skillContent) {
       if (skillMode === "inject") {
         // Pi auto-loads AGENTS.md from CWD into the system prompt.
         await Bun.write(path.join(task.workDir, "AGENTS.md"), task.skillContent)
-        skillLoaded = false
+        // Structural: AGENTS.md is on disk; pi will splice it into the system
+        // prompt at startup.
+        skillProvided = true
       } else {
         const skillName = task.skillMeta?.name ?? "bench-skill"
         const skillDir = path.join(task.workDir, ".pi-skills", skillName)
         await mkdir(skillDir, { recursive: true })
         await Bun.write(path.join(skillDir, "SKILL.md"), task.skillContent)
         skillPath = skillDir
-        skillLoaded = false
+        // Structural: SKILL.md is on disk and gets registered via --skill below.
+        skillProvided = true
       }
     }
 
@@ -542,23 +546,28 @@ export class PiAdapter implements AgentAdapter {
     const events = parsePiNDJSON(stdout)
     const result = piEventsToRunResult(events, task.workDir, durationMs)
 
-    if (task.skillContent && skillLoaded === false) {
+    // Skill observation (behavioral)
+    // skillProvided is already set at the disk-write step. Drop the
+    // 'steps > 0 implies skill was used' inference. Snippet echo in
+    // assistant text remains genuine behavioral evidence.
+    if (task.skillContent && skillProvided) {
       const skillSnippet = task.skillContent.replace(/^#.*\n/m, "").trim().slice(0, 60)
-      if (skillMode === "inject" && result.steps.length > 0) {
-        skillLoaded = true
-      }
-      if (!skillLoaded && skillSnippet.length > 20) {
+      if (skillSnippet.length > 20) {
         for (const step of result.steps) {
           if (step.role === "assistant" && step.text?.includes(skillSnippet)) {
-            skillLoaded = true
+            skillObserved = true
             break
           }
         }
       }
     }
 
-    if (skillLoaded !== undefined) {
-      result.skillLoaded = skillLoaded
+    if (task.skillContent) {
+      result.skillProvided = skillProvided ?? false
+      if (skillObserved !== undefined) result.skillObserved = skillObserved
+      result.skillMode = skillMode
+      // Deprecated mirror — kept for one release while consumers migrate.
+      result.skillLoaded = skillProvided ?? false
     }
 
     if (timedOut) {

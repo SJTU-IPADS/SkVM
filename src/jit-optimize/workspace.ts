@@ -533,7 +533,36 @@ function renderEvidenceMarkdown(
     }
     parts.push(`- duration: ${ev.runMeta.durationMs}ms`)
     parts.push(`- tokens: in=${ev.runMeta.tokens.input} out=${ev.runMeta.tokens.output}`)
-    if (ev.runMeta.skillLoaded === false) parts.push(`- WARNING: skill was not loaded`)
+    // Skill-load telemetry → optimizer guidance. The signal split (introduced
+    // 2026-05) lets us distinguish two qualitatively different failures:
+    //   - inject + provided=false → the adapter said "I tried to inject the
+    //     skill" but the harness never confirmed loading. That's an infra
+    //     failure — the model didn't actually receive the skill — and the
+    //     downstream abstain logic (loop.ts) should treat it as infraBlocked.
+    //   - discover + provided=false → harness didn't register the skill
+    //     (likely description mismatch, missing file, or harness bug). Worth
+    //     surfacing to the optimizer but NOT a hard abstain signal: model
+    //     might still have solved the task without the skill.
+    //   - legacy skillLoaded with no skillMode → evidence file written by an
+    //     adapter that hasn't been migrated yet. Keep the pre-2026-05 wording
+    //     so existing optimizer prompts that match this exact string still
+    //     work during the migration window.
+    //
+    // skillObserved is intentionally NOT surfaced — it's a best-effort
+    // behavioral heuristic (sentinel echo / Skill tool invocation) that
+    // would systematically false-negative on thinking-mode models. If the
+    // optimizer ever needs it, it can read runMeta directly.
+    const provided = ev.runMeta.skillProvided ?? ev.runMeta.skillLoaded
+    if (provided === false) {
+      if (ev.runMeta.skillMode === "inject") {
+        parts.push(`- WARNING: skill failed to load (inject mode — likely infra issue)`)
+      } else if (ev.runMeta.skillMode === "discover") {
+        parts.push(`- WARNING: skill not recognized by harness (discover mode — may be description mismatch)`)
+      } else {
+        // Legacy evidence file (no skillMode). Preserve original wording.
+        parts.push(`- WARNING: skill was not loaded`)
+      }
+    }
     if (ev.runMeta.adapterError) {
       const ae = ev.runMeta.adapterError
       parts.push(`- adapter error: exit ${ae.exitCode}`)

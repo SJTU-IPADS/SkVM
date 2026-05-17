@@ -163,6 +163,12 @@ export interface ConditionResult {
   skillPaths?: string[]
   skillContentHash?: string
   skillMode?: SkillMode
+  /** Structural — was the skill placed in the agent's effective input context. */
+  skillProvided?: boolean
+  /** Behavioral — was positive engagement observed (diagnostic, does not gate). */
+  skillObserved?: boolean
+  /** @deprecated 2026-05. Mirrors `skillProvided`; retained for one release
+   *  so older bench JSON reports parse against the new schema. */
   skillLoaded?: boolean
   jitRuns?: JitRunReport[]
   jitPromotions?: number

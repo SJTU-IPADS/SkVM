@@ -128,6 +128,13 @@ export interface RunMeta {
     stderr: string
     diagnosis?: { summary: string; hint?: string; source: string }
   }
+  /** Structural — was the skill placed in the agent's effective input context. */
+  skillProvided?: boolean
+  /** Behavioral — was positive engagement observed (diagnostic; does not drive abstain). */
+  skillObserved?: boolean
+  /** Mode the adapter ran in; used by workspace evidence-summary gating. */
+  skillMode?: "inject" | "discover"
+  /** @deprecated 2026-05. Mirrors `skillProvided`; kept for evidence back-compat. */
   skillLoaded?: boolean
   /**
    * Canonical signal for whether this evidence is trustworthy at the skill level.

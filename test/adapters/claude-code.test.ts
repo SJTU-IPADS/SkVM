@@ -1,11 +1,16 @@
 import { test, expect, describe } from "bun:test"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import { mkdtemp, rm } from "node:fs/promises"
 import {
   parseClaudeCodeStreamJSON,
   eventsToRunResult,
   ClaudeCodeAdapter,
   toClaudeCodeModelId,
-  detectSkillInject,
-  detectSkillDiscover,
+  detectSkillProvided_Discover,
+  detectSkillObserved_Discover,
+  buildClaudeCodeInjectArtifacts,
+  buildClaudeCodeDiscoverArtifacts,
   type ClaudeCodeEvent,
 } from "../../src/adapters/claude-code.ts"
 
@@ -290,76 +295,157 @@ describe("ClaudeCodeAdapter shape", () => {
   })
 })
 
-describe("detectSkillInject", () => {
-  test("returns true when assistant text echoes the sentinel", () => {
-    const events: ClaudeCodeEvent[] = [{
-      type: "assistant",
-      message: { content: [{ type: "text", text: "Got it: <skvm-skill-injected/>" }] },
-    }]
-    expect(detectSkillInject(events, "irrelevant snippet over twenty chars")).toBe(true)
-  })
-
-  test("returns true when assistant text quotes a long-enough skill snippet", () => {
-    const snippet = "Detailed instructions about file ops"
-    const events: ClaudeCodeEvent[] = [{
-      type: "assistant",
-      message: { content: [{ type: "text", text: `I'll follow these: ${snippet}.` }] },
-    }]
-    expect(detectSkillInject(events, snippet)).toBe(true)
-  })
-
-  test("ignores short snippets to avoid false positives", () => {
-    const events: ClaudeCodeEvent[] = [{
-      type: "assistant",
-      message: { content: [{ type: "text", text: "the" }] },
-    }]
-    expect(detectSkillInject(events, "the")).toBe(false)
-  })
-
-  test("returns false when no assistant event mentions the sentinel or snippet", () => {
+describe("detectSkillProvided_Discover (init-event signal)", () => {
+  test("returns true when init event lists the skill", () => {
     const events: ClaudeCodeEvent[] = [
-      { type: "system", subtype: "init" },
-      { type: "assistant", message: { content: [{ type: "text", text: "hello" }] } },
+      { type: "system", subtype: "init", skills: ["bench-skill", "other-skill"] },
+      { type: "assistant", message: { content: [{ type: "text", text: "hi" }] } },
     ]
-    expect(detectSkillInject(events, "a snippet that is definitely not echoed back")).toBe(false)
+    expect(detectSkillProvided_Discover(events, "bench-skill")).toBe(true)
+  })
+
+  test("tolerates plugin-namespaced skill names (e.g. 'pkg:bench-skill')", () => {
+    const events: ClaudeCodeEvent[] = [
+      { type: "system", subtype: "init", skills: ["some-plugin:bench-skill"] },
+    ]
+    expect(detectSkillProvided_Discover(events, "bench-skill")).toBe(true)
+  })
+
+  test("returns false when init event lists no matching skill", () => {
+    const events: ClaudeCodeEvent[] = [
+      { type: "system", subtype: "init", skills: ["other-skill"] },
+    ]
+    expect(detectSkillProvided_Discover(events, "bench-skill")).toBe(false)
+  })
+
+  test("returns false when there is no init event at all (e.g. crash before init)", () => {
+    const events: ClaudeCodeEvent[] = [
+      { type: "result", is_error: true, result: "binary not found" },
+    ]
+    expect(detectSkillProvided_Discover(events, "bench-skill")).toBe(false)
   })
 })
 
-describe("detectSkillDiscover", () => {
-  test("returns true when init event lists the skill by exact name", () => {
-    const events: ClaudeCodeEvent[] = [{
-      type: "system",
-      subtype: "init",
-      skills: ["bench-skill", "another"],
-    }]
-    expect(detectSkillDiscover(events, "bench-skill")).toBe(true)
-  })
-
-  test("returns true when init event lists a namespaced suffix match", () => {
-    const events: ClaudeCodeEvent[] = [{
-      type: "system",
-      subtype: "init",
-      skills: ["plugin-x:bench-skill"],
-    }]
-    expect(detectSkillDiscover(events, "bench-skill")).toBe(true)
-  })
-
-  test("returns true when assistant calls the Skill tool with matching input", () => {
-    const events: ClaudeCodeEvent[] = [{
-      type: "assistant",
-      message: {
-        content: [{ type: "tool_use", id: "t1", name: "Skill", input: { name: "bench-skill" } }],
-      },
-    }]
-    expect(detectSkillDiscover(events, "bench-skill")).toBe(true)
-  })
-
-  test("returns false when no event references the skill", () => {
+describe("detectSkillObserved_Discover (Skill tool-use signal)", () => {
+  test("returns true when assistant calls Skill tool with matching name", () => {
     const events: ClaudeCodeEvent[] = [
-      { type: "system", subtype: "init", skills: ["other-skill"] },
-      { type: "assistant", message: { content: [{ type: "text", text: "no tool call" }] } },
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", id: "t1", name: "Skill", input: { name: "bench-skill" } }],
+        },
+      },
     ]
-    expect(detectSkillDiscover(events, "bench-skill")).toBe(false)
+    expect(detectSkillObserved_Discover(events, "bench-skill")).toBe(true)
+  })
+
+  test("accepts lowercase `skill` tool name", () => {
+    const events: ClaudeCodeEvent[] = [
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", id: "t1", name: "skill", input: { skill: "bench-skill" } }],
+        },
+      },
+    ]
+    expect(detectSkillObserved_Discover(events, "bench-skill")).toBe(true)
+  })
+
+  test("returns false when Skill tool is called with a different name", () => {
+    const events: ClaudeCodeEvent[] = [
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", id: "t1", name: "Skill", input: { name: "other-skill" } }],
+        },
+      },
+    ]
+    expect(detectSkillObserved_Discover(events, "bench-skill")).toBe(false)
+  })
+
+  test("returns false when no Skill tool is called", () => {
+    const events: ClaudeCodeEvent[] = [
+      { type: "assistant", message: { content: [{ type: "text", text: "thinking..." }] } },
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "t2", name: "Bash", input: { command: "ls" } }] },
+      },
+    ]
+    expect(detectSkillObserved_Discover(events, "bench-skill")).toBe(false)
+  })
+})
+
+describe("claude-code inject mode uses CC's native skill system", () => {
+  test("inject artifacts: writes .claude/skills/<name>/SKILL.md with frontmatter + MUST directive", async () => {
+    const tmpWork = await mkdtemp(path.join(tmpdir(), "skvm-cc-inject-"))
+    try {
+      const built = await buildClaudeCodeInjectArtifacts({
+        workDir: tmpWork,
+        skillContent: "# Test skill\n\nDo the thing.",
+        skillMeta: { name: "bench-skill", description: "test skill" },
+      })
+      const skillFile = path.join(tmpWork, ".claude", "skills", "bench-skill", "SKILL.md")
+      expect(await Bun.file(skillFile).exists()).toBe(true)
+      const content = await Bun.file(skillFile).text()
+      expect(content).toContain("name: bench-skill")
+      expect(content).toContain("description: test skill")
+      expect(content).toContain("Do the thing.")
+
+      expect(built.appendSystemPrompt).toBeDefined()
+      expect(built.appendSystemPrompt!).toContain("You MUST invoke the Skill tool")
+      expect(built.appendSystemPrompt!).toContain('name="bench-skill"')
+    } finally {
+      await rm(tmpWork, { recursive: true, force: true })
+    }
+  })
+
+  test("discover artifacts: writes the skill file WITHOUT a force directive", async () => {
+    const tmpWork = await mkdtemp(path.join(tmpdir(), "skvm-cc-disc-"))
+    try {
+      const built = await buildClaudeCodeDiscoverArtifacts({
+        workDir: tmpWork,
+        skillContent: "# Test skill\n\nDo the thing.",
+        skillMeta: { name: "bench-skill", description: "test skill" },
+      })
+      const skillFile = path.join(tmpWork, ".claude", "skills", "bench-skill", "SKILL.md")
+      expect(await Bun.file(skillFile).exists()).toBe(true)
+      // Discover returns no appendSystemPrompt — the field is undefined in the return.
+      expect((built as { appendSystemPrompt?: string }).appendSystemPrompt).toBeUndefined()
+    } finally {
+      await rm(tmpWork, { recursive: true, force: true })
+    }
+  })
+
+  test("thinking-mode-safe: skillProvided=true even when model never echoes content", () => {
+    // The init event is our structural signal — it does not depend on model
+    // behavior. Simulate a thinking-mode run where the assistant produces
+    // no visible text echoing the skill, but CC's init event lists it.
+    const events: ClaudeCodeEvent[] = [
+      { type: "system", subtype: "init", skills: ["bench-skill"], tools: ["Skill", "Bash"] },
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", id: "t1", name: "Skill", input: { name: "bench-skill" } }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      },
+      { type: "result", is_error: false, total_cost_usd: 0.001, usage: { input_tokens: 10, output_tokens: 5 } },
+    ]
+    expect(detectSkillProvided_Discover(events, "bench-skill")).toBe(true)
+    expect(detectSkillObserved_Discover(events, "bench-skill")).toBe(true)
+  })
+
+  test("inject without model engagement: skillProvided=true (init), skillObserved=false (no Skill tool call)", () => {
+    const events: ClaudeCodeEvent[] = [
+      { type: "system", subtype: "init", skills: ["bench-skill"] },
+      {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "done." }], usage: { input_tokens: 5, output_tokens: 2 } },
+      },
+      { type: "result", is_error: false, total_cost_usd: 0.001 },
+    ]
+    expect(detectSkillProvided_Discover(events, "bench-skill")).toBe(true)
+    expect(detectSkillObserved_Discover(events, "bench-skill")).toBe(false)
   })
 })
 

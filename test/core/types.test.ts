@@ -214,3 +214,43 @@ describe("SCR", () => {
     expect(scr.purposes[0]!.alternativePaths).toHaveLength(1)
   })
 })
+
+describe("RunResult skill telemetry fields", () => {
+  test("accepts skillProvided / skillObserved / skillMode as optional", () => {
+    const base = {
+      text: "", steps: [], tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      cost: 0, durationMs: 0, llmDurationMs: 0, workDir: "/tmp", runStatus: "ok",
+    } as const
+    expect(RunResultSchema.safeParse({ ...base }).success).toBe(true)
+    expect(RunResultSchema.safeParse({ ...base, skillProvided: true, skillObserved: false, skillMode: "inject" }).success).toBe(true)
+    expect(RunResultSchema.safeParse({ ...base, skillProvided: false, skillMode: "discover" }).success).toBe(true)
+  })
+
+  test("rejects invalid skillMode literal", () => {
+    const base = {
+      text: "", steps: [], tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      cost: 0, durationMs: 0, llmDurationMs: 0, workDir: "/tmp", runStatus: "ok",
+    } as const
+    expect(RunResultSchema.safeParse({ ...base, skillMode: "bogus" }).success).toBe(false)
+  })
+
+  test("still accepts legacy skillLoaded for back-compat", () => {
+    const base = {
+      text: "", steps: [], tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      cost: 0, durationMs: 0, llmDurationMs: 0, workDir: "/tmp", runStatus: "ok",
+    } as const
+    expect(RunResultSchema.safeParse({ ...base, skillLoaded: true }).success).toBe(true)
+  })
+
+  test("typed property access compiles for new fields", () => {
+    const parsed = RunResultSchema.parse({
+      text: "", steps: [], tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      cost: 0, durationMs: 0, llmDurationMs: 0, workDir: "/tmp", runStatus: "ok",
+      skillProvided: true, skillObserved: false, skillMode: "inject",
+    })
+    // Property accesses below must type-check — that is the real assertion.
+    expect(parsed.skillProvided).toBe(true)
+    expect(parsed.skillObserved).toBe(false)
+    expect(parsed.skillMode).toBe("inject")
+  })
+})

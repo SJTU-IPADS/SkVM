@@ -355,3 +355,82 @@ describe("workdir snapshot placement", () => {
     }
   })
 })
+
+function evWithSkill(opts: {
+  taskId?: string
+  provided?: boolean
+  mode?: "inject" | "discover"
+  legacyOnly?: boolean   // when true, only set skillLoaded (no skillProvided/skillMode)
+}): Evidence {
+  return {
+    taskId: opts.taskId ?? "t1",
+    taskPrompt: "do the thing",
+    conversationLog: [
+      { type: "request", ts: "2026-04-14T00:00:00Z", text: "do the thing" },
+      { type: "response", ts: "2026-04-14T00:00:01Z", text: "ok" },
+    ],
+    workDirSnapshot: { files: new Map() },
+    criteria: [crit({ score: 0.5, passed: true })],
+    runMeta: {
+      tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+      costUsd: 0,
+      durationMs: 1000,
+      ...(opts.legacyOnly
+        ? { skillLoaded: opts.provided ?? false }
+        : {
+            ...(opts.provided !== undefined ? { skillProvided: opts.provided, skillLoaded: opts.provided } : {}),
+            ...(opts.mode ? { skillMode: opts.mode } : {}),
+          }),
+      runStatus: "ok",
+    },
+  }
+}
+
+async function readRunMd(evidences: Evidence[]): Promise<string> {
+  const dir = await setupOptimizeDir(evidences)
+  try {
+    // task-first layout: tasks/<safeTaskId>/run-0.md
+    const tasksRoot = path.join(dir, "tasks")
+    const taskDirs = await readdir(tasksRoot)
+    let combined = ""
+    for (const td of taskDirs) {
+      const runFiles = (await readdir(path.join(tasksRoot, td))).filter(f => f.startsWith("run-") && f.endsWith(".md"))
+      for (const rf of runFiles) {
+        combined += await readFile(path.join(tasksRoot, td, rf), "utf-8")
+        combined += "\n"
+      }
+    }
+    return combined
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
+describe("workspace skill-loaded WARNING is mode-aware", () => {
+  test("inject + provided=false → WARNING with inject-mode wording", async () => {
+    const md = await readRunMd([evWithSkill({ provided: false, mode: "inject" })])
+    expect(md).toContain("WARNING: skill failed to load (inject mode")
+  })
+
+  test("discover + provided=false → discover-mode WARNING, no inject wording", async () => {
+    const md = await readRunMd([evWithSkill({ provided: false, mode: "discover" })])
+    expect(md).toContain("WARNING: skill not recognized by harness (discover mode")
+    expect(md).not.toContain("inject mode")
+  })
+
+  test("provided=true → no WARNING in either mode", async () => {
+    const inj = await readRunMd([evWithSkill({ provided: true, mode: "inject" })])
+    const dis = await readRunMd([evWithSkill({ provided: true, mode: "discover" })])
+    expect(inj).not.toContain("WARNING: skill")
+    expect(dis).not.toContain("WARNING: skill")
+  })
+
+  test("legacy skillLoaded=false (no skillMode) emits the original wording", async () => {
+    // Back-compat: evidence written by old adapters before this migration.
+    const md = await readRunMd([evWithSkill({ provided: false, legacyOnly: true })])
+    expect(md).toContain("WARNING: skill was not loaded")
+    // The new mode-specific wordings must NOT trigger in the legacy branch.
+    expect(md).not.toContain("inject mode")
+    expect(md).not.toContain("discover mode")
+  })
+})
