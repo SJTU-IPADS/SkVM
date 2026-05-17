@@ -58,6 +58,7 @@ import { isProviderError } from "../providers/errors.ts"
 import { isHeadlessAgentError } from "../core/headless-agent.ts"
 import { type AdapterName, createAdapter } from "../adapters/registry.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
+import { resolveOptimizerTimeout, resolveTaskGenTimeout } from "../core/timeouts.ts"
 import { resolveTaskRuntime } from "../core/task-runtime.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { createLogger } from "../core/logger.ts"
@@ -262,6 +263,7 @@ export async function runLoop(
       optimizerModel,
       proposalDir: proposal.dir,
       runLabel: "run-0",
+      taskGenTimeoutMs: config.taskGenTimeoutMs,
     })
     taskResSp.succeed(
       `Resolved ${resolved.train.length} train + ${resolved.test.length} test task(s)`,
@@ -569,7 +571,7 @@ export async function runLoop(
           {
             model: optimizerModel,
             logDir: optimizerLogDir,
-            timeoutMs: 600_000,
+            timeoutMs: resolveOptimizerTimeout({ cli: config.optimizerTimeoutMs }),
           },
         )
         roundOptSp.succeed(`Round ${round}/${rounds} — optimizer: ${optimizeResult.changed ? `${optimizeResult.actualChangedFiles.length} file(s) changed` : "no changes"}`)
@@ -752,6 +754,7 @@ export async function runLoop(
                 optimizerModel,
                 proposalDir: proposal.dir,
                 runLabel: `run-regen-round-${round}`,
+                taskGenTimeoutMs: config.taskGenTimeoutMs,
               },
               priorPrompts,
             )
@@ -1069,7 +1072,7 @@ async function runLogOnly(
       {
         model: config.optimizer.model,
         logDir: optimizerLogDir,
-        timeoutMs: 600_000,
+        timeoutMs: resolveOptimizerTimeout({ cli: config.optimizerTimeoutMs }),
       },
     )
     logOptSp.succeed(`Optimizer: ${optimizeResult.changed ? `${optimizeResult.actualChangedFiles.length} file(s) changed` : "no changes"}`)

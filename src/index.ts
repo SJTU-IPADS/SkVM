@@ -1654,6 +1654,8 @@ const JIT_OPTIMIZE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
   "concurrency",
   // Adapter mode
   "adapter-config",
+  // Per-agent-loop timeout / step overrides
+  "timeout-ms", "max-steps",
   // Detached invocation
   "detach",
 ])
@@ -1726,11 +1728,18 @@ Adapter config:
   --adapter-config=<m>       native | managed (default: defaults.adapterConfigMode in
                              skvm.config.json, else managed). Applies to the target
                              adapter that runs tasks during optimization.
-  --timeoutMs=<n>            Absolute override for task timeout in ms. When omitted,
-                             each task's own timeoutMs from task.json is honored
-                             (synthetic tasks fall back to the loader default).
-  --maxSteps=<n>             Absolute override for max agent steps per task. When
-                             omitted, each task's own maxSteps is honored.
+  --timeout-ms=<n>           Per-agent-loop ceiling for this jit-optimize run (ms).
+                             Applies to:
+                               - each per-task adapter execution
+                                 (default: ${TIMEOUT_DEFAULTS.taskExec})
+                               - each round's optimizer agent
+                                 (default: ${TIMEOUT_DEFAULTS.optimizer})
+                               - the synthetic task-gen agent if used
+                                 (default: ${TIMEOUT_DEFAULTS.taskGen})
+                             Each agent loop is timed independently — this is a
+                             per-loop ceiling, not a total wall time.
+  --max-steps=<n>            Override max agent steps per task. When omitted,
+                             each task's own maxSteps is honored.
 
 Detached invocation:
   --detach                   Spawn a background worker and return as soon as
@@ -1778,19 +1787,19 @@ Detached invocation:
   }
   const adapterModeJit = resolveAdapterConfigMode(flags["adapter-config"])
   let timeoutMsJit: number | undefined
-  if (flags.timeoutMs !== undefined) {
-    const parsed = parseInt(flags.timeoutMs, 10)
+  if (flags["timeout-ms"] !== undefined) {
+    const parsed = parseInt(flags["timeout-ms"], 10)
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      console.error(`jit-optimize: --timeoutMs must be a positive integer (got "${flags.timeoutMs}")`)
+      console.error(`jit-optimize: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
       process.exit(1)
     }
     timeoutMsJit = parsed
   }
   let maxStepsJit: number | undefined
-  if (flags.maxSteps !== undefined) {
-    const parsed = parseInt(flags.maxSteps, 10)
+  if (flags["max-steps"] !== undefined) {
+    const parsed = parseInt(flags["max-steps"], 10)
     if (!Number.isFinite(parsed) || parsed < 1) {
-      console.error(`jit-optimize: --maxSteps must be a positive integer (got "${flags.maxSteps}")`)
+      console.error(`jit-optimize: --max-steps must be a positive integer (got "${flags["max-steps"]}")`)
       process.exit(1)
     }
     maxStepsJit = parsed
@@ -1849,6 +1858,7 @@ Detached invocation:
     targetAdapter,
     loop: { rounds, runsPerTask, taskConcurrency, convergence, baseline },
     delivery: { keepAllRounds, autoApply },
+    ...(timeoutMsJit !== undefined ? { optimizerTimeoutMs: timeoutMsJit, taskGenTimeoutMs: timeoutMsJit } : {}),
   })
 
   // Detached invocation: parent forks a worker, awaits a `ready` handshake

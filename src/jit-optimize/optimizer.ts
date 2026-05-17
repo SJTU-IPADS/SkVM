@@ -26,10 +26,9 @@ import {
   exists,
 } from "./workspace.ts"
 import { mkdir } from "node:fs/promises"
+import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
 
 const log = createLogger("jit-optimize-optimizer")
-
-const DEFAULT_TIMEOUT_MS = 600_000
 
 /**
  * Run one optimizer pass over the given evidence. Returns a workspace directory
@@ -40,7 +39,7 @@ export async function runOptimizer(
   input: OptimizeInput,
   config: OptimizeConfig,
 ): Promise<OptimizeResult> {
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const timeoutMs = config.timeoutMs ?? TIMEOUT_DEFAULTS.optimizer
 
   // 1. Create workspace from skill copy
   const workspace = await createWorkspace(input.skillDir)

@@ -40,6 +40,7 @@ import {
   isHeadlessAgentError,
 } from "../core/headless-agent.ts"
 import { getHeadlessAgentConfig } from "../core/config.ts"
+import { resolveTaskGenTimeout } from "../core/timeouts.ts"
 
 const log = createLogger("jit-optimize-source")
 
@@ -103,6 +104,11 @@ export interface SyntheticTaskContext {
    * own subdir under `<proposalDir>/task-gen/` so artifacts don't collide.
    */
   runLabel: string
+  /**
+   * CLI timeout ceiling for the task-generation agent (ms).
+   * When omitted, falls back to `TIMEOUT_DEFAULTS.taskGen` (900 000 ms).
+   */
+  taskGenTimeoutMs?: number
 }
 
 /**
@@ -199,9 +205,6 @@ export async function loadEvidencesFromLogs(source: TaskSource): Promise<Evidenc
 // No JSON-over-stdout, no schema invented here: the agent writes real
 // `task.json` files and the engine validates them with the same Zod schema
 // that gates real bench tasks.
-
-/** Timeout for a single task-gen agent run. */
-const TASK_GEN_TIMEOUT_MS = 15 * 60 * 1000
 
 /** Per-task default execution bounds (if the generated task.json omits them). */
 const DEFAULT_TASK_TIMEOUT_MS = 300_000
@@ -817,7 +820,7 @@ export async function resolveSyntheticTasks(
           prompt,
           model: context.optimizerModel,
           driver: headlessAgent.driver,
-          timeoutMs: TASK_GEN_TIMEOUT_MS,
+          timeoutMs: resolveTaskGenTimeout({ cli: context.taskGenTimeoutMs }),
         })
       } catch (err) {
         if (isHeadlessAgentError(err)) {
