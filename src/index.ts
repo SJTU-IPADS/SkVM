@@ -9,6 +9,7 @@ import { assertKnownFlags } from "./core/cli-flags.ts"
 
 const noColor = (s: string) => s
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "./core/ui-defaults.ts"
+import { TIMEOUT_DEFAULTS } from "./core/timeouts.ts"
 import pkgJson from "../package.json" with { type: "json" }
 
 const args = process.argv.slice(2)
@@ -534,6 +535,7 @@ const COMPILE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
   "concurrency",
   "dry-run",
   "compiler-model",
+  "timeout-ms",
 ])
 
 async function runCompile(flags: Record<string, string>) {
@@ -553,7 +555,9 @@ Options:
   --list-passes         Print the pass registry and exit
   --concurrency=<n>     Parallel compilations (default: ${CLI_DEFAULTS.concurrency})
   --dry-run             Show plan without applying
-  --compiler-model=<id> Compiler model via OpenRouter (default: ${MODEL_DEFAULTS.compiler})`)
+  --compiler-model=<id> Compiler model via OpenRouter (default: ${MODEL_DEFAULTS.compiler})
+  --timeout-ms=<n>      Cap on the compiler agent loop (Pass 1, rewrite-skill)
+                        while it edits SKILL.md (ms). Default: 300000.`)
     process.exit(0)
   }
 
@@ -561,6 +565,16 @@ Options:
     const { formatRegistry } = await import("./compiler/registry.ts")
     console.log(formatRegistry())
     process.exit(0)
+  }
+
+  let cliCompilerTimeoutMs: number | undefined
+  if (flags["timeout-ms"] !== undefined) {
+    const n = parseInt(flags["timeout-ms"], 10)
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`aot-compile: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
+      process.exit(1)
+    }
+    cliCompilerTimeoutMs = n
   }
 
   if (!flags.skill || !flags.model) {
@@ -719,6 +733,7 @@ Options:
         harness: job.adapter,
         passes,
         dryRun,
+        timeoutMs: cliCompilerTimeoutMs,
       }, provider, { showSpinner: !isMultiJob })
 
       if (!dryRun) {
@@ -781,6 +796,7 @@ const PIPELINE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
   "compiler-model",
   "dry-run",
   "adapter-config",
+  "timeout-ms",
 ])
 
 async function runPipeline(flags: Record<string, string>) {
@@ -799,8 +815,23 @@ Options:
   --profile=<path>        Use specific TCP file (skip auto-profiling)
   --pass=<list>           Compiler passes, comma-separated (default: ${CLI_DEFAULTS.compilerPasses.join(",")})
   --compiler-model=<id>   Compiler model via OpenRouter (default: ${MODEL_DEFAULTS.compiler})
-  --dry-run               Show compilation plan without writing`)
+  --dry-run               Show compilation plan without writing
+  --timeout-ms=<n>        Per-agent-loop ceiling for this pipeline run (ms).
+                          Applies to BOTH the profile stage's per-probe agent
+                          execution AND the compiler agent loop. Each is timed
+                          independently — this is a per-loop ceiling, not a
+                          total wall time.`)
     process.exit(0)
+  }
+
+  let cliPipelineTimeoutMs: number | undefined
+  if (flags["timeout-ms"] !== undefined) {
+    const n = parseInt(flags["timeout-ms"], 10)
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`pipeline: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
+      process.exit(1)
+    }
+    cliPipelineTimeoutMs = n
   }
 
   const skillPath = flags.skill
@@ -889,7 +920,7 @@ Options:
         adapterConfig: {
           model,
           maxSteps: 25,
-          timeoutMs: 300_000,
+          timeoutMs: cliPipelineTimeoutMs ?? TIMEOUT_DEFAULTS.taskExec,
           mode: adapterModePipeline,
         },
         force: true,
@@ -934,6 +965,7 @@ Options:
     harness,
     passes,
     dryRun: flags["dry-run"] === "true",
+    timeoutMs: cliPipelineTimeoutMs,
   }, provider)
 
   // Print results
