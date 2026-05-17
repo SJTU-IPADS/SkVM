@@ -128,7 +128,7 @@ describe("runPass1Agentic: timeout passthrough", () => {
       12345,
     )
 
-    expect(capturedTimeoutMs).toBe(12345)
+    expect(capturedTimeoutMs as number | undefined).toBe(12345)
 
     rmSync(tmp, { recursive: true, force: true })
   })
