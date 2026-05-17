@@ -1,6 +1,7 @@
 import type { TCP, AdapterConfig, Level } from "../core/types.ts"
 import type { AgentAdapter } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
+import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
 import { getAllPrimitives, ALL_PRIMITIVE_IDS } from "../core/primitives.ts"
 import { getGenerator, getAllGenerators } from "./generators/index.ts"
 import type { MicrobenchmarkGenerator, PrimitiveResult } from "./types.ts"
@@ -173,6 +174,8 @@ export interface ProfileMultiOptions {
   logDirFactory: (harness: string, model: string) => string
   /** Resolved adapter-config mode to pass into each adapter.setup() call. */
   adapterMode?: import("../core/types.ts").AdapterConfigMode
+  /** Per-probe adapter timeout in ms (default: TIMEOUT_DEFAULTS.taskExec). */
+  timeoutMs?: number
 }
 
 interface ProfileAccumulator {
@@ -286,7 +289,12 @@ export async function profileMulti(opts: ProfileMultiOptions): Promise<{
     items: allItems,
     createRunner: async (harness, model) => {
       const adapter = opts.createAdapter(harness)
-      await adapter.setup({ model, maxSteps: 25, timeoutMs: 300_000, mode: opts.adapterMode })
+      await adapter.setup({
+        model,
+        maxSteps: 25,
+        timeoutMs: opts.timeoutMs ?? TIMEOUT_DEFAULTS.taskExec,
+        mode: opts.adapterMode,
+      })
       return { adapter, teardown: async () => adapter.teardown() } as { adapter: AgentAdapter } & RunnerHandle
     },
     execute: async (runner, item) => {

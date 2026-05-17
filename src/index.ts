@@ -153,6 +153,7 @@ const PROFILE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
   "batch",
   "concurrency",
   "adapter-config",
+  "timeout-ms",
 ])
 
 async function runProfile(flags: Record<string, string>) {
@@ -179,6 +180,8 @@ Options:
   --adapter-config=<m>  native | managed (default: defaults.adapterConfigMode in
                         skvm.config.json, falls back to managed). Native uses your
                         real harness config; managed uses providers.routes only.
+  --timeout-ms=<n>      Cap on each microbenchmark probe's adapter execution
+                        (ms). Default: ${TIMEOUT_DEFAULTS.taskExec}.
   --verbose             Show detailed output`)
     process.exit(0)
   }
@@ -204,6 +207,19 @@ Options:
   const concurrency = flags.concurrency ? parseInt(flags.concurrency) : CLI_DEFAULTS.concurrency
 
   const adapterMode = resolveAdapterConfigMode(flags["adapter-config"])
+
+  let cliProfileTimeoutMs: number | undefined
+  if (flags["timeout-ms"] !== undefined) {
+    const n = parseInt(flags["timeout-ms"], 10)
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`profile: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
+      process.exit(1)
+    }
+    cliProfileTimeoutMs = n
+  }
+  // Profile probe default now harmonizes with task-exec; previously
+  // hardcoded to 300s. CLI --timeout-ms wins absolutely.
+  const probeTimeoutMs = cliProfileTimeoutMs ?? TIMEOUT_DEFAULTS.taskExec
 
   // Resolve models
   let models: string[]
@@ -300,7 +316,7 @@ Options:
         model: job.model,
         harness: job.harness,
         adapter,
-        adapterConfig: { model: job.model, maxSteps: 25, timeoutMs: 300_000, mode: adapterMode },
+        adapterConfig: { model: job.model, maxSteps: 25, timeoutMs: probeTimeoutMs, mode: adapterMode },
         primitives,
         skip,
         instances,
@@ -310,7 +326,7 @@ Options:
         concurrency,
         adapterFactory: concurrency > 1 ? async () => {
           const a = createAdapter(job.harness)
-          await a.setup({ model: job.model, maxSteps: 25, timeoutMs: 300_000, mode: adapterMode })
+          await a.setup({ model: job.model, maxSteps: 25, timeoutMs: probeTimeoutMs, mode: adapterMode })
           return a
         } : undefined,
       })
@@ -333,6 +349,7 @@ Options:
     force,
     concurrency,
     adapterMode,
+    timeoutMs: probeTimeoutMs,
     logDirFactory: (harness, model) => {
       const dir = getProfileLogDir(harness, model)
       mkdirSync(dir, { recursive: true })
