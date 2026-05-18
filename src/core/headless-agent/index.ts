@@ -34,7 +34,6 @@ export async function runHeadlessAgent(
   assertNoLegacyHeadlessFields()
   const driver = opts.driver ?? getHeadlessAgentConfig().driver
   if (driver === "opencode") return runOpenCodeDriver(opts)
-  // pi-driver wired in a later task; for now this branch is unreachable
-  // because `HeadlessAgentDriverSchema` is still `z.enum(["opencode"])`.
+  // "pi" is not yet routed — Task 5 wires the pi-driver branch.
   throw new Error(`Unknown headless agent driver: ${driver}`)
 }
