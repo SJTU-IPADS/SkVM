@@ -264,6 +264,7 @@ export async function runLoop(
       proposalDir: proposal.dir,
       runLabel: "run-0",
       taskGenTimeoutMs: config.taskGenTimeoutMs,
+      taskExecTimeoutMs: config.taskExecTimeoutMs,
     })
     taskResSp.succeed(
       `Resolved ${resolved.train.length} train + ${resolved.test.length} test task(s)`,
@@ -755,6 +756,7 @@ export async function runLoop(
                 proposalDir: proposal.dir,
                 runLabel: `run-regen-round-${round}`,
                 taskGenTimeoutMs: config.taskGenTimeoutMs,
+                taskExecTimeoutMs: config.taskExecTimeoutMs,
               },
               priorPrompts,
             )

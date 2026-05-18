@@ -515,6 +515,13 @@ export interface JitOptimizeConfig {
    * When omitted, falls back to `TIMEOUT_DEFAULTS.taskGen` (900 000 ms).
    */
   taskGenTimeoutMs?: number
+  /**
+   * CLI --timeout-ms value, used as the per-task execution timeout override for
+   * tasks synthesized by the synthetic-task source and as the read-back fallback
+   * in `loadGeneratedTasks`. When omitted, falls back to
+   * `TIMEOUT_DEFAULTS.syntheticTaskExec` (300 000 ms).
+   */
+  taskExecTimeoutMs?: number
 }
 
 // ---------------------------------------------------------------------------

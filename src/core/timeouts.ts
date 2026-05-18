@@ -10,13 +10,19 @@ import { TASK_FILE_DEFAULTS } from "./ui-defaults.ts"
  * - optimizer: jit-optimize per-round skill rewriter.
  * - taskGen: jit-optimize synthetic task-generation agent.
  * - candidateGen: jit-boost candidate-extraction agent.
+ * - syntheticTaskExec: default execution timeout for tasks synthesized by
+ *   jit-optimize --task-source=synthetic. Higher than taskExec (300s vs 120s)
+ *   because LLM-generated tasks are open-ended and frequently require more
+ *   agent steps than curated bench tasks with bounded scopes.
  */
 export const TIMEOUT_DEFAULTS = {
-  taskExec:     TASK_FILE_DEFAULTS.timeoutMs,
-  compiler:     300_000,
-  optimizer:    600_000,
-  taskGen:      900_000,
-  candidateGen: 180_000,
+  taskExec:          TASK_FILE_DEFAULTS.timeoutMs,
+  compiler:          300_000,
+  optimizer:         600_000,
+  taskGen:           900_000,
+  candidateGen:      180_000,
+  /** Default per-task execution timeout for LLM-synthesized tasks (ms). */
+  syntheticTaskExec: 300_000,
 } as const
 
 /**
@@ -50,4 +56,8 @@ export function resolveTaskGenTimeout(opts: { cli?: number }): number {
 
 export function resolveCandidateGenTimeout(opts: { cli?: number }): number {
   return opts.cli ?? TIMEOUT_DEFAULTS.candidateGen
+}
+
+export function resolveSyntheticTaskTimeout(opts: { cli?: number }): number {
+  return opts.cli ?? TIMEOUT_DEFAULTS.syntheticTaskExec
 }

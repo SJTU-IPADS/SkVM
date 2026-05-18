@@ -6,6 +6,7 @@ import {
   resolveOptimizerTimeout,
   resolveTaskGenTimeout,
   resolveCandidateGenTimeout,
+  resolveSyntheticTaskTimeout,
 } from "../../src/core/timeouts.ts"
 import { TASK_FILE_DEFAULTS } from "../../src/core/ui-defaults.ts"
 
@@ -18,6 +19,11 @@ describe("TIMEOUT_DEFAULTS", () => {
     expect(TIMEOUT_DEFAULTS.optimizer).toBe(600_000)
     expect(TIMEOUT_DEFAULTS.taskGen).toBe(900_000)
     expect(TIMEOUT_DEFAULTS.candidateGen).toBe(180_000)
+  })
+  describe("syntheticTaskExec", () => {
+    test("is 300_000", () => {
+      expect(TIMEOUT_DEFAULTS.syntheticTaskExec).toBe(300_000)
+    })
   })
 })
 
@@ -75,5 +81,14 @@ describe("resolveCandidateGenTimeout", () => {
   })
   test("falls back to TIMEOUT_DEFAULTS.candidateGen", () => {
     expect(resolveCandidateGenTimeout({})).toBe(TIMEOUT_DEFAULTS.candidateGen)
+  })
+})
+
+describe("resolveSyntheticTaskTimeout", () => {
+  test("cli wins", () => {
+    expect(resolveSyntheticTaskTimeout({ cli: 55555 })).toBe(55555)
+  })
+  test("falls back to TIMEOUT_DEFAULTS.syntheticTaskExec", () => {
+    expect(resolveSyntheticTaskTimeout({})).toBe(TIMEOUT_DEFAULTS.syntheticTaskExec)
   })
 })

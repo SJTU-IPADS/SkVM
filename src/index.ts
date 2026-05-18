@@ -1736,6 +1736,8 @@ Adapter config:
                                  (default: ${TIMEOUT_DEFAULTS.optimizer})
                                - the synthetic task-gen agent if used
                                  (default: ${TIMEOUT_DEFAULTS.taskGen})
+                               - synthetic tasks' default timeout when
+                                 --task-source=synthetic (default: ${TIMEOUT_DEFAULTS.syntheticTaskExec})
                              Each agent loop is timed independently — this is a
                              per-loop ceiling, not a total wall time.
   --max-steps=<n>            Override max agent steps per task. When omitted,
@@ -1858,7 +1860,7 @@ Detached invocation:
     targetAdapter,
     loop: { rounds, runsPerTask, taskConcurrency, convergence, baseline },
     delivery: { keepAllRounds, autoApply },
-    ...(timeoutMsJit !== undefined ? { optimizerTimeoutMs: timeoutMsJit, taskGenTimeoutMs: timeoutMsJit } : {}),
+    ...(timeoutMsJit !== undefined ? { optimizerTimeoutMs: timeoutMsJit, taskGenTimeoutMs: timeoutMsJit, taskExecTimeoutMs: timeoutMsJit } : {}),
   })
 
   // Detached invocation: parent forks a worker, awaits a `ready` handshake

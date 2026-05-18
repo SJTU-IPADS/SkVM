@@ -40,7 +40,7 @@ import {
   isHeadlessAgentError,
 } from "../core/headless-agent.ts"
 import { getHeadlessAgentConfig } from "../core/config.ts"
-import { resolveTaskGenTimeout } from "../core/timeouts.ts"
+import { TIMEOUT_DEFAULTS, resolveTaskGenTimeout, resolveSyntheticTaskTimeout } from "../core/timeouts.ts"
 
 const log = createLogger("jit-optimize-source")
 
@@ -109,6 +109,14 @@ export interface SyntheticTaskContext {
    * When omitted, falls back to `TIMEOUT_DEFAULTS.taskGen` (900 000 ms).
    */
   taskGenTimeoutMs?: number
+  /**
+   * CLI --timeout-ms value forwarded as the per-task execution timeout for
+   * synthesized tasks (ms). When omitted, falls back to
+   * `TIMEOUT_DEFAULTS.syntheticTaskExec` (300 000 ms). Distinct from
+   * `taskExec` (120 000 ms) because LLM-generated tasks are open-ended and
+   * tend to require more agent steps than curated bench tasks.
+   */
+  taskExecTimeoutMs?: number
 }
 
 /**
@@ -207,7 +215,6 @@ export async function loadEvidencesFromLogs(source: TaskSource): Promise<Evidenc
 // that gates real bench tasks.
 
 /** Per-task default execution bounds (if the generated task.json omits them). */
-const DEFAULT_TASK_TIMEOUT_MS = 300_000
 const DEFAULT_TASK_MAX_STEPS = 30
 
 /** Fixture directory hard caps — rejected tasks are dropped (not truncated). */
@@ -395,11 +402,16 @@ When you finish, leave \`./tasks-out/task-0/\`, \`./tasks-out/task-1/\`, ... on 
 /**
  * Render the task-gen user prompt. `stern` prepends a retry preamble used
  * when the previous attempt yielded zero valid tasks. Exported for unit testing.
+ *
+ * `taskExecTimeoutMs` is the CLI --timeout-ms value forwarded to the generated
+ * task.json files so the synthesized tasks carry the same per-task ceiling the
+ * user requested. When omitted, falls back to `TIMEOUT_DEFAULTS.syntheticTaskExec`.
  */
 export function buildTaskGenPrompt(
   count: number,
   priorPrompts: readonly string[],
   stern: boolean = false,
+  taskExecTimeoutMs?: number,
 ): string {
   const priorBlock = priorPrompts.length === 0
     ? "No prior prompts this session — you have full freedom."
@@ -414,7 +426,7 @@ export function buildTaskGenPrompt(
     count: String(count),
     countMinusOne: String(Math.max(0, count - 1)),
     priorPromptsBlock: priorBlock,
-    defaultTimeoutMs: String(DEFAULT_TASK_TIMEOUT_MS),
+    defaultTimeoutMs: String(resolveSyntheticTaskTimeout({ cli: taskExecTimeoutMs })),
     defaultMaxSteps: String(DEFAULT_TASK_MAX_STEPS),
     maxFiles: String(TASK_GEN_MAX_FILES),
     maxBytesPerFileKb: String(TASK_GEN_MAX_BYTES_PER_FILE / 1024),
@@ -649,7 +661,7 @@ export async function loadGeneratedTasks(
     return { tasks: [], dropped }
   }
 
-  const defaultTimeout = opts.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS
+  const defaultTimeout = resolveSyntheticTaskTimeout({ cli: opts.timeoutMs })
   const defaultMaxSteps = opts.maxSteps ?? DEFAULT_TASK_MAX_STEPS
 
   for (const dirName of entries) {
@@ -843,6 +855,7 @@ export async function resolveSyntheticTasks(
 
       const { tasks: loaded, dropped } = await loadGeneratedTasks(tasksOutDir, {
         count: requestCount,
+        timeoutMs: context.taskExecTimeoutMs,
       })
       for (const d of dropped) {
         log.warn(`task-gen (${runLabel}): dropped ${d.id}: ${d.reason}`)
@@ -877,7 +890,7 @@ export async function resolveSyntheticTasks(
       : `${context.runLabel}-retry-${attempt}`
 
     // Stern preamble only when the previous attempt yielded zero valid tasks.
-    const prompt = buildTaskGenPrompt(remaining, allPriorPrompts, prevYieldedZero)
+    const prompt = buildTaskGenPrompt(remaining, allPriorPrompts, prevYieldedZero, context.taskExecTimeoutMs)
 
     const result = await runAttempt(runLabel, remaining, prompt)
     totalCost = addCostSlice(totalCost, result.cost)
@@ -956,7 +969,7 @@ async function resolveRealTasks(taskRefs: string[], label: string): Promise<Runn
       eval: task.eval,
       workDir,
       fixturesDir,
-      timeoutMs: task.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS,
+      timeoutMs: task.timeoutMs ?? TIMEOUT_DEFAULTS.taskExec,
       maxSteps: task.maxSteps ?? DEFAULT_TASK_MAX_STEPS,
     })
   }
