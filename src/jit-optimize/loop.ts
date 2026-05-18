@@ -21,7 +21,7 @@ import { evaluateAll } from "../framework/evaluator.ts"
 // Side-effect import: ensures every custom evaluator (python-grade, ...) is
 // registered before any task is evaluated.
 import "../bench/evaluators/index.ts"
-import type { AdapterConfig, TokenUsage, AgentAdapter } from "../core/types.ts"
+import type { AdapterConfig, TokenUsage, AgentAdapter, SkillMode } from "../core/types.ts"
 import { emptyTokenUsage, addTokenUsage, sumTokenUsages } from "../core/types.ts"
 import { estimateCost } from "../core/cost.ts"
 import type {
@@ -51,7 +51,7 @@ import {
 } from "./evidence.ts"
 import { removeWorkspace } from "./workspace.ts"
 import { copySkillDir } from "../core/fs-utils.ts"
-import { loadSkill, copySkillBundle, type ResolvedSkill } from "../core/skill-loader.ts"
+import { loadSkill, copySkillBundle, buildSkillBundle, type ResolvedSkill } from "../core/skill-loader.ts"
 import { createProposal, finalizeProposal, type CreateProposalResult } from "../proposals/storage.ts"
 import { createProviderForModel } from "../providers/registry.ts"
 import { isProviderError } from "../providers/errors.ts"
@@ -394,6 +394,7 @@ export async function runLoop(
         evalConfig: roundEvalConfig,
         logDir: path.join(proposal.dir, `${roundLabel}-agent-logs`, setLabel),
         setLabel,
+        skillMode: config.skillMode,
       })
     if (!testIsSeparate) {
       // If the test set is the same as train (by reference), skip rerun and reuse.
@@ -434,6 +435,7 @@ export async function runLoop(
       evalConfig: makeRoundEvalConfig(judgeAcc),
       logDir: path.join(proposal.dir, `${roundLabel}-agent-logs`, "train"),
       setLabel: "train",
+      skillMode: config.skillMode,
     })
     assertRoundNotAllInfraTainted(roundLabel, trainEv, [])
     return trainEv
@@ -1190,15 +1192,18 @@ export interface RunTasksParams {
   evalConfig: EvaluatorConfig
   logDir: string
   setLabel: "train" | "test"
+  /**
+   * How the skill is loaded into each per-task adapter run.
+   * Defaults to CLI_DEFAULTS.skillMode ("inject") via buildSkillBundle when omitted.
+   */
+  skillMode?: SkillMode
 }
 
 // Exported for unit tests of the runStatus gate (sweep G1) and task
 // concurrency. Production callers go through `runLoop`.
 export async function runTasksForRound(params: RunTasksParams): Promise<Evidence[]> {
-  const { tasks, skill, runsPerTask, adapterPool, adapterConfig, cliTimeoutMs, cliMaxSteps, evalConfig, logDir, setLabel } = params
+  const { tasks, skill, runsPerTask, adapterPool, adapterConfig, cliTimeoutMs, cliMaxSteps, evalConfig, logDir, setLabel, skillMode } = params
   await mkdir(logDir, { recursive: true })
-
-  const skillContent = skill.skillContent
 
   // Stable output index per (task, runIdx) pair lets concurrent jobs fill
   // `evidences` by slot while preserving input order — downstream pass/avg
@@ -1234,7 +1239,7 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
       const result = await adapter.run({
         prompt: task.prompt,
         workDir: runWorkDir,
-        skill: { content: skillContent, meta: skill.skillMeta, mode: "inject" },
+        skill: buildSkillBundle(skill, skillMode),
         convLog,
         timeoutMs: resolved.timeoutMs,
       })
