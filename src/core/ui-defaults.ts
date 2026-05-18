@@ -35,7 +35,7 @@ export const BENCH_CONFIG_DEFAULTS = {
  *  used when the headless driver registers a custom OpenAI-compatible
  *  provider via OPENCODE_CONFIG_CONTENT (derived from providers.routes). */
 export const HEADLESS_AGENT_DEFAULTS = {
-  driver: "opencode",
+  driver: "pi",
   /** Conservative context window default for custom OpenAI-compatible endpoints. */
   contextLimit: 128_000,
   /** Conservative output token default for custom OpenAI-compatible endpoints. */

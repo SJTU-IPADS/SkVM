@@ -9,6 +9,8 @@ import {
   emptyTokenUsage,
   addTokenUsage,
   compareLevel,
+  HeadlessAgentDriverSchema,
+  HeadlessAgentConfigSchema,
   type Task,
   type TokenUsage,
 } from "../../src/core/types.ts"
@@ -212,5 +214,28 @@ describe("SCR", () => {
     expect(scr.purposes).toHaveLength(1)
     expect(scr.purposes[0]!.currentPath.primitives).toHaveLength(2)
     expect(scr.purposes[0]!.alternativePaths).toHaveLength(1)
+  })
+})
+
+describe("HeadlessAgentDriverSchema with pi", () => {
+  test("accepts opencode and pi", () => {
+    expect(HeadlessAgentDriverSchema.parse("opencode")).toBe("opencode")
+    expect(HeadlessAgentDriverSchema.parse("pi")).toBe("pi")
+  })
+
+  test("rejects unknown drivers", () => {
+    expect(() => HeadlessAgentDriverSchema.parse("aider")).toThrow()
+  })
+})
+
+describe("HeadlessAgentConfigSchema default driver", () => {
+  test("defaults to pi when driver field is omitted", () => {
+    const parsed = HeadlessAgentConfigSchema.parse({})
+    expect(parsed.driver).toBe("pi")
+  })
+
+  test("preserves explicit opencode", () => {
+    const parsed = HeadlessAgentConfigSchema.parse({ driver: "opencode" })
+    expect(parsed.driver).toBe("opencode")
   })
 })

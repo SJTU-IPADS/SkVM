@@ -37,6 +37,7 @@ import type {
 } from "../jit-optimize/types.ts"
 import { copySkillDir } from "../core/fs-utils.ts"
 import { createLogger } from "../core/logger.ts"
+import { HeadlessAgentDriverSchema, type HeadlessAgentDriverName } from "../core/types.ts"
 
 const log = createLogger("proposals")
 
@@ -93,6 +94,12 @@ export const ProposalMetaSchema = z.object({
    * and surfaced in analysis.md in a future doc pass.
    */
   excludedRounds: z.record(z.string(), z.string()).optional(),
+  /**
+   * Which headless-agent driver produced the optimizer edits in this run.
+   * Absent on proposals written before the pi driver was added; replay /
+   * audit tooling should treat missing as `"opencode"`.
+   */
+  optimizerDriver: HeadlessAgentDriverSchema.optional(),
 })
 export type ProposalMeta = z.infer<typeof ProposalMetaSchema>
 
@@ -118,6 +125,11 @@ export interface CreateProposalOptions {
   optimizerModel: string
   targetModel: string
   source: string
+  /**
+   * Which headless-agent driver will be doing the optimizer edits. Persisted
+   * into meta.json so the run is self-describing for replay / audit.
+   */
+  optimizerDriver?: HeadlessAgentDriverName
 }
 
 export interface CreateProposalResult {
@@ -196,6 +208,7 @@ export async function createProposal(opts: CreateProposalOptions): Promise<Creat
     bestRound: 0,
     bestRoundReason: "",
     roundCount: 0,
+    ...(opts.optimizerDriver ? { optimizerDriver: opts.optimizerDriver } : {}),
   }
 
   await Bun.write(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2))
