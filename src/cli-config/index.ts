@@ -28,6 +28,7 @@ import {
   LOGS_DIR,
   PROPOSALS_ROOT,
   CONFIG_WRITE_PATH,
+  JIT_OPTIMIZE_DIR,
   getConfigPath,
   expandHome,
   getProvidersConfig,
@@ -1223,6 +1224,36 @@ async function runDoctor(): Promise<void> {
       label: "Legacy headlessAgent fields in config",
       detail: `ignored: ${legacyHeadless.join(", ")}. Re-run \`skvm config init\` to remove them.`,
     })
+  }
+
+  // Headless driver pi — confirm @mariozechner/pi-coding-agent is importable.
+  const ha = getHeadlessAgentConfig()
+  if (ha.driver === "pi") {
+    try {
+      await import("@mariozechner/pi-coding-agent")
+      results.push({ status: "ok", label: "headless driver pi resolvable", detail: "" })
+    } catch (err) {
+      results.push({
+        status: "fail",
+        label: "headless driver pi resolvable",
+        detail: `cannot import @mariozechner/pi-coding-agent (${(err as Error).message}). ` +
+                `Reinstall skvm via install.sh or 'npm install' to restore node_modules.`,
+      })
+    }
+  }
+
+  // Migration note: warn if prior opencode proposals exist but the config
+  // does not pin headlessAgent.driver (meaning the user may not have noticed
+  // that the default flipped from opencode to pi).
+  const hasLegacyOpencodeProposals = existsSync(path.join(JIT_OPTIMIZE_DIR, "opencode"))
+  const configRaw = existsSync(CONFIG_WRITE_PATH) ? readFileSync(CONFIG_WRITE_PATH, "utf-8") : ""
+  const explicitDriverSet = configRaw.includes(`"driver"`)
+  if (hasLegacyOpencodeProposals && !explicitDriverSet) {
+    console.log(c.dim(
+      `note: default headless-agent driver changed to "pi" in this release; ` +
+      `prior proposals were produced by opencode. Set headlessAgent.driver ` +
+      `explicitly in skvm.config.json to pin behavior.`
+    ))
   }
 
   // Adapter checkouts + native-mode readiness
