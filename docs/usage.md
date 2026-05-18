@@ -119,6 +119,9 @@ skvm run --task=path/to/task.json --model=<id> --adapter=bare-agent
 # With a skill
 skvm run --task=<path> --skill=<path> --model=<id> --adapter=bare-agent
 
+# Control how the skill is delivered to the adapter (inject|discover, default: discover)
+skvm run --task=<path> --skill=<path> --model=<id> --adapter=bare-agent --skill-mode=inject
+
 # Reuse a work directory (no cleanup between runs)
 skvm run --task=<path> --skill=<path> --model=<id> --workdir=./tmp/run-workdir
 ```
@@ -174,7 +177,8 @@ skvm jit-optimize \
   --task-concurrency=3 \
   --optimizer-model=<id> \
   --target-model=<id> \
-  --rounds=1
+  --rounds=1 \
+  --skill-mode=inject|discover
 ```
 
 Synthetic-specific flags:

@@ -687,7 +687,7 @@ export class OpenClawAdapter implements AgentAdapter {
         await Bun.write(bootstrapPath, existing + separator + task.skill.content)
         skillLoaded = false
       } else {
-        const skillName = task.skill?.meta.name ?? "bench-skill"
+        const skillName = task.skill.meta.name
         const skillDir = path.join(ws, "skills", skillName)
         await mkdir(skillDir, { recursive: true })
         await Bun.write(path.join(skillDir, "SKILL.md"), task.skill.content)
@@ -754,7 +754,7 @@ export class OpenClawAdapter implements AgentAdapter {
 
     // 7. Verify skill load
     if (task.skill?.content && skillLoaded === false) {
-      const skillName = task.skill?.meta.name ?? "bench-skill"
+      const skillName = task.skill.meta.name
 
       if (task.skill?.mode === "inject") {
         const hasAssistantMessage = transcript.some(

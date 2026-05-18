@@ -2,7 +2,7 @@ import path from "node:path"
 import { mkdtemp, mkdir, readdir, copyFile, cp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { copyDirRecursive } from "../core/fs-utils.ts"
-import type { AgentAdapter, AdapterConfig, TCP, RunResult } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, TCP, RunResult, SkillMode } from "../core/types.ts"
 import type { LLMProvider } from "../providers/types.ts"
 import { runTask } from "../framework/runner.ts"
 import type { EvaluatorConfig, EvaluateAllOptions } from "../framework/evaluator.ts"
@@ -298,6 +298,7 @@ export async function runOriginal(
   adapter: AgentAdapter,
   adapterConfig: AdapterConfig,
   skill: ResolvedSkill | ResolvedSkill[],
+  skillMode?: SkillMode,
   evaluatorConfig?: EvaluatorConfig,
   convLog?: ConversationLog,
   evalOptions?: EvaluateAllOptions,
@@ -321,7 +322,7 @@ export async function runOriginal(
       adapterConfig,
       evaluatorConfig,
       convLog,
-      skill: { content: originalSkillContent, meta: originalSkillMeta, mode: CLI_DEFAULTS.skillMode },
+      skill: { content: originalSkillContent, meta: originalSkillMeta, mode: skillMode ?? CLI_DEFAULTS.skillMode },
       workDir,
       keepWorkDir: true,
       evalOptions,
@@ -361,6 +362,7 @@ export async function runJitOptimized(
   skill: ResolvedSkill | ResolvedSkill[],
   harness: string,
   model: string,
+  skillMode?: SkillMode,
   evaluatorConfig?: EvaluatorConfig,
   convLog?: ConversationLog,
   evalOptions?: EvaluateAllOptions,
@@ -423,7 +425,7 @@ export async function runJitOptimized(
       adapterConfig,
       evaluatorConfig,
       convLog,
-      skill: { content: jitSkillContent, meta: jitSkillMeta, mode: CLI_DEFAULTS.skillMode },
+      skill: { content: jitSkillContent, meta: jitSkillMeta, mode: skillMode ?? CLI_DEFAULTS.skillMode },
       workDir,
       keepWorkDir: true,
       evalOptions,
@@ -471,6 +473,7 @@ export async function runAOTVariant(
   compilerProvider: LLMProvider,
   condition: BenchCondition,
   passes: number[],
+  skillMode?: SkillMode,
   evaluatorConfig?: EvaluatorConfig,
   convLog?: ConversationLog,
   evalOptions?: EvaluateAllOptions,
@@ -565,7 +568,7 @@ export async function runAOTVariant(
       adapterConfig,
       evaluatorConfig,
       convLog,
-      skill: { content: compiledContent, meta: aotSkillMeta, mode: CLI_DEFAULTS.skillMode },
+      skill: { content: compiledContent, meta: aotSkillMeta, mode: skillMode ?? CLI_DEFAULTS.skillMode },
       workDir,
       keepWorkDir: true,
       evalOptions,
@@ -608,7 +611,7 @@ export async function runAOT(
 ): Promise<ConditionResult> {
   return runAOTVariant(
     task, adapter, adapterConfig, skillContent, skillId, skillPath,
-    tcp, compilerProvider, "aot-compiled", [1, 2, 3], evaluatorConfig, convLog, evalOptions,
+    tcp, compilerProvider, "aot-compiled", [1, 2, 3], undefined, evaluatorConfig, convLog, evalOptions,
   )
 }
 
@@ -634,6 +637,7 @@ export async function runJITBoost(
   skillId: string,
   skillDir: string,
   jitRuns: number,
+  skillMode?: SkillMode,
   evaluatorConfig?: EvaluatorConfig,
   convLogDir?: string,
   cliTimeoutMs?: number,
@@ -654,7 +658,7 @@ export async function runJITBoost(
   const jitBoostSkillBundle = {
     content: skillContent,
     meta: parseSkillMeta(skillContent, skillDir),
-    mode: CLI_DEFAULTS.skillMode,
+    mode: skillMode ?? CLI_DEFAULTS.skillMode,
   }
 
   // -----------------------------------------------------------------------
@@ -881,6 +885,7 @@ export async function runCustomSkill(
   adapterConfig: AdapterConfig,
   conditionLabel: string,
   skillDir: string,
+  skillMode?: SkillMode,
   evaluatorConfig?: EvaluatorConfig,
   convLog?: ConversationLog,
   evalOptions?: EvaluateAllOptions,
@@ -915,7 +920,7 @@ export async function runCustomSkill(
       adapterConfig,
       evaluatorConfig,
       convLog,
-      skill: { content: skillContent, meta: customSkillMeta, mode: CLI_DEFAULTS.skillMode },
+      skill: { content: skillContent, meta: customSkillMeta, mode: skillMode ?? CLI_DEFAULTS.skillMode },
       workDir,
       keepWorkDir: true,
       evalOptions,

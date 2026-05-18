@@ -440,7 +440,7 @@ export async function executeCustomPlan(
           result = await runCustomSkill(
             task, runner.adapter, adapterConfig,
             item.label, skillDir,
-            evaluatorConfig, convLog,
+            undefined, evaluatorConfig, convLog,
           )
         } else {
           result = await runNoSkill(

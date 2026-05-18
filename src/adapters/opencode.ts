@@ -513,8 +513,8 @@ export class OpenCodeAdapter implements AgentAdapter {
         skillLoaded = false
       } else {
         // Discover mode (current behavior): copy to .opencode/skills/<name>/
-        const skillName = task.skill.meta.name ?? "bench-skill"
-        const skillDesc = task.skill.meta.description ?? "Benchmark skill injected by SkVM"
+        const skillName = task.skill.meta.name
+        const skillDesc = task.skill.meta.description
         const skillDir = path.join(task.workDir, ".opencode", "skills", skillName)
         await mkdir(skillDir, { recursive: true })
         const frontmatter = `---\nname: ${skillName}\ndescription: ${skillDesc}\n---\n\n`
