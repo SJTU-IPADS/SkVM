@@ -1,6 +1,8 @@
 import path from "node:path"
 import { readdir, mkdir, copyFile } from "node:fs/promises"
 import { createHash } from "node:crypto"
+import { CLI_DEFAULTS } from "./ui-defaults.ts"
+import type { SkillBundle, SkillMode } from "./types.ts"
 
 // ---------------------------------------------------------------------------
 // Content hash helper
@@ -136,4 +138,21 @@ async function listBundleFiles(skillDir: string, prefix = ""): Promise<string[]>
     }
   }
   return out
+}
+
+/**
+ * Build the adapter-facing skill bundle, applying the CLI default when
+ * `mode` is unset. Returns undefined when no skill is loaded — the
+ * all-or-nothing invariant on `AgentAdapter.run({ skill })` lives here.
+ */
+export function buildSkillBundle(
+  skill: ResolvedSkill | undefined,
+  mode: SkillMode | undefined,
+): SkillBundle | undefined {
+  if (!skill) return undefined
+  return {
+    content: skill.skillContent,
+    meta: skill.skillMeta,
+    mode: mode ?? CLI_DEFAULTS.skillMode,
+  }
 }

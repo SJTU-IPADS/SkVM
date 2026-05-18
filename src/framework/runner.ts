@@ -1,7 +1,7 @@
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import type { Task, RunResult, EvalResult, AgentAdapter, AdapterConfig, SkillMode } from "../core/types.ts"
+import type { Task, RunResult, EvalResult, AgentAdapter, AdapterConfig, SkillBundle } from "../core/types.ts"
 import type { ConversationLog } from "../core/conversation-logger.ts"
 import type { TestResult } from "./types.ts"
 import { evaluateAll } from "./evaluator.ts"
@@ -15,9 +15,7 @@ export interface RunOptions {
   adapter: AgentAdapter
   adapterConfig: AdapterConfig
   evaluatorConfig?: EvaluatorConfig
-  skillContent?: string
-  skillMode?: SkillMode
-  skillMeta?: { name: string; description: string }
+  skill?: SkillBundle
   keepWorkDir?: boolean
   /** If provided, use this directory instead of creating a new temp dir */
   workDir?: string
@@ -33,7 +31,7 @@ export interface RunOptions {
  * Flow: create workspace → copy fixtures → run adapter → evaluate → cleanup
  */
 export async function runTask(opts: RunOptions): Promise<TestResult> {
-  const { task, adapter, adapterConfig, evaluatorConfig, skillContent, keepWorkDir } = opts
+  const { task, adapter, adapterConfig, evaluatorConfig, keepWorkDir } = opts
 
   // 1. Setup adapter
   await adapter.setup(adapterConfig)
@@ -62,9 +60,7 @@ export async function runTask(opts: RunOptions): Promise<TestResult> {
     const runResult = await adapter.run({
       prompt: task.prompt,
       workDir,
-      skillContent,
-      skillMode: opts.skillMode,
-      skillMeta: opts.skillMeta,
+      skill: opts.skill,
       taskId: task.id,
       convLog: opts.convLog,
       // Use the resolved per-task timeout from adapterConfig (set by bench's

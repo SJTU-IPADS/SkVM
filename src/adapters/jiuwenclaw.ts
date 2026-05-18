@@ -2,7 +2,7 @@ import { mkdir, copyFile, writeFile, unlink } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import net from "node:net"
-import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, SkillMode } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, SkillBundle } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, stripRoutingPrefix } from "../core/config.ts"
@@ -358,9 +358,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
   async run(task: {
     prompt: string
     workDir: string
-    skillContent?: string
-    skillMode?: SkillMode
-    skillMeta?: { name: string; description: string }
+    skill?: SkillBundle
     taskId?: string
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
@@ -369,9 +367,9 @@ export class JiuwenClawAdapter implements AgentAdapter {
     let prompt = `IMPORTANT: Do not ask clarifying questions. Proceed directly with implementation. Execute all steps immediately without waiting for user input.\n\n`
 
     // --- Skill handling ---
-    if (task.skillContent) {
+    if (task.skill) {
       // Both modes use prompt prepend for v1 (jiuwenclaw has no well-known skill path for CLI mode)
-      prompt += task.skillContent + "\n\n---\n\n"
+      prompt += task.skill.content + "\n\n---\n\n"
       skillLoaded = false
     }
 
@@ -488,14 +486,14 @@ export class JiuwenClawAdapter implements AgentAdapter {
     }
 
     // --- Verify skill loaded ---
-    if (task.skillContent && skillLoaded === false) {
+    if (task.skill && skillLoaded === false) {
       // Inject: if agent produced any steps, skill was loaded (it's in the prompt)
       if (result.steps.length > 0) {
         skillLoaded = true
       }
       // Check if response text references skill content
       if (!skillLoaded) {
-        const skillSnippet = task.skillContent.replace(/^#.*\n/m, "").trim().slice(0, 60)
+        const skillSnippet = task.skill.content.replace(/^#.*\n/m, "").trim().slice(0, 60)
         if (skillSnippet.length > 20 && result.text.includes(skillSnippet)) {
           skillLoaded = true
         }

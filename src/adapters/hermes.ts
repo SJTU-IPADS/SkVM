@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
-import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, SkillMode, ProviderRoute } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, SkillBundle, ProviderRoute } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, stripRoutingPrefix } from "../core/config.ts"
@@ -337,33 +337,28 @@ export class HermesAdapter implements AgentAdapter {
   async run(task: {
     prompt: string
     workDir: string
-    skillContent?: string
-    skillMode?: SkillMode
-    skillMeta?: { name: string; description: string }
+    skill?: SkillBundle
     taskId?: string
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
   }): Promise<RunResult> {
-    const skillMode = task.skillMode ?? "inject"
     let skillLoaded: boolean | undefined
     let prompt = `IMPORTANT: Do not ask clarifying questions. Proceed directly with implementation. Execute all steps immediately without waiting for user input.\n\n`
 
     // --- Skill handling ---
-    if (task.skillContent) {
-      if (skillMode === "inject") {
-        // Inject mode: prepend skill content to prompt
-        prompt += task.skillContent + "\n\n---\n\n"
-        skillLoaded = false
-      } else {
-        const skillName = task.skillMeta?.name ?? "bench-skill"
-        if (!this.hermesHome) {
-          throw new Error("hermes.run called before setup() initialized sandbox")
-        }
-        const skillDir = path.join(this.hermesHome, "skills", skillName)
-        await mkdir(skillDir, { recursive: true })
-        await Bun.write(path.join(skillDir, "SKILL.md"), task.skillContent)
-        skillLoaded = false
+    if (task.skill?.mode === "inject") {
+      // Inject mode: prepend skill content to prompt
+      prompt += task.skill.content + "\n\n---\n\n"
+      skillLoaded = false
+    } else if (task.skill?.mode === "discover") {
+      const skillName = task.skill.meta.name
+      if (!this.hermesHome) {
+        throw new Error("hermes.run called before setup() initialized sandbox")
       }
+      const skillDir = path.join(this.hermesHome, "skills", skillName)
+      await mkdir(skillDir, { recursive: true })
+      await Bun.write(path.join(skillDir, "SKILL.md"), task.skill.content)
+      skillLoaded = false
     }
 
     prompt += task.prompt
@@ -389,9 +384,8 @@ export class HermesAdapter implements AgentAdapter {
     ]
 
     // Add --skills flag for discover mode
-    if (task.skillContent && skillMode === "discover") {
-      const skillName = task.skillMeta?.name ?? "bench-skill"
-      cmd.push("-s", skillName)
+    if (task.skill?.mode === "discover") {
+      cmd.push("-s", task.skill.meta.name)
     }
 
     // Build env with PYTHONPATH for source installs. Also inject standard SDK
@@ -533,10 +527,10 @@ export class HermesAdapter implements AgentAdapter {
     await saveConvLog(exportResult.exitCode === 0 ? exportResult.stdout : stdout)
 
     // --- Verify skill loaded ---
-    if (task.skillContent && skillLoaded === false) {
-      const skillSnippet = task.skillContent.replace(/^#.*\n/m, "").trim().slice(0, 60)
+    if (task.skill && skillLoaded === false) {
+      const skillSnippet = task.skill.content.replace(/^#.*\n/m, "").trim().slice(0, 60)
 
-      if (skillMode === "inject") {
+      if (task.skill.mode === "inject") {
         // Inject: if agent produced any tool calls or steps, skill was loaded (it's in the prompt)
         if (result.steps.length > 0) {
           skillLoaded = true

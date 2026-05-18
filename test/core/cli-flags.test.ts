@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test"
-import { assertKnownFlags, suggestFlag, GLOBAL_FLAGS } from "../../src/core/cli-flags.ts"
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test"
+import { assertKnownFlags, suggestFlag, GLOBAL_FLAGS, parseSkillModeFlag } from "../../src/core/cli-flags.ts"
 
 describe("suggestFlag", () => {
   test("suggests the nearest within Levenshtein distance 2", () => {
@@ -75,5 +75,30 @@ describe("assertKnownFlags", () => {
     }).toThrow("__exit__")
     expect(stderr).toContain("--adpter")
     expect(stderr).toContain("--modle")
+  })
+})
+
+describe("parseSkillModeFlag", () => {
+  test("returns undefined when flag is not set", () => {
+    expect(parseSkillModeFlag({})).toBeUndefined()
+  })
+
+  test("returns 'inject' / 'discover' verbatim", () => {
+    expect(parseSkillModeFlag({ "skill-mode": "inject" })).toBe("inject")
+    expect(parseSkillModeFlag({ "skill-mode": "discover" })).toBe("discover")
+  })
+
+  test("exits with error on invalid value", () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(((_code?: number) => {
+      throw new Error("process.exit called")
+    }) as never)
+    const errSpy = spyOn(console, "error").mockImplementation(() => {})
+    try {
+      expect(() => parseSkillModeFlag({ "skill-mode": "bogus" })).toThrow("process.exit called")
+      expect(errSpy.mock.calls.at(-1)?.[0]).toContain(`unknown skill mode "bogus"`)
+    } finally {
+      exitSpy.mockRestore()
+      errSpy.mockRestore()
+    }
   })
 })

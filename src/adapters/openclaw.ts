@@ -1,6 +1,6 @@
 import path from "node:path"
 import { mkdir, rm, copyFile, readdir } from "node:fs/promises"
-import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, SkillMode, ProviderRoute } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, SkillBundle, ProviderRoute } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, getProvidersConfig, routingPrefix, stripRoutingPrefix } from "../core/config.ts"
@@ -615,9 +615,7 @@ export class OpenClawAdapter implements AgentAdapter {
   async run(task: {
     prompt: string
     workDir: string
-    skillContent?: string
-    skillMode?: SkillMode
-    skillMeta?: { name: string; description: string }
+    skill?: SkillBundle
     taskId?: string
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
@@ -641,9 +639,7 @@ export class OpenClawAdapter implements AgentAdapter {
     task: {
       prompt: string
       workDir: string
-      skillContent?: string
-      skillMode?: SkillMode
-      skillMeta?: { name: string; description: string }
+      skill?: SkillBundle
       taskId?: string
       convLog?: import("../core/conversation-logger.ts").ConversationLog
       timeoutMs?: number
@@ -651,7 +647,6 @@ export class OpenClawAdapter implements AgentAdapter {
   ): Promise<RunResult> {
     const pool = this.pool!
     const ws = agent.workspaceDir
-    const skillMode = task.skillMode ?? "inject"
     let skillLoaded: boolean | undefined
 
     // 1. Clean workspace + sessions
@@ -678,8 +673,8 @@ export class OpenClawAdapter implements AgentAdapter {
       await Bun.write(path.join(ws, fname), content)
     }
 
-    if (task.skillContent) {
-      if (skillMode === "inject") {
+    if (task.skill?.content) {
+      if (task.skill?.mode === "inject") {
         const bootstrapPath = path.join(ws, "BOOTSTRAP.md")
         let existing = ""
         try {
@@ -689,13 +684,13 @@ export class OpenClawAdapter implements AgentAdapter {
           }
         } catch { /* no existing file */ }
         const separator = existing ? "\n\n" : ""
-        await Bun.write(bootstrapPath, existing + separator + task.skillContent)
+        await Bun.write(bootstrapPath, existing + separator + task.skill.content)
         skillLoaded = false
       } else {
-        const skillName = task.skillMeta?.name ?? "bench-skill"
+        const skillName = task.skill?.meta.name ?? "bench-skill"
         const skillDir = path.join(ws, "skills", skillName)
         await mkdir(skillDir, { recursive: true })
-        await Bun.write(path.join(skillDir, "SKILL.md"), task.skillContent)
+        await Bun.write(path.join(skillDir, "SKILL.md"), task.skill.content)
         skillLoaded = false
       }
     }
@@ -758,10 +753,10 @@ export class OpenClawAdapter implements AgentAdapter {
     }
 
     // 7. Verify skill load
-    if (task.skillContent && skillLoaded === false) {
-      const skillName = task.skillMeta?.name ?? "bench-skill"
+    if (task.skill?.content && skillLoaded === false) {
+      const skillName = task.skill?.meta.name ?? "bench-skill"
 
-      if (skillMode === "inject") {
+      if (task.skill?.mode === "inject") {
         const hasAssistantMessage = transcript.some(
           e => e.type === "message" && e.message?.role === "assistant",
         )
@@ -806,7 +801,7 @@ export class OpenClawAdapter implements AgentAdapter {
                 : typeof item.output === "string" ? item.output
                 : typeof item.content === "string" ? item.content
                 : ""
-              if (output.length > 100 && task.skillContent && output.includes(task.skillContent.slice(0, 50))) {
+              if (output.length > 100 && task.skill?.content && output.includes(task.skill.content.slice(0, 50))) {
                 skillLoaded = true
                 break
               }

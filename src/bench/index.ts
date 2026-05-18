@@ -17,7 +17,7 @@ import { runDeferredJudge, readDeferredResults, mergeDeferredResults } from "../
 import { ALL_ADAPTERS, type AdapterName, isAdapterName } from "../adapters/registry.ts"
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "../core/ui-defaults.ts"
 import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
-import { assertKnownFlags } from "../core/cli-flags.ts"
+import { assertKnownFlags, parseSkillModeFlag } from "../core/cli-flags.ts"
 
 const HOME = process.env.HOME ?? ""
 
@@ -100,11 +100,7 @@ export async function runBench(flags: Record<string, string>): Promise<void> {
   const tasks = flags.tasks ? flags.tasks.split(",").map(t => t.trim()) : undefined
 
   // Parse skill mode
-  const skillMode = flags["skill-mode"] as "inject" | "discover" | undefined
-  if (skillMode && skillMode !== "inject" && skillMode !== "discover") {
-    console.error(`Error: unknown skill mode "${skillMode}". Valid: inject, discover`)
-    process.exit(1)
-  }
+  const skillMode = parseSkillModeFlag(flags)
 
   // Parse adapter(s): comma-separated
   const adapterRaw = (flags.adapter ?? CLI_DEFAULTS.adapter).split(",").map(a => a.trim())

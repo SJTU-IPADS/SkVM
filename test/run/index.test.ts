@@ -104,9 +104,9 @@ describe("executeRun", () => {
         expect(await Bun.file(path.join(runTask.workDir, "nested", "more.txt")).text()).toBe("nested-fixture")
         expect(await Bun.file(path.join(runTask.workDir, "tool.py")).text()).toContain("tool")
         expect(await Bun.file(path.join(runTask.workDir, "helpers", "util.txt")).text()).toBe("utility")
-        expect(runTask.skillContent).toContain("# Skill body")
-        expect(runTask.skillMode).toBe("inject")
-        expect(runTask.skillMeta?.name).toBe("my-skill")
+        expect(runTask.skill?.content).toContain("# Skill body")
+        expect(runTask.skill?.mode).toBe("inject")
+        expect(runTask.skill?.meta?.name).toBe("my-skill")
         await Bun.write(path.join(runTask.workDir, "result.txt"), "done")
         return {
           text: "Completed",
@@ -153,9 +153,9 @@ describe("executeRun", () => {
       async setup() {},
       async run(runTask): Promise<RunResult> {
         expect(runTask.prompt).toBe("Say hello")
-        expect(runTask.skillContent).toBeUndefined()
-        expect(runTask.skillMode).toBeUndefined()
-        expect(runTask.skillMeta).toBeUndefined()
+        expect(runTask.skill?.content).toBeUndefined()
+        expect(runTask.skill?.mode).toBeUndefined()
+        expect(runTask.skill?.meta).toBeUndefined()
         await Bun.write(path.join(runTask.workDir, "result.txt"), "hello")
         return {
           text: "Hello, I'm ready!",

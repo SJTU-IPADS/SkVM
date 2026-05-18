@@ -101,9 +101,7 @@ export async function executeRun(opts: ExecuteRunOptions): Promise<ExecuteRunRes
     const runResult = await adapter.run({
       prompt: task.prompt,
       workDir,
-      skillContent: skill?.skillContent,
-      skillMode: skill ? "inject" : undefined,
-      skillMeta: skill?.skillMeta,
+      skill: skill ? { content: skill.skillContent, meta: skill.skillMeta, mode: "inject" } : undefined,
       taskId: task.id,
       // Use the resolved timeout from adapterConfig (CLI override > task value)
       // rather than reading task.timeoutMs directly — otherwise a CLI

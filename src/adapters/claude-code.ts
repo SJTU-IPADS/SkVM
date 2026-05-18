@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import type { AgentAdapter, AdapterConfig, AdapterConfigMode, ProviderRoute, RunResult, AgentStep, ToolCall, TokenUsage, SkillMode } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, AdapterConfigMode, ProviderRoute, RunResult, AgentStep, ToolCall, TokenUsage, SkillBundle } from "../core/types.ts"
 import { emptyTokenUsage, addTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, getHeadlessAgentConfig, expandHome, stripRoutingPrefix } from "../core/config.ts"
@@ -559,33 +559,28 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   async run(task: {
     prompt: string
     workDir: string
-    skillContent?: string
-    skillMode?: SkillMode
-    skillMeta?: { name: string; description: string }
+    skill?: SkillBundle
     taskId?: string
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
   }): Promise<RunResult> {
-    const skillMode = task.skillMode ?? "inject"
-    const skillName = task.skillMeta?.name ?? "bench-skill"
     let skillLoaded: boolean | undefined
     let appendSystemPrompt: string | undefined
 
-    if (task.skillContent) {
+    if (task.skill) {
       skillLoaded = false
-      if (skillMode === "inject") {
+      if (task.skill.mode === "inject") {
         // --append-system-prompt is the documented headless way to inject
         // extra context. The sentinel lets us verify the model actually
         // saw the skill (matches opencode's CONTEXT.md trick).
-        appendSystemPrompt = injectedSystemPrompt(task.skillContent)
+        appendSystemPrompt = injectedSystemPrompt(task.skill.content)
       } else {
         // Discover: <workDir>/.claude/skills/ is project-scope, so it works
         // regardless of sandbox HOME — managed-mode runs ship the skill too.
-        const skillDesc = task.skillMeta?.description ?? "Benchmark skill injected by SkVM"
-        const skillDir = path.join(task.workDir, ".claude", "skills", skillName)
+        const skillDir = path.join(task.workDir, ".claude", "skills", task.skill.meta.name)
         await mkdir(skillDir, { recursive: true })
-        const frontmatter = `---\nname: ${skillName}\ndescription: ${skillDesc}\n---\n\n`
-        await Bun.write(path.join(skillDir, "SKILL.md"), frontmatter + task.skillContent)
+        const frontmatter = `---\nname: ${task.skill.meta.name}\ndescription: ${task.skill.meta.description}\n---\n\n`
+        await Bun.write(path.join(skillDir, "SKILL.md"), frontmatter + task.skill.content)
       }
     }
 
@@ -646,12 +641,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
     const events = parseClaudeCodeStreamJSON(stdout)
 
-    if (task.skillContent && skillLoaded === false) {
-      if (skillMode === "inject") {
-        const snippet = task.skillContent.replace(/^#.*\n/m, "").trim().slice(0, 60)
+    if (task.skill && skillLoaded === false) {
+      if (task.skill.mode === "inject") {
+        const snippet = task.skill.content.replace(/^#.*\n/m, "").trim().slice(0, 60)
         skillLoaded = detectSkillInject(events, snippet)
       } else {
-        skillLoaded = detectSkillDiscover(events, skillName)
+        skillLoaded = detectSkillDiscover(events, task.skill.meta.name)
       }
     }
 

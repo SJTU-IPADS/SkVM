@@ -7,7 +7,7 @@ import type {
   RunResult,
   AgentStep,
   ToolCall,
-  SkillMode,
+  SkillBundle,
   ProviderRoute,
 } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
@@ -464,27 +464,24 @@ export class PiAdapter implements AgentAdapter {
   async run(task: {
     prompt: string
     workDir: string
-    skillContent?: string
-    skillMode?: SkillMode
-    skillMeta?: { name: string; description: string }
+    skill?: SkillBundle
     taskId?: string
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
   }): Promise<RunResult> {
-    const skillMode = task.skillMode ?? "inject"
     let skillLoaded: boolean | undefined
     let skillPath: string | undefined
 
-    if (task.skillContent) {
-      if (skillMode === "inject") {
+    if (task.skill) {
+      if (task.skill.mode === "inject") {
         // Pi auto-loads AGENTS.md from CWD into the system prompt.
-        await Bun.write(path.join(task.workDir, "AGENTS.md"), task.skillContent)
+        await Bun.write(path.join(task.workDir, "AGENTS.md"), task.skill.content)
         skillLoaded = false
       } else {
-        const skillName = task.skillMeta?.name ?? "bench-skill"
+        const skillName = task.skill.meta.name
         const skillDir = path.join(task.workDir, ".pi-skills", skillName)
         await mkdir(skillDir, { recursive: true })
-        await Bun.write(path.join(skillDir, "SKILL.md"), task.skillContent)
+        await Bun.write(path.join(skillDir, "SKILL.md"), task.skill.content)
         skillPath = skillDir
         skillLoaded = false
       }
@@ -504,8 +501,8 @@ export class PiAdapter implements AgentAdapter {
       "--no-extensions",
     ]
 
-    if (task.skillContent) {
-      if (skillMode === "discover" && skillPath) {
+    if (task.skill) {
+      if (task.skill.mode === "discover" && skillPath) {
         cmd.push("--skill", skillPath, "--no-skills", "--no-context-files")
       }
     } else {
@@ -542,9 +539,9 @@ export class PiAdapter implements AgentAdapter {
     const events = parsePiNDJSON(stdout)
     const result = piEventsToRunResult(events, task.workDir, durationMs)
 
-    if (task.skillContent && skillLoaded === false) {
-      const skillSnippet = task.skillContent.replace(/^#.*\n/m, "").trim().slice(0, 60)
-      if (skillMode === "inject" && result.steps.length > 0) {
+    if (task.skill && skillLoaded === false) {
+      const skillSnippet = task.skill.content.replace(/^#.*\n/m, "").trim().slice(0, 60)
+      if (task.skill.mode === "inject" && result.steps.length > 0) {
         skillLoaded = true
       }
       if (!skillLoaded && skillSnippet.length > 20) {

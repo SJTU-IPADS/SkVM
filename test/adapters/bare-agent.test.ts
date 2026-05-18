@@ -297,7 +297,7 @@ describe("BareAgentAdapter", () => {
     await adapter.run({
       prompt: "Do task",
       workDir,
-      skillContent: "# My Skill\nDo things carefully.",
+      skill: { content: "# My Skill\nDo things carefully.", mode: "inject", meta: { name: "my-skill", description: "demo" } },
     })
 
     expect(capturedSystem).toContain("<skill>")
@@ -335,9 +335,7 @@ describe("BareAgentAdapter", () => {
       const result = await adapter.run({
         prompt: "Do task",
         workDir,
-        skillContent: "# File Ops\nUse structured approach.",
-        skillMode: "inject",
-        skillMeta: { name: "file-ops", description: "File operations skill" },
+        skill: { content: "# File Ops\nUse structured approach.", mode: "inject", meta: { name: "file-ops", description: "File operations skill" } },
       })
 
       expect(capturedSystem).toContain("<skill>")
@@ -371,7 +369,7 @@ describe("BareAgentAdapter", () => {
       const result = await adapter.run({
         prompt: "Do task",
         workDir,
-        skillContent: "My skill content",
+        skill: { content: "My skill content", mode: "inject", meta: { name: "test-skill", description: "test" } },
       })
 
       expect(capturedSystem).toContain("<skill>")
@@ -405,9 +403,7 @@ describe("BareAgentAdapter", () => {
       const result = await adapter.run({
         prompt: "Do task",
         workDir,
-        skillContent: "# File Ops Skill\nDetailed instructions here.",
-        skillMode: "discover",
-        skillMeta: { name: "file-ops", description: "File operations skill" },
+        skill: { content: "# File Ops Skill\nDetailed instructions here.", mode: "discover", meta: { name: "file-ops", description: "File operations skill" } },
       })
 
       // System prompt should list the skill but not embed its content.
@@ -441,9 +437,7 @@ describe("BareAgentAdapter", () => {
       const result = await adapter.run({
         prompt: "Do task",
         workDir,
-        skillContent: "# File Ops\nInstructions.",
-        skillMode: "discover",
-        skillMeta: { name: "file-ops", description: "File operations" },
+        skill: { content: "# File Ops\nInstructions.", mode: "discover", meta: { name: "file-ops", description: "File operations" } },
       })
 
       expect(result.skillLoaded).toBe(false)
@@ -466,9 +460,7 @@ describe("BareAgentAdapter", () => {
       const result = await adapter.run({
         prompt: "Do task",
         workDir,
-        skillContent: "# File Ops\nInstructions.",
-        skillMode: "discover",
-        skillMeta: { name: "file-ops", description: "File operations" },
+        skill: { content: "# File Ops\nInstructions.", mode: "discover", meta: { name: "file-ops", description: "File operations" } },
       })
 
       expect(result.skillLoaded).toBe(false)

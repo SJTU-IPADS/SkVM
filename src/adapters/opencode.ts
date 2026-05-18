@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, TokenUsage, SkillMode } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, TokenUsage, SkillBundle } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, getHeadlessAgentConfig, expandHome, stripRoutingPrefix } from "../core/config.ts"
@@ -498,30 +498,27 @@ export class OpenCodeAdapter implements AgentAdapter {
   async run(task: {
     prompt: string
     workDir: string
-    skillContent?: string
-    skillMode?: SkillMode
-    skillMeta?: { name: string; description: string }
+    skill?: SkillBundle
     taskId?: string
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
   }): Promise<RunResult> {
-    const skillMode = task.skillMode ?? "inject"
     let skillLoaded: boolean | undefined
 
-    if (task.skillContent) {
-      if (skillMode === "inject") {
+    if (task.skill) {
+      if (task.skill.mode === "inject") {
         // Inject mode: write skill content to CONTEXT.md (opencode auto-loads into system prompt)
-        await Bun.write(path.join(task.workDir, "CONTEXT.md"), task.skillContent)
+        await Bun.write(path.join(task.workDir, "CONTEXT.md"), task.skill.content)
         // skillLoaded will be verified from NDJSON events below
         skillLoaded = false
       } else {
         // Discover mode (current behavior): copy to .opencode/skills/<name>/
-        const skillName = task.skillMeta?.name ?? "bench-skill"
-        const skillDesc = task.skillMeta?.description ?? "Benchmark skill injected by SkVM"
+        const skillName = task.skill.meta.name ?? "bench-skill"
+        const skillDesc = task.skill.meta.description ?? "Benchmark skill injected by SkVM"
         const skillDir = path.join(task.workDir, ".opencode", "skills", skillName)
         await mkdir(skillDir, { recursive: true })
         const frontmatter = `---\nname: ${skillName}\ndescription: ${skillDesc}\n---\n\n`
-        await Bun.write(path.join(skillDir, "SKILL.md"), frontmatter + task.skillContent)
+        await Bun.write(path.join(skillDir, "SKILL.md"), frontmatter + task.skill.content)
         // skillLoaded will be determined by checking NDJSON output below
         skillLoaded = false
       }
@@ -572,15 +569,15 @@ export class OpenCodeAdapter implements AgentAdapter {
     const events = parseNDJSON(stdout)
 
     // Verify skill was actually loaded from events
-    if (task.skillContent && skillLoaded === false) {
+    if (task.skill && skillLoaded === false) {
       // Extract a recognizable snippet from skill content for matching
-      const skillSnippet = task.skillContent.replace(/^#.*\n/m, "").trim().slice(0, 60)
+      const skillSnippet = task.skill.content.replace(/^#.*\n/m, "").trim().slice(0, 60)
 
       for (const event of events) {
         if (skillLoaded) break
         const part = event.part ?? {}
 
-        if (skillMode === "discover" && event.type === "tool_use") {
+        if (task.skill.mode === "discover" && event.type === "tool_use") {
           // Discover: check if agent called the `skill` tool
           const toolName = (part.tool as string) ?? (part.name as string) ?? ""
           if (toolName === "skill") {
@@ -588,7 +585,7 @@ export class OpenCodeAdapter implements AgentAdapter {
           }
         }
 
-        if (skillMode === "inject") {
+        if (task.skill.mode === "inject") {
           // Inject: CONTEXT.md loaded into system prompt — verify agent shows
           // awareness by checking if any step_finish event exists (agent ran with
           // the instructions), AND if the CONTEXT.md file was consumed

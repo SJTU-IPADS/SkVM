@@ -1,11 +1,13 @@
 /**
- * Reject unknown CLI flags with a typo-aware error.
+ * Reject unknown CLI flags with a typo-aware error, and parse skill-mode flag.
  *
  * Each `runX` function in src/index.ts (and the bench mode dispatcher) calls
  * `assertKnownFlags(label, flags, KNOWN_FLAGS)` at the very top so that a
  * misspelled flag (e.g. `--adpter` instead of `--adapter`) terminates with a
  * loud error instead of silently falling through to the default. See #12.
  */
+
+import type { SkillMode } from "./types.ts"
 
 export const GLOBAL_FLAGS: ReadonlySet<string> = new Set([
   "help",
@@ -76,4 +78,23 @@ function levenshtein(a: string, b: string): number {
     for (let j = 0; j <= b.length; j++) prev[j] = curr[j]
   }
   return prev[b.length]
+}
+
+/**
+ * Parse the --skill-mode flag, returning the mode or undefined if not set.
+ *
+ * Valid values: "inject" | "discover"
+ * Exits with error on invalid value.
+ * Keep this module small and side-effect free except for the deliberate
+ * `process.exit` on validation failure, which is the standard error path
+ * used by all other CLI flag handling in src/index.ts.
+ */
+export function parseSkillModeFlag(flags: Record<string, string>): SkillMode | undefined {
+  const v = flags["skill-mode"]
+  if (v === undefined) return undefined
+  if (v !== "inject" && v !== "discover") {
+    console.error(`Error: unknown skill mode "${v}". Valid: inject, discover`)
+    process.exit(1)
+  }
+  return v
 }

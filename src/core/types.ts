@@ -539,6 +539,21 @@ export type HeadlessAgentConfig = z.infer<typeof HeadlessAgentConfigSchema>
 
 export type SkillMode = "inject" | "discover"
 
+/**
+ * The complete bundle needed to load a skill into an agent run.
+ * Either the whole bundle is present or none of it — partial states
+ * (content without mode, content without meta) are unrepresentable.
+ *
+ * The single source of truth for the default `mode` is
+ * `CLI_DEFAULTS.skillMode` in src/core/ui-defaults.ts, applied exclusively
+ * by `buildSkillBundle()` in src/core/skill-loader.ts.
+ */
+export interface SkillBundle {
+  content: string
+  meta: { name: string; description: string }
+  mode: SkillMode
+}
+
 // ---------------------------------------------------------------------------
 // Agent Adapter Interface
 // ---------------------------------------------------------------------------
@@ -549,9 +564,15 @@ export interface AgentAdapter {
   run(task: {
     prompt: string
     workDir: string
-    skillContent?: string
-    skillMode?: SkillMode
-    skillMeta?: { name: string; description: string }
+    /**
+     * Complete skill bundle to load for this run. Either all three of
+     * `content`/`meta`/`mode` are present together (as `SkillBundle`) or
+     * the field is `undefined`. Partial states are unrepresentable.
+     *
+     * The CLI default `mode` is applied by `buildSkillBundle` in
+     * `src/core/skill-loader.ts`; adapters can rely on `mode` being set.
+     */
+    skill?: SkillBundle
     taskId?: string
     convLog?: ConversationLog
     /** Per-task timeout override (ms). Falls back to adapter setup timeout. */

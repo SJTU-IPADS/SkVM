@@ -1234,7 +1234,7 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
       const result = await adapter.run({
         prompt: task.prompt,
         workDir: runWorkDir,
-        skillContent,
+        skill: { content: skillContent, meta: skill.skillMeta, mode: "inject" },
         convLog,
         timeoutMs: resolved.timeoutMs,
       })

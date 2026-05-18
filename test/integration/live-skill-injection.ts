@@ -178,7 +178,7 @@ const resultWithSkill = await runTask({
   task,
   adapter: createAdapter(),
   adapterConfig,
-  skillContent,
+  skill: { content: skillContent, meta: { name: "document-pdf", description: "" }, mode: "inject" },
 })
 
 console.log(`  Result: ${resultWithSkill.overallPass ? "PASS" : "FAIL"} (score=${resultWithSkill.overallScore.toFixed(2)})`)

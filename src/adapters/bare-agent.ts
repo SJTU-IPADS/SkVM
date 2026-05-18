@@ -1,6 +1,6 @@
 import path from "node:path"
 import { readdir, mkdir } from "node:fs/promises"
-import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, TokenUsage, SkillMode } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, TokenUsage, SkillBundle } from "../core/types.ts"
 import { emptyTokenUsage, addTokenUsage } from "../core/types.ts"
 import type { LLMProvider, LLMTool, LLMToolCall, LLMToolResult, LLMResponse, CompletionParams } from "../providers/types.ts"
 import type { RuntimeHooks } from "../runtime/types.ts"
@@ -146,15 +146,12 @@ export class BareAgentAdapter implements AgentAdapter {
   async run(task: {
     prompt: string
     workDir: string
-    skillContent?: string
-    skillMode?: SkillMode
-    skillMeta?: { name: string; description: string }
+    skill?: SkillBundle
     taskId?: string
     convLog?: ConversationLog
     timeoutMs?: number
   }): Promise<RunResult> {
     const startMs = performance.now()
-    const skillMode = task.skillMode ?? "inject"
 
     // Wrap provider with logging if conversation logging is enabled
     // Prefer explicitly-provided convLog (e.g. from bench/profiler) over session singleton
@@ -169,17 +166,17 @@ export class BareAgentAdapter implements AgentAdapter {
     // Build system prompt
     let system = "You are a helpful assistant that completes tasks by using tools. Work in the provided directory."
 
-    if (task.skillContent && skillMode === "inject") {
+    if (task.skill?.mode === "inject") {
       // Inject mode: embed full skill content in system prompt
-      system += `\n\n<skill>\n${task.skillContent}\n</skill>`
+      system += `\n\n<skill>\n${task.skill.content}\n</skill>`
       skillLoaded = true
-    } else if (task.skillContent && skillMode === "discover" && task.skillMeta) {
+    } else if (task.skill?.mode === "discover") {
       // Discover mode: copy skill dir to workDir, show only name+description in prompt
       await copySkillToDiscoverDir(
-        { skillContent: task.skillContent, skillMeta: task.skillMeta },
+        { skillContent: task.skill!.content, skillMeta: task.skill!.meta },
         task.workDir,
       )
-      const skillName = task.skillMeta.name
+      const skillName = task.skill!.meta.name
       system += `\n\n## Available Skills
 
 You have access to domain-specific skills. To load a skill, respond with EXACTLY:
@@ -189,7 +186,7 @@ You have access to domain-specific skills. To load a skill, respond with EXACTLY
 IMPORTANT: Replace "${skillName}" with the exact skill name from the list below. The opening <load-skill> and closing </load-skill> tags are both required.
 
 Available skills:
-- **${skillName}**: ${task.skillMeta.description}`
+- **${skillName}**: ${task.skill!.meta.description}`
     }
 
     // --- Hook: beforeLLM (short-circuit support) ---
@@ -273,11 +270,11 @@ Available skills:
         // tool_use blocks in one turn, we actually execute them concurrently.
         parallelToolExecution: true,
         onAfterLLM: async (response, iteration) => {
-          if (skillMode === "discover" && task.skillContent && task.skillMeta && !discoverSkillLoaded) {
+          if (task.skill?.mode === "discover" && !discoverSkillLoaded) {
             const skillMatch = response.text.match(LOAD_SKILL_RE)
             if (skillMatch) {
               const requestedName = (skillMatch[1] ?? "").trim()
-              if (requestedName === task.skillMeta.name) {
+              if (requestedName === task.skill!.meta.name) {
                 discoverSkillLoaded = true
                 skillLoaded = true
               }
@@ -322,7 +319,7 @@ Available skills:
       durationMs,
       llmDurationMs: loopResult.llmDurationMs,
       workDir: task.workDir,
-      skillLoaded: task.skillContent ? skillLoaded : undefined,
+      skillLoaded: task.skill ? skillLoaded : undefined,
       runStatus,
       ...(statusDetail ? { statusDetail } : {}),
       ...(loopResult.error ? { adapterError: { exitCode: 1, stderr: loopResult.error.message } } : {}),
