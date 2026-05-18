@@ -5,7 +5,7 @@ import { setLogLevel, createLogger, c, shouldUseColor } from "./core/logger.ts"
 import { createSpinner, createProgressSpinner, spinnerLog } from "./core/spinner.ts"
 import { ALL_ADAPTERS, type AdapterName, createAdapter, isAdapterName } from "./adapters/registry.ts"
 import { resolveAdapterConfigMode } from "./core/config.ts"
-import { assertKnownFlags } from "./core/cli-flags.ts"
+import { assertKnownFlags, parseSkillModeFlag } from "./core/cli-flags.ts"
 
 const noColor = (s: string) => s
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "./core/ui-defaults.ts"
@@ -384,6 +384,7 @@ Options:
 const RUN_KNOWN_FLAGS: ReadonlySet<string> = new Set([
   "task",
   "skill",
+  "skill-mode",
   "model",
   "adapter",
   "workdir",
@@ -407,6 +408,11 @@ Required:
 
 Options:
   --skill=<path>        Optional path to a SKILL.md file
+  --skill-mode=<mode>   inject | discover (default: inject).
+                        Requires --skill. inject: skill text is concatenated
+                        into the system prompt. discover: skill is written
+                        to .claude/skills/<name>/ and discovered via its
+                        SKILL.md description.
   --adapter=<name>      Agent adapter: ${ALL_ADAPTERS.join(" | ")} (default: ${CLI_DEFAULTS.adapter})
   --workdir=<path>      Use this directory instead of a temp work directory
   --timeout-ms=<n>      Override the per-task agent execution timeout (ms).
@@ -450,6 +456,12 @@ Notes:
       process.exit(1)
     }
     cliRunMaxSteps = n
+  }
+
+  const skillMode = parseSkillModeFlag(flags)
+  if (skillMode && !skillPath) {
+    console.error("run: --skill-mode requires --skill to also be specified")
+    process.exit(1)
   }
 
   const harnessStr = flags.adapter ?? CLI_DEFAULTS.adapter
@@ -521,6 +533,7 @@ Notes:
       skill,
       adapter,
       adapterConfig,
+      skillMode,
       workDir: flags.workdir,
       keepWorkDir: true,
     })

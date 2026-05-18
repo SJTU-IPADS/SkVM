@@ -5,8 +5,8 @@ import { z } from "zod"
 import { BenchTaskFileSchema } from "../bench/types.ts"
 import type { BenchTask } from "../bench/types.ts"
 import { EvalCriterionSchema } from "../core/types.ts"
-import type { AdapterConfig, AgentAdapter, EvalCriterion, RunResult } from "../core/types.ts"
-import { loadSkill as loadSkillFromPath } from "../core/skill-loader.ts"
+import type { AdapterConfig, AgentAdapter, EvalCriterion, RunResult, SkillMode } from "../core/types.ts"
+import { loadSkill as loadSkillFromPath, buildSkillBundle } from "../core/skill-loader.ts"
 import type { ResolvedSkill } from "../core/skill-loader.ts"
 import { createLogger } from "../core/logger.ts"
 
@@ -26,6 +26,7 @@ export interface ExecuteRunOptions {
   adapterConfig: AdapterConfig
   workDir?: string
   keepWorkDir?: boolean
+  skillMode?: SkillMode
 }
 
 export interface ExecuteRunResult {
@@ -101,7 +102,7 @@ export async function executeRun(opts: ExecuteRunOptions): Promise<ExecuteRunRes
     const runResult = await adapter.run({
       prompt: task.prompt,
       workDir,
-      skill: skill ? { content: skill.skillContent, meta: skill.skillMeta, mode: "inject" } : undefined,
+      skill: buildSkillBundle(skill, opts.skillMode),
       taskId: task.id,
       // Use the resolved timeout from adapterConfig (CLI override > task value)
       // rather than reading task.timeoutMs directly — otherwise a CLI
