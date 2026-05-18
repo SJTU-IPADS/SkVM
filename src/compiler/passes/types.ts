@@ -30,6 +30,10 @@ export interface PassContext {
   provider: LLMProvider
   failureContext?: FailureContext
   artifacts: ArtifactStore
+  /** Resolved agent-loop deadline (ms) for this pass run. The orchestrator
+   *  fills it from CompileOptions.timeoutMs, falling back to the per-actor
+   *  default. */
+  timeoutMs: number
 }
 
 export interface PassOutput {

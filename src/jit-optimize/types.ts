@@ -279,7 +279,7 @@ export interface OptimizeInput {
 export interface OptimizeConfig {
   /** Optimizer LLM model, shaped as "<provider>/<model-id>" */
   model: string
-  /** Timeout for the agent invocation (default: 600_000) */
+  /** Timeout for the agent invocation (default: TIMEOUT_DEFAULTS.optimizer) */
   timeoutMs?: number
   /** Directory to persist the optimizer conversation log */
   logDir?: string
@@ -504,6 +504,24 @@ export interface JitOptimizeConfig {
   evalJudgeModel?: string
   /** Optional adapter instance override (testing) */
   adapter?: AgentAdapter
+  /**
+   * CLI timeout ceiling for each per-round optimizer agent run (ms).
+   * When omitted, falls back to `TIMEOUT_DEFAULTS.optimizer` (600 000 ms).
+   */
+  optimizerTimeoutMs?: number
+  /**
+   * CLI timeout ceiling for the synthetic task-generation agent run (ms).
+   * Only used when `taskSource.kind === "synthetic-task"`.
+   * When omitted, falls back to `TIMEOUT_DEFAULTS.taskGen` (900 000 ms).
+   */
+  taskGenTimeoutMs?: number
+  /**
+   * CLI --timeout-ms value, used as the per-task execution timeout override for
+   * tasks synthesized by the synthetic-task source and as the read-back fallback
+   * in `loadGeneratedTasks`. When omitted, falls back to
+   * `TIMEOUT_DEFAULTS.syntheticTaskExec` (300 000 ms).
+   */
+  taskExecTimeoutMs?: number
 }
 
 // ---------------------------------------------------------------------------

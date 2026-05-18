@@ -392,6 +392,7 @@ async function executeBenchItem(
         ctx.config.jitRuns,
         ctx.evaluatorConfig,
         ctx.benchLogDir,
+        ctx.config.cliTimeoutMs,
       )
     }
 

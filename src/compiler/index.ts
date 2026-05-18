@@ -9,6 +9,7 @@ import { createSpinner } from "../core/spinner.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { LoggingProvider } from "../core/logging-provider.ts"
 import type { CompileOptions, CompilationResult } from "./types.ts"
+import { resolveCompilerTimeout } from "../core/timeouts.ts"
 import type { ArtifactKey, PassRunMeta } from "./artifacts.ts"
 import { ArtifactStore } from "./artifacts.ts"
 import type { CompilerPass, PassContext, SkillPatch } from "./passes/types.ts"
@@ -95,6 +96,7 @@ export async function compileSkill(
       provider: wrappedProvider,
       failureContext: opts.failureContext,
       artifacts: store,
+      timeoutMs: resolveCompilerTimeout({ cli: opts.timeoutMs }),
     }
     const sp = showSpinner ? createSpinner(`Compiling — ${pass.id}...`) : null
     if (!sp) log.info(`Pass ${pass.number} (${pass.id})`)

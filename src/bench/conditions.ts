@@ -15,6 +15,7 @@ import { contentHash, copySkillBundle } from "../core/skill-loader.ts"
 import type { ResolvedSkill } from "../core/skill-loader.ts"
 import { createLogger } from "../core/logger.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
+import { resolveCandidateGenTimeout } from "../core/timeouts.ts"
 
 const log = createLogger("bench-conditions")
 
@@ -624,6 +625,7 @@ export async function runJITBoost(
   jitRuns: number,
   evaluatorConfig?: EvaluatorConfig,
   convLogDir?: string,
+  cliTimeoutMs?: number,
 ): Promise<ConditionResult> {
   const { createBoostHooks, generateCandidatesFromConvLogs, generateBoostCandidates, saveBoostCandidates, saveSolidificationState } = await import("../jit-boost/index.ts")
   const { getJitBoostDir } = await import("../core/config.ts")
@@ -712,6 +714,8 @@ export async function runJITBoost(
   // -----------------------------------------------------------------------
   // Step 2: Generate candidates from warmup conv log
   // -----------------------------------------------------------------------
+  const candidateGenTimeoutMs = resolveCandidateGenTimeout({ cli: cliTimeoutMs })
+
   if (warmupLogPath) {
     // Phase 1: Identify patterns from conv log
     log.info(`[jit-boost] Phase 1: Identifying patterns from warmup conv log...`)
@@ -723,12 +727,12 @@ export async function runJITBoost(
       // Phase 2: Generate templates with full skill context
       log.info(`[jit-boost] Phase 2: Generating templates with skill context...`)
       const { generateTemplates } = await import("../jit-boost/candidates.ts")
-      const templateResult = await generateTemplates(genResult.candidates, genResult.snippets, skillDir, outputDir)
+      const templateResult = await generateTemplates(genResult.candidates, genResult.snippets, skillDir, outputDir, { timeoutMs: candidateGenTimeoutMs })
       log.info(`[jit-boost] Phase 2: ${templateResult.candidates.length} templates generated (cost=$${templateResult.cost.toFixed(4)})`)
     } else {
       // Fallback to doc-based generation
       log.warn(`[jit-boost] No candidates from conv log — falling back to doc-based generation`)
-      const fallback = await generateBoostCandidates(skillDir, outputDir)
+      const fallback = await generateBoostCandidates(skillDir, outputDir, { timeoutMs: candidateGenTimeoutMs })
       log.info(`[jit-boost] Fallback generated ${fallback.candidates.length} candidates (cost=$${fallback.cost.toFixed(4)})`)
     }
 
@@ -742,7 +746,7 @@ export async function runJITBoost(
     let candidates = await loadBoostCandidates(skillId)
     if (candidates.length === 0) {
       log.info(`[jit-boost] No conv log dir — generating candidates from docs...`)
-      await generateBoostCandidates(skillDir, outputDir)
+      await generateBoostCandidates(skillDir, outputDir, { timeoutMs: candidateGenTimeoutMs })
     }
   }
 

@@ -9,6 +9,7 @@ import { assertKnownFlags } from "./core/cli-flags.ts"
 
 const noColor = (s: string) => s
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "./core/ui-defaults.ts"
+import { TIMEOUT_DEFAULTS } from "./core/timeouts.ts"
 import pkgJson from "../package.json" with { type: "json" }
 
 const args = process.argv.slice(2)
@@ -152,6 +153,7 @@ const PROFILE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
   "batch",
   "concurrency",
   "adapter-config",
+  "timeout-ms",
 ])
 
 async function runProfile(flags: Record<string, string>) {
@@ -178,6 +180,8 @@ Options:
   --adapter-config=<m>  native | managed (default: defaults.adapterConfigMode in
                         skvm.config.json, falls back to managed). Native uses your
                         real harness config; managed uses providers.routes only.
+  --timeout-ms=<n>      Cap on each microbenchmark probe's adapter execution
+                        (ms). Default: ${TIMEOUT_DEFAULTS.taskExec}.
   --verbose             Show detailed output`)
     process.exit(0)
   }
@@ -203,6 +207,19 @@ Options:
   const concurrency = flags.concurrency ? parseInt(flags.concurrency) : CLI_DEFAULTS.concurrency
 
   const adapterMode = resolveAdapterConfigMode(flags["adapter-config"])
+
+  let cliProfileTimeoutMs: number | undefined
+  if (flags["timeout-ms"] !== undefined) {
+    const n = parseInt(flags["timeout-ms"], 10)
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`profile: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
+      process.exit(1)
+    }
+    cliProfileTimeoutMs = n
+  }
+  // Profile probe default now harmonizes with task-exec; previously
+  // hardcoded to 300s. CLI --timeout-ms wins absolutely.
+  const probeTimeoutMs = cliProfileTimeoutMs ?? TIMEOUT_DEFAULTS.taskExec
 
   // Resolve models
   let models: string[]
@@ -299,7 +316,7 @@ Options:
         model: job.model,
         harness: job.harness,
         adapter,
-        adapterConfig: { model: job.model, maxSteps: 25, timeoutMs: 300_000, mode: adapterMode },
+        adapterConfig: { model: job.model, maxSteps: 25, timeoutMs: probeTimeoutMs, mode: adapterMode },
         primitives,
         skip,
         instances,
@@ -309,7 +326,7 @@ Options:
         concurrency,
         adapterFactory: concurrency > 1 ? async () => {
           const a = createAdapter(job.harness)
-          await a.setup({ model: job.model, maxSteps: 25, timeoutMs: 300_000, mode: adapterMode })
+          await a.setup({ model: job.model, maxSteps: 25, timeoutMs: probeTimeoutMs, mode: adapterMode })
           return a
         } : undefined,
       })
@@ -332,6 +349,7 @@ Options:
     force,
     concurrency,
     adapterMode,
+    timeoutMs: probeTimeoutMs,
     logDirFactory: (harness, model) => {
       const dir = getProfileLogDir(harness, model)
       mkdirSync(dir, { recursive: true })
@@ -369,8 +387,8 @@ const RUN_KNOWN_FLAGS: ReadonlySet<string> = new Set([
   "model",
   "adapter",
   "workdir",
-  "timeoutMs",
-  "maxSteps",
+  "timeout-ms",
+  "max-steps",
   "adapter-config",
 ])
 
@@ -391,8 +409,11 @@ Options:
   --skill=<path>        Optional path to a SKILL.md file
   --adapter=<name>      Agent adapter: ${ALL_ADAPTERS.join(" | ")} (default: ${CLI_DEFAULTS.adapter})
   --workdir=<path>      Use this directory instead of a temp work directory
-  --timeoutMs=<n>       Override task timeout in ms
-  --maxSteps=<n>        Override max steps for the adapter
+  --timeout-ms=<n>      Override the per-task agent execution timeout (ms).
+                        This caps how long the target adapter spends solving
+                        one task. Falls back to task.json's \`timeoutMs\`,
+                        then to the built-in default (${TIMEOUT_DEFAULTS.taskExec}).
+  --max-steps=<n>       Override max steps for the adapter
   --adapter-config=<m>  native | managed (default: from skvm.config.json, else managed)
   --verbose             Show detailed output
 
@@ -409,6 +430,26 @@ Notes:
   if (!taskPath || !model) {
     console.error("--task and --model are required. Example: skvm run --task=path/to/task.json --model=<provider>/<model-id> [--skill=path/to/SKILL.md]")
     process.exit(1)
+  }
+
+  let cliRunTimeoutMs: number | undefined
+  if (flags["timeout-ms"] !== undefined) {
+    const n = parseInt(flags["timeout-ms"], 10)
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`run: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
+      process.exit(1)
+    }
+    cliRunTimeoutMs = n
+  }
+
+  let cliRunMaxSteps: number | undefined
+  if (flags["max-steps"] !== undefined) {
+    const n = parseInt(flags["max-steps"], 10)
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`run: --max-steps must be a positive integer (got "${flags["max-steps"]}")`)
+      process.exit(1)
+    }
+    cliRunMaxSteps = n
   }
 
   const harnessStr = flags.adapter ?? CLI_DEFAULTS.adapter
@@ -450,8 +491,8 @@ Notes:
 
   const { resolveTaskRuntime } = await import("./core/task-runtime.ts")
   const runRuntime = resolveTaskRuntime(task, {
-    timeoutMs: flags.timeoutMs ? parseInt(flags.timeoutMs) : undefined,
-    maxSteps: flags.maxSteps ? parseInt(flags.maxSteps) : undefined,
+    timeoutMs: cliRunTimeoutMs,
+    maxSteps: cliRunMaxSteps,
   })
   const adapterConfig: import("./core/types.ts").AdapterConfig = {
     model,
@@ -534,6 +575,7 @@ const COMPILE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
   "concurrency",
   "dry-run",
   "compiler-model",
+  "timeout-ms",
 ])
 
 async function runCompile(flags: Record<string, string>) {
@@ -553,7 +595,9 @@ Options:
   --list-passes         Print the pass registry and exit
   --concurrency=<n>     Parallel compilations (default: ${CLI_DEFAULTS.concurrency})
   --dry-run             Show plan without applying
-  --compiler-model=<id> Compiler model via OpenRouter (default: ${MODEL_DEFAULTS.compiler})`)
+  --compiler-model=<id> Compiler model via OpenRouter (default: ${MODEL_DEFAULTS.compiler})
+  --timeout-ms=<n>      Cap on the compiler agent loop (Pass 1, rewrite-skill)
+                        while it edits SKILL.md (ms). Default: ${TIMEOUT_DEFAULTS.compiler}.`)
     process.exit(0)
   }
 
@@ -561,6 +605,16 @@ Options:
     const { formatRegistry } = await import("./compiler/registry.ts")
     console.log(formatRegistry())
     process.exit(0)
+  }
+
+  let cliCompilerTimeoutMs: number | undefined
+  if (flags["timeout-ms"] !== undefined) {
+    const n = parseInt(flags["timeout-ms"], 10)
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`aot-compile: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
+      process.exit(1)
+    }
+    cliCompilerTimeoutMs = n
   }
 
   if (!flags.skill || !flags.model) {
@@ -719,6 +773,7 @@ Options:
         harness: job.adapter,
         passes,
         dryRun,
+        timeoutMs: cliCompilerTimeoutMs,
       }, provider, { showSpinner: !isMultiJob })
 
       if (!dryRun) {
@@ -781,6 +836,7 @@ const PIPELINE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
   "compiler-model",
   "dry-run",
   "adapter-config",
+  "timeout-ms",
 ])
 
 async function runPipeline(flags: Record<string, string>) {
@@ -799,8 +855,25 @@ Options:
   --profile=<path>        Use specific TCP file (skip auto-profiling)
   --pass=<list>           Compiler passes, comma-separated (default: ${CLI_DEFAULTS.compilerPasses.join(",")})
   --compiler-model=<id>   Compiler model via OpenRouter (default: ${MODEL_DEFAULTS.compiler})
-  --dry-run               Show compilation plan without writing`)
+  --dry-run               Show compilation plan without writing
+  --timeout-ms=<n>        Per-agent-loop ceiling for this pipeline run (ms).
+                          Applies to BOTH the profile stage's per-probe agent
+                          execution AND the compiler agent loop. Each is timed
+                          independently — this is a per-loop ceiling, not a
+                          total wall time.
+                          Default: ${TIMEOUT_DEFAULTS.taskExec} for profile,
+                          ${TIMEOUT_DEFAULTS.compiler} for compiler.`)
     process.exit(0)
+  }
+
+  let cliPipelineTimeoutMs: number | undefined
+  if (flags["timeout-ms"] !== undefined) {
+    const n = parseInt(flags["timeout-ms"], 10)
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`pipeline: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
+      process.exit(1)
+    }
+    cliPipelineTimeoutMs = n
   }
 
   const skillPath = flags.skill
@@ -889,7 +962,10 @@ Options:
         adapterConfig: {
           model,
           maxSteps: 25,
-          timeoutMs: 300_000,
+          // Profile probe default harmonizes with task-exec (120s); previously a
+          // standalone 300s literal. CLI --timeout-ms wins absolutely; see
+          // docs/skvm/2026-05-16-timeout-subsystem.md.
+          timeoutMs: cliPipelineTimeoutMs ?? TIMEOUT_DEFAULTS.taskExec,
           mode: adapterModePipeline,
         },
         force: true,
@@ -934,6 +1010,7 @@ Options:
     harness,
     passes,
     dryRun: flags["dry-run"] === "true",
+    timeoutMs: cliPipelineTimeoutMs,
   }, provider)
 
   // Print results
@@ -1577,6 +1654,8 @@ const JIT_OPTIMIZE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
   "concurrency",
   // Adapter mode
   "adapter-config",
+  // Per-agent-loop timeout / step overrides
+  "timeout-ms", "max-steps",
   // Detached invocation
   "detach",
 ])
@@ -1649,11 +1728,20 @@ Adapter config:
   --adapter-config=<m>       native | managed (default: defaults.adapterConfigMode in
                              skvm.config.json, else managed). Applies to the target
                              adapter that runs tasks during optimization.
-  --timeoutMs=<n>            Absolute override for task timeout in ms. When omitted,
-                             each task's own timeoutMs from task.json is honored
-                             (synthetic tasks fall back to the loader default).
-  --maxSteps=<n>             Absolute override for max agent steps per task. When
-                             omitted, each task's own maxSteps is honored.
+  --timeout-ms=<n>           Per-agent-loop ceiling for this jit-optimize run (ms).
+                             Applies to:
+                               - each per-task adapter execution
+                                 (default: ${TIMEOUT_DEFAULTS.taskExec})
+                               - each round's optimizer agent
+                                 (default: ${TIMEOUT_DEFAULTS.optimizer})
+                               - the synthetic task-gen agent if used
+                                 (default: ${TIMEOUT_DEFAULTS.taskGen})
+                               - synthetic tasks' default timeout when
+                                 --task-source=synthetic (default: ${TIMEOUT_DEFAULTS.syntheticTaskExec})
+                             Each agent loop is timed independently — this is a
+                             per-loop ceiling, not a total wall time.
+  --max-steps=<n>            Override max agent steps per task. When omitted,
+                             each task's own maxSteps is honored.
 
 Detached invocation:
   --detach                   Spawn a background worker and return as soon as
@@ -1701,19 +1789,19 @@ Detached invocation:
   }
   const adapterModeJit = resolveAdapterConfigMode(flags["adapter-config"])
   let timeoutMsJit: number | undefined
-  if (flags.timeoutMs !== undefined) {
-    const parsed = parseInt(flags.timeoutMs, 10)
+  if (flags["timeout-ms"] !== undefined) {
+    const parsed = parseInt(flags["timeout-ms"], 10)
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      console.error(`jit-optimize: --timeoutMs must be a positive integer (got "${flags.timeoutMs}")`)
+      console.error(`jit-optimize: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
       process.exit(1)
     }
     timeoutMsJit = parsed
   }
   let maxStepsJit: number | undefined
-  if (flags.maxSteps !== undefined) {
-    const parsed = parseInt(flags.maxSteps, 10)
+  if (flags["max-steps"] !== undefined) {
+    const parsed = parseInt(flags["max-steps"], 10)
     if (!Number.isFinite(parsed) || parsed < 1) {
-      console.error(`jit-optimize: --maxSteps must be a positive integer (got "${flags.maxSteps}")`)
+      console.error(`jit-optimize: --max-steps must be a positive integer (got "${flags["max-steps"]}")`)
       process.exit(1)
     }
     maxStepsJit = parsed
@@ -1772,6 +1860,7 @@ Detached invocation:
     targetAdapter,
     loop: { rounds, runsPerTask, taskConcurrency, convergence, baseline },
     delivery: { keepAllRounds, autoApply },
+    ...(timeoutMsJit !== undefined ? { optimizerTimeoutMs: timeoutMsJit, taskGenTimeoutMs: timeoutMsJit, taskExecTimeoutMs: timeoutMsJit } : {}),
   })
 
   // Detached invocation: parent forks a worker, awaits a `ready` handshake
