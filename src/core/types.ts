@@ -546,7 +546,9 @@ export type SkillMode = "inject" | "discover"
  *
  * The single source of truth for the default `mode` is
  * `CLI_DEFAULTS.skillMode` in src/core/ui-defaults.ts, applied exclusively
- * by `buildSkillBundle()` in src/core/skill-loader.ts.
+ * by `buildSkillBundle()` (from a ResolvedSkill) and
+ * `buildSkillBundleFromContent()` (from raw content + meta), both in
+ * src/core/skill-loader.ts. Every caller routes through one of these.
  */
 export interface SkillBundle {
   content: string

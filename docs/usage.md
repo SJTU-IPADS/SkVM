@@ -119,7 +119,7 @@ skvm run --task=path/to/task.json --model=<id> --adapter=bare-agent
 # With a skill
 skvm run --task=<path> --skill=<path> --model=<id> --adapter=bare-agent
 
-# Control how the skill is delivered to the adapter (inject|discover, default: discover)
+# Control how the skill is delivered to the adapter (inject|discover, default: inject)
 skvm run --task=<path> --skill=<path> --model=<id> --adapter=bare-agent --skill-mode=inject
 
 # Reuse a work directory (no cleanup between runs)

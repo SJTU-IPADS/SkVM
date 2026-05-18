@@ -76,10 +76,15 @@ export async function runBench(flags: Record<string, string>): Promise<void> {
     return
   }
 
+  // Parse skill mode early — custom-plan mode (below) needs it too,
+  // otherwise `bench --custom ... --skill-mode=discover` would be
+  // accepted (flag is known) but silently ignored.
+  const skillMode = parseSkillModeFlag(flags)
+
   // Handle --custom=<file.yaml>: standalone custom plan mode
   if (flags.custom) {
     const { executeCustomPlan } = await import("./custom-plan.ts")
-    await executeCustomPlan(flags.custom, flags.resume, resolveAdapterConfigMode(flags["adapter-config"]))
+    await executeCustomPlan(flags.custom, flags.resume, resolveAdapterConfigMode(flags["adapter-config"]), skillMode)
     return
   }
 
@@ -98,9 +103,6 @@ export async function runBench(flags: Record<string, string>): Promise<void> {
   }
 
   const tasks = flags.tasks ? flags.tasks.split(",").map(t => t.trim()) : undefined
-
-  // Parse skill mode
-  const skillMode = parseSkillModeFlag(flags)
 
   // Parse adapter(s): comma-separated
   const adapterRaw = (flags.adapter ?? CLI_DEFAULTS.adapter).split(",").map(a => a.trim())

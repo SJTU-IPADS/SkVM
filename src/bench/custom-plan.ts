@@ -3,7 +3,7 @@ import { mkdir, readdir, copyFile } from "node:fs/promises"
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { parse as parseYaml } from "yaml"
-import type { AgentAdapter, AdapterConfig } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, SkillMode } from "../core/types.ts"
 import type { LLMProvider } from "../providers/types.ts"
 import type { EvaluatorConfig } from "../framework/evaluator.ts"
 import type {
@@ -243,6 +243,7 @@ export async function executeCustomPlan(
   yamlPath: string,
   resumeSession?: string,
   adapterConfigMode?: import("../core/types.ts").AdapterConfigMode,
+  skillMode?: SkillMode,
 ): Promise<void> {
   const { workItems, concurrency } = await parseCustomPlan(yamlPath)
 
@@ -440,7 +441,7 @@ export async function executeCustomPlan(
           result = await runCustomSkill(
             task, runner.adapter, adapterConfig,
             item.label, skillDir,
-            undefined, evaluatorConfig, convLog,
+            skillMode, evaluatorConfig, convLog,
           )
         } else {
           result = await runNoSkill(
