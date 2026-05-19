@@ -95,6 +95,40 @@ export function isToolChoiceUnsupportedError(err: unknown): boolean {
   return err.message.toLowerCase().includes("tool_choice")
 }
 
+/**
+ * Tool-call arguments string from the model could not be parsed as JSON.
+ *
+ * Symptom of issue #26: some OpenAI-compatible gateways serving thinking-mode
+ * models leak reasoning content into `tool_calls[].function.arguments` instead
+ * of routing it to a separate `reasoning_content` field. The result is a
+ * string like `<think>...</think>{...}` or GLM-private `<tool_call>...` XML
+ * that `JSON.parse` cannot consume.
+ *
+ * Surfaced by `openai-compatible.ts` / `openrouter.ts` instead of the previous
+ * silent `args = { raw: ... }` fallback. `structured.ts` Layer 2 prompt+parse
+ * picks this up as a content miss; `auto-probe.ts` recognizes it as the
+ * trigger to test the Anthropic-shaped path on the same host.
+ *
+ * Carries the raw argument string for diagnostic logging.
+ */
+export class ToolArgumentsParseError extends ProviderError {
+  constructor(provider: string, readonly rawArguments: string, cause?: unknown) {
+    super(
+      `tool_call arguments not parseable as JSON (${rawArguments.length} chars): ` +
+      `${JSON.stringify(rawArguments.slice(0, 120))}${rawArguments.length > 120 ? "…" : ""}`,
+      provider,
+      cause,
+      false,
+    )
+    this.name = "ToolArgumentsParseError"
+  }
+}
+
+/** Type guard for the parse-failure case specifically. */
+export function isToolArgumentsParseError(err: unknown): err is ToolArgumentsParseError {
+  return err instanceof ToolArgumentsParseError
+}
+
 /** Substring hints suggesting `fetch()` threw a transient network error. */
 const NETWORK_ERROR_HINTS = [
   "socket",

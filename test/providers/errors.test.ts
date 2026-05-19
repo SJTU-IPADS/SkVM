@@ -8,6 +8,8 @@ import {
   isToolChoiceUnsupportedError,
   isRetryableStatus,
   looksLikeNetworkError,
+  ToolArgumentsParseError,
+  isToolArgumentsParseError,
 } from "../../src/providers/errors.ts"
 
 describe("ProviderError classification", () => {
@@ -107,5 +109,27 @@ describe("looksLikeNetworkError", () => {
   test("rejects non-network errors", () => {
     expect(looksLikeNetworkError(new Error("JSON parse error"))).toBe(false)
     expect(looksLikeNetworkError("not an error")).toBe(false)
+  })
+})
+
+describe("ToolArgumentsParseError", () => {
+  test("ToolArgumentsParseError carries raw arguments and is a ProviderError", () => {
+    const err = new ToolArgumentsParseError(
+      "openai-compatible(test)",
+      "<think>x</think>{bad",
+      new SyntaxError("Unrecognized token '<'"),
+    )
+    expect(err.name).toBe("ToolArgumentsParseError")
+    expect(err.rawArguments).toBe("<think>x</think>{bad")
+    expect(err.cause).toBeInstanceOf(SyntaxError)
+    expect(isToolArgumentsParseError(err)).toBe(true)
+    expect(isProviderError(err)).toBe(true)
+    expect(err.retryable).toBe(false)
+  })
+
+  test("isToolArgumentsParseError narrows non-matching errors", () => {
+    expect(isToolArgumentsParseError(new Error("other"))).toBe(false)
+    expect(isToolArgumentsParseError(undefined)).toBe(false)
+    expect(isToolArgumentsParseError(null)).toBe(false)
   })
 })
