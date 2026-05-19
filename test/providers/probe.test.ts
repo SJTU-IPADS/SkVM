@@ -1,5 +1,7 @@
 import { test, expect, describe } from "bun:test"
-import { classifyArguments, inferAnthropicBaseUrl } from "../../src/providers/probe.ts"
+import { classifyArguments, inferAnthropicBaseUrl, runProbe } from "../../src/providers/probe.ts"
+import type { LLMProvider, LLMResponse, CompletionParams } from "../../src/providers/types.ts"
+import { ToolArgumentsParseError } from "../../src/providers/errors.ts"
 
 describe("classifyArguments", () => {
   const expected = { name: "probe", score: 42 }
@@ -43,5 +45,67 @@ describe("inferAnthropicBaseUrl", () => {
   test("returns null on invalid input", () => {
     expect(inferAnthropicBaseUrl("")).toBe(null)
     expect(inferAnthropicBaseUrl("not-a-url")).toBe(null)
+  })
+})
+
+function fakeProvider(name: string, behavior: (p: CompletionParams) => Promise<LLMResponse> | LLMResponse): LLMProvider {
+  return {
+    name,
+    complete: async (p: CompletionParams) => behavior(p),
+  } as LLMProvider
+}
+
+describe("runProbe", () => {
+  test("clean primary: returns verdict=clean, no alt invoked", async () => {
+    let altInvoked = false
+    const primary = fakeProvider("p", () => ({
+      text: "",
+      toolCalls: [{ id: "1", name: "extract_probe", arguments: { name: "probe", score: 42 } }],
+      tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+      durationMs: 0,
+      stopReason: "tool_use",
+    }))
+    const alt = fakeProvider("alt", () => { altInvoked = true; throw new Error("should not be called") })
+    const verdict = await runProbe({ primary, alt: () => alt })
+    expect(verdict.primary).toBe("clean")
+    expect(verdict.alt).toBeUndefined()
+    expect(altInvoked).toBe(false)
+  })
+
+  test("polluted primary + clean alt: returns both verdicts", async () => {
+    const primary = fakeProvider("p", () => { throw new ToolArgumentsParseError("p", "<think>x</think>{}") })
+    const alt = fakeProvider("a", () => ({
+      text: "",
+      toolCalls: [{ id: "1", name: "extract_probe", arguments: { name: "probe", score: 42 } }],
+      tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+      durationMs: 0,
+      stopReason: "tool_use",
+    }))
+    const verdict = await runProbe({ primary, alt: () => alt })
+    expect(verdict.primary).toBe("polluted")
+    expect(verdict.alt).toBe("clean")
+  })
+
+  test("polluted primary + polluted alt: returns both verdicts polluted", async () => {
+    const primary = fakeProvider("p", () => { throw new ToolArgumentsParseError("p", "<think>") })
+    const alt = fakeProvider("a", () => { throw new ToolArgumentsParseError("a", "ACHI") })
+    const verdict = await runProbe({ primary, alt: () => alt })
+    expect(verdict.primary).toBe("polluted")
+    expect(verdict.alt).toBe("polluted")
+  })
+
+  test("network error on primary returns verdict=indeterminate", async () => {
+    const primary = fakeProvider("p", () => { throw new Error("ECONNRESET") })
+    const verdict = await runProbe({ primary, alt: () => fakeProvider("a", () => ({} as LLMResponse)) })
+    expect(verdict.primary).toBe("indeterminate")
+    expect(verdict.alt).toBeUndefined()
+  })
+
+  test("polluted primary + alt throws non-parse error: alt verdict=indeterminate", async () => {
+    const primary = fakeProvider("p", () => { throw new ToolArgumentsParseError("p", "<think>") })
+    const alt = fakeProvider("a", () => { throw new Error("404") })
+    const verdict = await runProbe({ primary, alt: () => alt })
+    expect(verdict.primary).toBe("polluted")
+    expect(verdict.alt).toBe("indeterminate")
   })
 })

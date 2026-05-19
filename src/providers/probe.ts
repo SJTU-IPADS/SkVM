@@ -7,6 +7,8 @@
  *
  * Spec: docs/skvm/2026-05-19-provider-auto-probe.md (Section "Verdict mapping").
  */
+import type { LLMProvider, LLMToolCall } from "./types.ts"
+import { isToolArgumentsParseError } from "./errors.ts"
 
 export type ProbeVerdict = "clean" | "polluted" | "indeterminate"
 
@@ -69,4 +71,88 @@ export function inferAnthropicBaseUrl(openaiBaseUrl: string): string | null {
   url.pathname = stripped
   // URL.toString() may append a trailing "/" — strip to match SDK conventions.
   return url.toString().replace(/\/$/, "")
+}
+
+// ---------------------------------------------------------------------------
+// runProbe: synthetic tool-use call → verdict
+// ---------------------------------------------------------------------------
+
+const PROBE_EXPECTED = { name: "probe", score: 42 } as const
+
+const PROBE_TOOL = {
+  name: "extract_probe",
+  description: "Return the probe values exactly as requested.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "person's name" },
+      score: { type: "number", description: "score value" },
+    },
+    required: ["name", "score"],
+  } as Record<string, unknown>,
+}
+
+const PROBE_SYSTEM = "Extract a probe value. Call the tool with exactly the requested arguments."
+const PROBE_USER = `Call extract_probe with name="probe" and score=42.`
+
+export interface ProbeVerdictResult {
+  primary: ProbeVerdict
+  alt?: ProbeVerdict
+}
+
+export interface RunProbeOpts {
+  primary: LLMProvider
+  /** Lazy alt-provider constructor; only invoked if primary is polluted. */
+  alt: () => LLMProvider
+}
+
+/**
+ * Send a deterministic synthetic tool-use call to `primary`, classify the
+ * verdict. If the primary verdict is `polluted`, also invoke `alt` and
+ * classify its verdict. Returns both classifications.
+ *
+ * 30-second hard timeout per call. Caller is responsible for deciding what
+ * to write to config based on the returned verdicts.
+ */
+export async function runProbe(opts: RunProbeOpts): Promise<ProbeVerdictResult> {
+  const primary = await probeOnce(opts.primary)
+  if (primary !== "polluted") return { primary }
+  const alt = await probeOnce(opts.alt())
+  return { primary, alt }
+}
+
+async function probeOnce(provider: LLMProvider): Promise<ProbeVerdict> {
+  const PROBE_TIMEOUT_MS = 30_000
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<"indeterminate">((resolve) => {
+    timer = setTimeout(() => resolve("indeterminate"), PROBE_TIMEOUT_MS)
+  })
+  const work = (async (): Promise<ProbeVerdict> => {
+    try {
+      const res = await provider.complete({
+        messages: [{ role: "user", content: PROBE_USER }],
+        system: PROBE_SYSTEM,
+        tools: [PROBE_TOOL],
+        toolChoice: { name: PROBE_TOOL.name },
+        temperature: 0,
+        maxTokens: 256,
+      })
+      const tc: LLMToolCall | undefined = res.toolCalls[0]
+      if (!tc) return "polluted"
+      const raw = JSON.stringify(tc.arguments)
+      return classifyArguments(raw, PROBE_EXPECTED)
+    } catch (err) {
+      if (isToolArgumentsParseError(err)) {
+        // The provider already classified this as parse-failure on the wire.
+        return "polluted"
+      }
+      // Anything else (network, 4xx, 5xx) is indeterminate.
+      return "indeterminate"
+    }
+  })()
+  try {
+    return await Promise.race([work, timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
