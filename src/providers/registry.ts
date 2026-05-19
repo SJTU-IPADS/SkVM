@@ -77,7 +77,14 @@ export function validateModelIdForRoute(modelId: string, route: ProviderRoute): 
       return
     }
     case "anthropic": {
-      if (!/^claude-/i.test(bare)) {
+      // The `claude-*` prefix check only applies to the official Anthropic
+      // endpoint. Third-party Anthropic-compatible gateways (e.g. xty.app's
+      // /v1/messages, DeepSeek's /anthropic, Minimax's /anthropic) serve
+      // non-Anthropic-vendor models whose ids do not start with "claude-"
+      // (glm-5-thinking, minimax-m2.5, etc.). Skip the prefix check when a
+      // custom baseUrl is configured and it is not api.anthropic.com.
+      const isOfficial = !route.baseUrl || /api\.anthropic\.com/.test(route.baseUrl)
+      if (isOfficial && !/^claude-/i.test(bare)) {
         throw new Error(
           `Model id "${modelId}" doesn't look like an Anthropic model. ` +
           `Anthropic SDK expects ids starting with "claude-" (e.g. "anthropic/claude-sonnet-4.6"). ` +

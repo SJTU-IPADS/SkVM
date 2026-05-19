@@ -188,6 +188,34 @@ describe("validateModelIdForRoute", () => {
   })
 })
 
+describe("validateModelIdForRoute on anthropic kind", () => {
+  test("rejects non-claude id when baseUrl is missing (official Anthropic)", () => {
+    const route: ProviderRoute = {
+      match: "anthropic/*", kind: "anthropic", apiKey: "k",
+    }
+    expect(() => validateModelIdForRoute("anthropic/glm-5-thinking", route))
+      .toThrow(/doesn't look like an Anthropic model/)
+  })
+
+  test("rejects non-claude id when baseUrl is api.anthropic.com", () => {
+    const route: ProviderRoute = {
+      match: "anthropic/*", kind: "anthropic",
+      baseUrl: "https://api.anthropic.com", apiKey: "k",
+    }
+    expect(() => validateModelIdForRoute("anthropic/glm-5-thinking", route))
+      .toThrow(/doesn't look like an Anthropic model/)
+  })
+
+  test("accepts non-claude id when baseUrl is a third-party gateway", () => {
+    const route: ProviderRoute = {
+      match: "gw_anthropic/*", kind: "anthropic",
+      baseUrl: "https://gateway.example.com", apiKey: "k",
+    }
+    expect(() => validateModelIdForRoute("gw_anthropic/glm-5-thinking", route))
+      .not.toThrow()
+  })
+})
+
 // ---------------------------------------------------------------------------
 // registry: anthropic route.baseUrl is threaded into AnthropicProvider
 // ---------------------------------------------------------------------------
