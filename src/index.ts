@@ -13,6 +13,15 @@ import { TIMEOUT_DEFAULTS } from "./core/timeouts.ts"
 import pkgJson from "../package.json" with { type: "json" }
 
 const args = process.argv.slice(2)
+// Strip --no-auto-probe before any subcommand or flag parsing so it works
+// regardless of position (before or after the subcommand name).
+{
+  const idx = args.indexOf("--no-auto-probe")
+  if (idx !== -1) {
+    process.env.SKVM_AUTO_PROBE = "0"
+    args.splice(idx, 1)
+  }
+}
 const rawCommand = args[0]
 // Accept `--help` / `-h` at the top level as a synonym for no-command (help
 // output). Accept `--version` / `-v` and print the bundled package version.
@@ -75,6 +84,7 @@ Global Options:
   --skvm-cache=<path>      Override cache root (default: ~/.skvm)
   --skvm-data-dir=<path>   Override dataset root (default: ./skvm-data)
   --verbose                Enable debug logging
+  --no-auto-probe          Disable auto-probe for this invocation (also via SKVM_AUTO_PROBE=0)
   --version, -v            Print version and exit
   --help, -h               Print this help and exit
 
