@@ -275,29 +275,27 @@ export function splitPiModel(piModel: string): { provider: string; modelId: stri
 }
 
 // ---------------------------------------------------------------------------
-// models.json renderer for openai-compatible baseUrl overrides
+// models.json renderer
 // ---------------------------------------------------------------------------
 
 /**
- * Pi reads provider baseUrl overrides and custom model registrations from
- * `models.json`. For openai-compatible routes with a non-default baseUrl,
- * emit both the baseUrl override AND a custom-model entry for `modelId` so
- * `ModelRegistry.find("openai", modelId)` succeeds — required by the library
- * (in-process) path. Pi's CLI is more lenient and accepts unknown ids, but
- * registering them explicitly is harmless on either path.
+ * Pi's `models.json` is the override / custom-model file. Pi's `ModelRegistry.find()`
+ * (used by the library path) requires a model id to be in its registry to succeed;
+ * pi's CLI has a relaxed fallback, but we lose that by going in-process.
  *
- * Returns null when no override is needed (non-openai-compatible routes,
- * or openai-compatible without baseUrl).
+ * To keep parity, we always register the model id under the matching pi provider.
+ * For openai-compatible routes we also override `baseUrl`. For built-in providers
+ * (openai/anthropic/openrouter) custom model entries inherit api/baseUrl from
+ * the built-ins, so a minimal `{id}` is enough.
+ *
+ * Returns the JSON string to drop into `<agentDir>/models.json`.
  */
-export function renderPiModelsJson(route: ProviderRoute, modelId: string): string | null {
-  if (route.kind !== "openai-compatible" || !route.baseUrl) return null
-  const doc = {
-    providers: {
-      openai: {
-        baseUrl: route.baseUrl,
-        models: [{ id: modelId }],
-      },
-    },
+export function renderPiModelsJson(route: ProviderRoute, modelId: string): string {
+  const piProviderKey = route.kind === "openai-compatible" ? "openai" : route.kind
+  const providerConfig: Record<string, unknown> = { models: [{ id: modelId }] }
+  if (route.kind === "openai-compatible" && route.baseUrl) {
+    providerConfig.baseUrl = route.baseUrl
   }
+  const doc = { providers: { [piProviderKey]: providerConfig } }
   return JSON.stringify(doc, null, 2) + "\n"
 }

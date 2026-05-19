@@ -62,7 +62,7 @@ export async function runPiDriver(
 
   try {
     const modelsJson = renderPiModelsJson(route, piModelId)
-    if (modelsJson) await Bun.write(path.join(agentDir, "models.json"), modelsJson)
+    await Bun.write(path.join(agentDir, "models.json"), modelsJson)
 
     // Credentials via AuthStorage runtime overrides (same path as pi's
     // --api-key CLI flag). NOT process.env — concurrent calls would race.
@@ -146,6 +146,18 @@ export async function runPiDriver(
     // event types (queue_update, compaction_*, auto_retry_*) are not
     // matched by piEventsToRunResult and get filtered out for free.
     const runStats = piEventsToRunResult(events as unknown as PiEvent[], cwd, durationMs)
+
+    // Translate pi-reported agent errors (auth, rate limit, provider 5xx, etc.)
+    // into HeadlessAgentError so callers can distinguish "infra failed" from
+    // "agent produced an empty result". Subprocess driver gets this for free
+    // via exit codes; the library path has to do it explicitly.
+    if (runStats.adapterError && (opts.throwOnError ?? true)) {
+      throw new HeadlessAgentError(
+        `pi agent_end stopReason=error: ${runStats.adapterError.stderr}`,
+        "pi", 1, false, runStats.adapterError.stderr,
+      )
+    }
+
     return {
       exitCode: timedOut ? 1 : 0,
       durationMs,

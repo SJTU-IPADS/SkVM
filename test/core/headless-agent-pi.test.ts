@@ -13,6 +13,7 @@ let lastSubscribe: ((e: any) => void) | null = null
 let lastPromptText: string | null = null
 let promptDelayMs = 0
 let abortCalled = false
+let promptShouldError = false
 
 mock.module("@mariozechner/pi-coding-agent", () => {
   return {
@@ -30,21 +31,40 @@ mock.module("@mariozechner/pi-coding-agent", () => {
               await new Promise(r => setTimeout(r, promptDelayMs))
             }
             // Emit a synthetic agent_end so piEventsToRunResult has data.
-            lastSubscribe?.({
-              type: "agent_end",
-              messages: [{
-                role: "assistant",
-                content: [{ type: "text", text: "done" }],
-                api: "openai", provider: "openai", model: "gpt-4o-mini",
-                usage: {
-                  input: 10, output: 20, cacheRead: 0, cacheWrite: 0,
-                  totalTokens: 30,
-                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0042 },
-                },
-                stopReason: "stop",
-                timestamp: Date.now(),
-              }],
-            })
+            if (promptShouldError) {
+              lastSubscribe?.({
+                type: "agent_end",
+                messages: [{
+                  role: "assistant",
+                  content: [{ type: "text", text: "" }],
+                  api: "openai", provider: "openai", model: "gpt-4o-mini",
+                  usage: {
+                    input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+                    totalTokens: 0,
+                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+                  },
+                  stopReason: "error",
+                  errorMessage: "fake provider 5xx",
+                  timestamp: Date.now(),
+                }],
+              })
+            } else {
+              lastSubscribe?.({
+                type: "agent_end",
+                messages: [{
+                  role: "assistant",
+                  content: [{ type: "text", text: "done" }],
+                  api: "openai", provider: "openai", model: "gpt-4o-mini",
+                  usage: {
+                    input: 10, output: 20, cacheRead: 0, cacheWrite: 0,
+                    totalTokens: 30,
+                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0042 },
+                  },
+                  stopReason: "stop",
+                  timestamp: Date.now(),
+                }],
+              })
+            }
           },
           abort: async () => { abortCalled = true },
           dispose: () => { /* noop */ },
@@ -110,6 +130,7 @@ beforeEach(() => {
   lastPromptText = null
   promptDelayMs = 0
   abortCalled = false
+  promptShouldError = false
 })
 
 describe("runHeadlessAgent (driver=pi, library mode)", () => {
@@ -179,6 +200,22 @@ describe("runHeadlessAgent (driver=pi, library mode)", () => {
         })
       ).rejects.toThrow(/timed out/)
       expect(abortCalled).toBe(true)
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test("throws HeadlessAgentError when pi reports stopReason=error", async () => {
+    promptShouldError = true
+    const workDir = mkdtempSync(path.join(tmpdir(), "skvm-pi-driver-test-"))
+    try {
+      await expect(
+        runHeadlessAgent({
+          cwd: workDir, prompt: "x",
+          model: "anthropic/claude-sonnet-4.6",
+          timeoutMs: 5000,
+        })
+      ).rejects.toThrow(/stopReason=error/)
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

@@ -180,12 +180,13 @@ export class PiAdapter implements AgentAdapter {
     } else {
       // Managed: start from empty. Pi's auth precedence (auth.json → OAuth →
       // env var → fallback) means we can authenticate via env vars alone, so
-      // no auth.json is needed. Only write models.json when the route has a
-      // custom baseUrl that pi can't pick up from env vars.
+      // no auth.json is needed. Always write models.json to register the model
+      // id under the matching pi provider so ModelRegistry.find() succeeds on
+      // the library (in-process) path.
       const route = resolveRoute(config.model)
       const { modelId: piModelId } = splitPiModel(this.model)
       const doc = renderPiModelsJson(route, piModelId)
-      if (doc) await Bun.write(path.join(root, "models.json"), doc)
+      await Bun.write(path.join(root, "models.json"), doc)
     }
 
     log.info(`pi command: ${this.cmdPrefix.join(" ")}`)
