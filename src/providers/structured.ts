@@ -2,7 +2,7 @@ import { z, type ZodType } from "zod"
 import type { LLMProvider } from "./types.ts"
 import type { TokenUsage } from "../core/types.ts"
 import { emptyTokenUsage, addTokenUsage } from "../core/types.ts"
-import { isProviderError, isToolChoiceUnsupportedError } from "./errors.ts"
+import { isProviderError, isToolChoiceUnsupportedError, isToolArgumentsParseError } from "./errors.ts"
 import { createLogger } from "../core/logger.ts"
 
 const log = createLogger("structured")
@@ -54,6 +54,13 @@ export async function extractStructured<T>(opts: {
     // tool_choice, so prompt+parse on the same provider can still succeed.
     if (isToolChoiceUnsupportedError(err)) {
       log.warn(`provider rejected forced tool_choice (likely a thinking-mode model); falling back to prompt+parse`)
+    } else if (isToolArgumentsParseError(err)) {
+      // tool_call arguments were unparseable — likely issue #26 thinking-mode
+      // pollution (e.g. "<think>…</think>{…}" leaked into function.arguments).
+      // Layer 2 sends no tool_choice, so prompt+parse on the same provider can
+      // still recover the structured output. Must come before the generic
+      // isProviderError branch because ToolArgumentsParseError is a subclass.
+      log.warn(`tool_use returned unparseable arguments (issue #26 thinking-mode pollution); falling back to prompt+parse`)
     } else if (isProviderError(err)) {
       // Other infrastructure errors propagate. They mean "the provider itself
       // is broken"; retrying via prompt+parse on the same provider will just

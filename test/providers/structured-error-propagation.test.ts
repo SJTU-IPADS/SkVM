@@ -6,6 +6,7 @@ import {
   ProviderAuthError,
   ProviderHttpError,
   ProviderNetworkError,
+  ToolArgumentsParseError,
 } from "../../src/providers/errors.ts"
 
 function stubResponse(): LLMResponse {
@@ -125,5 +126,43 @@ describe("extractStructured propagates ProviderError", () => {
     )
     const result = await extractStructured({ provider: thinkingModeProvider(err), ...opts })
     expect(result.result.x).toBe(1)
+  })
+
+  test("Layer 1 ToolArgumentsParseError falls through to Layer 2 prompt+parse", async () => {
+    let toolUseAttempts = 0
+    let promptParseAttempts = 0
+    const schema2 = z.object({ a: z.number(), b: z.string() })
+    const mockProvider: LLMProvider = {
+      name: "mock",
+      async complete(params: CompletionParams): Promise<LLMResponse> {
+        if (params.tools !== undefined && params.toolChoice !== undefined) {
+          toolUseAttempts += 1
+          throw new ToolArgumentsParseError("mock", "<think>polluted</think>{\"a\":1}")
+        }
+        promptParseAttempts += 1
+        return {
+          text: "{\"a\":1,\"b\":\"x\"}",
+          toolCalls: [],
+          tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+          durationMs: 0,
+          stopReason: "end_turn",
+        }
+      },
+      async completeWithToolResults(): Promise<LLMResponse> {
+        throw new Error("not reached")
+      },
+    }
+
+    const result = await extractStructured({
+      provider: mockProvider,
+      schema: schema2,
+      schemaName: "thing",
+      schemaDescription: "test",
+      prompt: "give me a thing",
+    })
+
+    expect(toolUseAttempts).toBe(1)
+    expect(promptParseAttempts).toBeGreaterThanOrEqual(1)
+    expect(result.result).toEqual({ a: 1, b: "x" })
   })
 })
