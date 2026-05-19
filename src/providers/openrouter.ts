@@ -4,6 +4,7 @@ import {
   ProviderHttpError,
   ProviderNetworkError,
   ProviderAuthError,
+  ToolArgumentsParseError,
   RETRYABLE_HTTP_STATUS,
   looksLikeNetworkError,
 } from "./errors.ts"
@@ -236,11 +237,11 @@ export class OpenRouterProvider implements LLMProvider {
 
     if (rawToolCalls) {
       for (const tc of rawToolCalls) {
-        let args: Record<string, unknown> = {}
+        let args: Record<string, unknown>
         try {
           args = JSON.parse(tc.function.arguments)
-        } catch {
-          args = { raw: tc.function.arguments }
+        } catch (parseErr) {
+          throw new ToolArgumentsParseError(this.name, tc.function.arguments, parseErr)
         }
         toolCalls.push({ id: tc.id, name: tc.function.name, arguments: args })
       }
