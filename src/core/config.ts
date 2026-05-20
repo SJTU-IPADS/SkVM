@@ -460,14 +460,32 @@ export function getProposalsRoot(): string {
 }
 
 /**
+ * Invalidate all in-process config caches so the next read re-loads from disk.
+ * Call after mutating the config file at runtime — e.g. when the auto-probe
+ * layer writes a discovered route via appendDiscoveredRoute. Without this, a
+ * same-process re-resolution would see the stale pre-write config.
+ *
+ * Also busts the CommonJS `require()` cache for the config file path so that
+ * `getProjectConfig`'s synchronous `require()` call re-reads the updated JSON
+ * rather than serving the stale in-memory module.
+ */
+export function invalidateConfigCache(): void {
+  // Bust the require() module cache for the config file before clearing _configPath,
+  // while we still know the path that was cached.
+  const pathToBust = _configPath ?? currentConfigWritePath()
+  try { delete require.cache[require.resolve(pathToBust)] } catch { /* path may not be in cache */ }
+  _configPath = undefined
+  _configCache = undefined
+  _providersConfigCache = undefined
+  _headlessAgentConfigCache = undefined
+}
+
+/**
  * Test-only: clear all module-level config caches so the next call to
  * `getConfigPath` / `getProjectConfig` / `getProvidersConfig` re-derives
  * from the current `process.env.SKVM_CACHE`. Call this in `beforeEach` when
  * a test overrides `SKVM_CACHE` between runs.
  */
 export function __resetConfigCacheForTest(): void {
-  _configPath = undefined
-  _configCache = undefined
-  _providersConfigCache = undefined
-  _headlessAgentConfigCache = undefined
+  invalidateConfigCache()
 }

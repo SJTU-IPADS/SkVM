@@ -37,6 +37,7 @@ import {
   getAdapterSettings,
   getDefaultAdapterConfigMode,
   detectLegacyHeadlessFields,
+  invalidateConfigCache,
 } from "../core/config.ts"
 import type { ProviderKind, ProviderRoute, AdapterConfigMode } from "../core/types.ts"
 import { ALL_ADAPTERS, type AdapterName } from "../adapters/registry.ts"
@@ -1485,6 +1486,7 @@ export async function appendDiscoveredRoute(
     }
     writeFileSync(configPath, JSON.stringify(doc, null, 2) + "\n")
     try { chmodSync(configPath, 0o600) } catch { /* best-effort */ }
+    invalidateConfigCache()
     return { written: true }
   })
 }
