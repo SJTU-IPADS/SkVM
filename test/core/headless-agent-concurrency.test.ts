@@ -34,6 +34,10 @@ mock.module("@mariozechner/pi-coding-agent", () => {
       }),
     },
     ModelRegistry: {
+      // Probe registry (builtins-only) — returns undefined so uncatalogued path is taken.
+      inMemory: () => ({
+        find: (_provider: string, _modelId: string) => undefined,
+      }),
       create: () => ({
         find: (provider: string, modelId: string) => ({ provider, id: modelId, reasoning: false }) as any,
       }),

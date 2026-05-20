@@ -26,7 +26,8 @@ import {
   piEventsToRunResult,
   toPiModel,
   splitPiModel,
-  renderPiModelsJson,
+  renderPiBaseUrlOverride,
+  renderPiModelRegistration,
   type PiEvent,
 } from "../pi-runtime.ts"
 import { resolveRoute, resolveRouteApiKey } from "../../providers/registry.ts"
@@ -61,16 +62,26 @@ export async function runPiDriver(
   let timedOut = false
 
   try {
-    const modelsJson = renderPiModelsJson(route, piModelId)
-    await Bun.write(path.join(agentDir, "models.json"), modelsJson)
-
     // Credentials via AuthStorage runtime overrides (same path as pi's
     // --api-key CLI flag). NOT process.env — concurrent calls would race.
     const authStorage = AuthStorage.inMemory()
     const apiKey = resolveRouteApiKey(route)
     if (apiKey) authStorage.setRuntimeApiKey(piProvider, apiKey)
 
-    const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"))
+    // Probe pi's built-in catalogue (no models.json). If the id is already
+    // known, we must NOT register a {id} stub — that would clobber the
+    // built-in's reasoning/contextWindow/maxTokens. We only register the
+    // model when pi doesn't know it; for catalogued openai-compatible ids we
+    // still need the baseUrl override (which preserves built-in metadata).
+    const probe = ModelRegistry.inMemory(authStorage)
+    const isCatalogued = probe.find(piProvider, piModelId) !== undefined
+    const modelsJson = isCatalogued
+      ? renderPiBaseUrlOverride(route)
+      : renderPiModelRegistration(route, piModelId)
+    const modelsPath = path.join(agentDir, "models.json")
+    if (modelsJson) await Bun.write(modelsPath, modelsJson)
+
+    const modelRegistry = ModelRegistry.create(authStorage, modelsPath)
     const model = modelRegistry.find(piProvider, piModelId)
     if (!model) {
       throw new HeadlessAgentError(

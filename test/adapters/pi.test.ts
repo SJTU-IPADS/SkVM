@@ -3,7 +3,13 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { PiAdapter } from "../../src/adapters/pi.ts"
-import { parsePiNDJSON, piEventsToRunResult, type PiEvent } from "../../src/core/pi-runtime.ts"
+import {
+  parsePiNDJSON,
+  piEventsToRunResult,
+  renderPiBaseUrlOverride,
+  renderPiModelRegistration,
+  type PiEvent,
+} from "../../src/core/pi-runtime.ts"
 
 describe("parsePiNDJSON", () => {
   test("parses valid NDJSON lines", () => {
@@ -325,11 +331,40 @@ describe("toPiModel", () => {
   })
 })
 
-describe("renderPiModelsJson", () => {
-  test("emits openai baseUrl override and model registration for openai-compatible routes", async () => {
-    const { renderPiModelsJson } = await import("../../src/core/pi-runtime.ts")
+describe("renderPiBaseUrlOverride", () => {
+  test("emits baseUrl-only override for openai-compatible routes with baseUrl", () => {
     const route = { match: "ipads/*", kind: "openai-compatible" as const, baseUrl: "http://example/v1" }
-    const json = renderPiModelsJson(route, "gpt-4o-mini")
+    const json = renderPiBaseUrlOverride(route)
+    expect(json).not.toBeNull()
+    expect(JSON.parse(json!)).toEqual({
+      providers: {
+        openai: { baseUrl: "http://example/v1" },
+      },
+    })
+    // Must NOT register any model id — that would clobber built-in metadata.
+    expect(JSON.parse(json!).providers.openai.models).toBeUndefined()
+  })
+
+  test("returns null for openrouter routes", () => {
+    const route = { match: "openrouter/*", kind: "openrouter" as const }
+    expect(renderPiBaseUrlOverride(route)).toBeNull()
+  })
+
+  test("returns null for anthropic routes", () => {
+    const route = { match: "anthropic/*", kind: "anthropic" as const }
+    expect(renderPiBaseUrlOverride(route)).toBeNull()
+  })
+
+  test("returns null for openai-compatible routes with no baseUrl", () => {
+    const route = { match: "ipads/*", kind: "openai-compatible" as const }
+    expect(renderPiBaseUrlOverride(route)).toBeNull()
+  })
+})
+
+describe("renderPiModelRegistration", () => {
+  test("emits openai baseUrl and model registration for openai-compatible routes", () => {
+    const route = { match: "ipads/*", kind: "openai-compatible" as const, baseUrl: "http://example/v1" }
+    const json = renderPiModelRegistration(route, "gpt-4o-mini")
     expect(JSON.parse(json)).toEqual({
       providers: {
         openai: {
@@ -340,26 +375,23 @@ describe("renderPiModelsJson", () => {
     })
   })
 
-  test("registers the exact modelId provided for openai-compatible routes", async () => {
-    const { renderPiModelsJson } = await import("../../src/core/pi-runtime.ts")
+  test("registers the exact modelId provided for openai-compatible routes", () => {
     const route = { match: "cheap_ipads/*", kind: "openai-compatible" as const, baseUrl: "http://proxy/v1" }
-    const json = renderPiModelsJson(route, "gpt-5.5")
+    const json = renderPiModelRegistration(route, "gpt-5.5")
     expect(JSON.parse(json).providers.openai.models).toEqual([{ id: "gpt-5.5" }])
   })
 
-  test("omits baseUrl for openai-compatible routes with no baseUrl", async () => {
-    const { renderPiModelsJson } = await import("../../src/core/pi-runtime.ts")
+  test("omits baseUrl for openai-compatible routes with no baseUrl", () => {
     const route = { match: "ipads/*", kind: "openai-compatible" as const }
-    const json = renderPiModelsJson(route, "gpt-4o")
+    const json = renderPiModelRegistration(route, "gpt-4o")
     const parsed = JSON.parse(json)
     expect(parsed.providers.openai.models).toEqual([{ id: "gpt-4o" }])
     expect(parsed.providers.openai.baseUrl).toBeUndefined()
   })
 
-  test("registers openrouter model under openrouter provider key without baseUrl", async () => {
-    const { renderPiModelsJson } = await import("../../src/core/pi-runtime.ts")
+  test("registers openrouter model under openrouter provider key without baseUrl", () => {
     const route = { match: "openrouter/*", kind: "openrouter" as const }
-    const json = renderPiModelsJson(route, "qwen/qwen3-30b")
+    const json = renderPiModelRegistration(route, "qwen/qwen3-30b")
     expect(JSON.parse(json)).toEqual({
       providers: {
         openrouter: {
@@ -369,10 +401,9 @@ describe("renderPiModelsJson", () => {
     })
   })
 
-  test("registers anthropic model under anthropic provider key without baseUrl", async () => {
-    const { renderPiModelsJson } = await import("../../src/core/pi-runtime.ts")
+  test("registers anthropic model under anthropic provider key without baseUrl", () => {
     const route = { match: "anthropic/*", kind: "anthropic" as const }
-    const json = renderPiModelsJson(route, "claude-sonnet-4.6")
+    const json = renderPiModelRegistration(route, "claude-sonnet-4.6")
     expect(JSON.parse(json)).toEqual({
       providers: {
         anthropic: {

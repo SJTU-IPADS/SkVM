@@ -15,6 +15,10 @@ let promptDelayMs = 0
 let abortCalled = false
 let promptShouldError = false
 
+// Set of "provider/modelId" keys that ModelRegistry.inMemory().find() treats
+// as built-in (catalogued). Tests populate this to exercise the probe branch.
+const catalogued = new Set<string>()
+
 mock.module("@mariozechner/pi-coding-agent", () => {
   return {
     createAgentSession: async (opts: any) => {
@@ -78,9 +82,16 @@ mock.module("@mariozechner/pi-coding-agent", () => {
       }),
     },
     ModelRegistry: {
+      // Probe registry (builtins-only). Determines the branch taken in pi-driver.
+      inMemory: (_auth: any) => ({
+        find: (provider: string, modelId: string) => {
+          if (modelId.includes("nonexistent")) return undefined
+          if (catalogued.has(`${provider}/${modelId}`)) return { provider, id: modelId, reasoning: false } as any
+          return undefined
+        },
+      }),
+      // Real registry (after models.json written). Resolves all ids except "nonexistent".
       create: (_auth: any, _modelsPath: string) => ({
-        // Magic id "nonexistent" returns undefined so we can test the
-        // not-found path without rewriting skvm.config.json mid-file.
         find: (provider: string, modelId: string) => {
           if (modelId.includes("nonexistent")) return undefined
           return { provider, id: modelId, reasoning: false } as any
@@ -131,6 +142,7 @@ beforeEach(() => {
   promptDelayMs = 0
   abortCalled = false
   promptShouldError = false
+  catalogued.clear()
 })
 
 describe("runHeadlessAgent (driver=pi, library mode)", () => {
@@ -216,6 +228,48 @@ describe("runHeadlessAgent (driver=pi, library mode)", () => {
           timeoutMs: 5000,
         })
       ).rejects.toThrow(/stopReason=error: fake provider 5xx/)
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  // -------------------------------------------------------------------------
+  // Catalogue-probe branch coverage (Codex P1 regression fix)
+  // -------------------------------------------------------------------------
+
+  test("uncatalogued id takes the registration path and succeeds", async () => {
+    // catalogued is empty (cleared in beforeEach) — claude-sonnet-4.6 is NOT
+    // in the probe registry, so the driver must register it.
+    const workDir = mkdtempSync(path.join(tmpdir(), "skvm-pi-driver-test-"))
+    try {
+      const result = await runHeadlessAgent({
+        cwd: workDir,
+        prompt: "say hi",
+        model: "anthropic/claude-sonnet-4.6",
+        timeoutMs: 5000,
+      })
+      expect(result.driver).toBe("pi")
+      expect(result.exitCode).toBe(0)
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test("catalogued id takes the baseUrl-only path and succeeds without clobbering", async () => {
+    // Mark claude-sonnet-4.6 as built-in in the probe registry.
+    // The driver must use renderPiBaseUrlOverride (or write nothing) instead
+    // of renderPiModelRegistration, preserving built-in metadata.
+    catalogued.add("anthropic/claude-sonnet-4.6")
+    const workDir = mkdtempSync(path.join(tmpdir(), "skvm-pi-driver-test-"))
+    try {
+      const result = await runHeadlessAgent({
+        cwd: workDir,
+        prompt: "say hi",
+        model: "anthropic/claude-sonnet-4.6",
+        timeoutMs: 5000,
+      })
+      expect(result.driver).toBe("pi")
+      expect(result.exitCode).toBe(0)
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }

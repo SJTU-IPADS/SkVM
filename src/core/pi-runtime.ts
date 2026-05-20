@@ -275,22 +275,32 @@ export function splitPiModel(piModel: string): { provider: string; modelId: stri
 }
 
 // ---------------------------------------------------------------------------
-// models.json renderer
+// models.json renderers
 // ---------------------------------------------------------------------------
 
 /**
- * Pi's `models.json` is the override / custom-model file. Pi's `ModelRegistry.find()`
- * (used by the library path) requires a model id to be in its registry to succeed;
- * pi's CLI has a relaxed fallback, but we lose that by going in-process.
- *
- * To keep parity, we always register the model id under the matching pi provider.
- * For openai-compatible routes we also override `baseUrl`. For built-in providers
- * (openai/anthropic/openrouter) custom model entries inherit api/baseUrl from
- * the built-ins, so a minimal `{id}` is enough.
- *
- * Returns the JSON string to drop into `<agentDir>/models.json`.
+ * baseUrl-only override for openai-compatible routes. Preserves pi's built-in
+ * model metadata (reasoning / contextWindow / maxTokens) while redirecting the
+ * endpoint. Returns null for routes that need no override (openrouter / anthropic
+ * use pi's built-in endpoints). Used by the subprocess adapter and by the
+ * library driver when the model id is already in pi's catalogue.
  */
-export function renderPiModelsJson(route: ProviderRoute, modelId: string): string {
+export function renderPiBaseUrlOverride(route: ProviderRoute): string | null {
+  if (route.kind !== "openai-compatible" || !route.baseUrl) return null
+  const doc = { providers: { openai: { baseUrl: route.baseUrl } } }
+  return JSON.stringify(doc, null, 2) + "\n"
+}
+
+/**
+ * Full models.json that REGISTERS a custom model id so pi's strict
+ * ModelRegistry.find() (library path) resolves it. Use only when the id is NOT
+ * in pi's built-in catalogue — registering a built-in id with a bare {id}
+ * stub would clobber its metadata (reasoning / contextWindow / maxTokens).
+ * For openai-compatible routes the baseUrl override is included too. Custom
+ * entries inherit api/baseUrl from the built-in provider, so a minimal {id}
+ * is sufficient.
+ */
+export function renderPiModelRegistration(route: ProviderRoute, modelId: string): string {
   const piProviderKey = route.kind === "openai-compatible" ? "openai" : route.kind
   const providerConfig: Record<string, unknown> = { models: [{ id: modelId }] }
   if (route.kind === "openai-compatible" && route.baseUrl) {

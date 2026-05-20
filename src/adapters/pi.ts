@@ -23,8 +23,7 @@ import {
   parsePiNDJSON,
   piEventsToRunResult,
   toPiModel,
-  splitPiModel,
-  renderPiModelsJson,
+  renderPiBaseUrlOverride,
 } from "../core/pi-runtime.ts"
 
 const log = createLogger("pi")
@@ -178,16 +177,16 @@ export class PiAdapter implements AgentAdapter {
       symlinkIfExists(path.join(PI_USER_AGENT_DIR, "tools"), path.join(root, "tools"))
       symlinkIfExists(path.join(PI_USER_AGENT_DIR, "bin"), path.join(root, "bin"))
     } else {
-      // Managed: start from empty. Always write models.json — pi's CLI calls
-      // ModelRegistry.find() internally and skvm's dot-form model ids
-      // (e.g. anthropic/claude-sonnet-4.6) are not in pi's built-in catalogue
-      // (which uses dash-form). The registration tells pi the id is valid
-      // and lets api/baseUrl inherit from the built-in provider entries.
-      // Auth flows in via env vars derived from the route — no auth.json needed.
+      // Managed: start from empty. The pi CLI has a relaxed fallback that
+      // synthesises a model entry for uncatalogued ids, so we never need to
+      // register model ids here — doing so would clobber built-in metadata
+      // (reasoning / contextWindow / maxTokens) for any id pi already knows.
+      // We only write models.json when an openai-compatible baseUrl override
+      // is needed to redirect the endpoint. Auth flows in via env vars derived
+      // from the route — no auth.json needed.
       const route = resolveRoute(config.model)
-      const { modelId: piModelId } = splitPiModel(this.model)
-      const doc = renderPiModelsJson(route, piModelId)
-      await Bun.write(path.join(root, "models.json"), doc)
+      const doc = renderPiBaseUrlOverride(route)
+      if (doc) await Bun.write(path.join(root, "models.json"), doc)
     }
 
     log.info(`pi command: ${this.cmdPrefix.join(" ")}`)
