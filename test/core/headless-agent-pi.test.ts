@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll, mock } from "bun:test"
 import path from "node:path"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 
 // ---------------------------------------------------------------------------
@@ -14,6 +14,10 @@ let lastPromptText: string | null = null
 let promptDelayMs = 0
 let abortCalled = false
 let promptShouldError = false
+// Captures the raw models.json string that pi-driver wrote to disk, read at
+// ModelRegistry.create() time (the driver writes models.json just before
+// calling create). null means no file was written (or create was not called).
+let capturedModelsJson: string | null = null
 
 // Set of "provider/modelId" keys that ModelRegistry.inMemory().find() treats
 // as built-in (catalogued). Tests populate this to exercise the probe branch.
@@ -91,12 +95,16 @@ mock.module("@mariozechner/pi-coding-agent", () => {
         },
       }),
       // Real registry (after models.json written). Resolves all ids except "nonexistent".
-      create: (_auth: any, _modelsPath: string) => ({
-        find: (provider: string, modelId: string) => {
-          if (modelId.includes("nonexistent")) return undefined
-          return { provider, id: modelId, reasoning: false } as any
-        },
-      }),
+      // Also captures the models.json content so tests can assert which branch was taken.
+      create: (_auth: any, modelsPath: string) => {
+        try { capturedModelsJson = readFileSync(modelsPath, "utf8") } catch { capturedModelsJson = null }
+        return {
+          find: (provider: string, modelId: string) => {
+            if (modelId.includes("nonexistent")) return undefined
+            return { provider, id: modelId, reasoning: false } as any
+          },
+        }
+      },
     },
     SessionManager: { inMemory: (_cwd: string) => ({ /* opaque */ }) },
     SettingsManager: { create: (_cwd: string, _agentDir: string) => ({ /* opaque */ }) },
@@ -124,6 +132,7 @@ beforeAll(async () => {
     providers: {
       routes: [
         { match: "anthropic/*", kind: "anthropic", apiKey: "sk-test-key" },
+        { match: "ipads/*", kind: "openai-compatible", baseUrl: "http://localhost:9/v1", apiKey: "x" },
       ],
     },
     headlessAgent: { driver: "pi" },
@@ -142,6 +151,7 @@ beforeEach(() => {
   promptDelayMs = 0
   abortCalled = false
   promptShouldError = false
+  capturedModelsJson = null
   catalogued.clear()
 })
 
@@ -235,11 +245,14 @@ describe("runHeadlessAgent (driver=pi, library mode)", () => {
 
   // -------------------------------------------------------------------------
   // Catalogue-probe branch coverage (Codex P1 regression fix)
+  // These tests assert WHICH models.json branch was taken, not just that the
+  // run succeeded. An inverted `isCatalogued` condition would cause both to fail.
   // -------------------------------------------------------------------------
 
-  test("uncatalogued id takes the registration path and succeeds", async () => {
+  test("uncatalogued id → registers a custom model stub in models.json", async () => {
     // catalogued is empty (cleared in beforeEach) — claude-sonnet-4.6 is NOT
-    // in the probe registry, so the driver must register it.
+    // in the probe registry, so the driver must call renderPiModelRegistration
+    // and write a models:[{id}] entry.
     const workDir = mkdtempSync(path.join(tmpdir(), "skvm-pi-driver-test-"))
     try {
       const result = await runHeadlessAgent({
@@ -250,15 +263,20 @@ describe("runHeadlessAgent (driver=pi, library mode)", () => {
       })
       expect(result.driver).toBe("pi")
       expect(result.exitCode).toBe(0)
+
+      // The driver must have written a models.json with a models array entry.
+      expect(capturedModelsJson).not.toBeNull()
+      const doc = JSON.parse(capturedModelsJson!)
+      expect(doc.providers.anthropic.models).toEqual([{ id: "claude-sonnet-4.6" }])
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }
   })
 
-  test("catalogued id takes the baseUrl-only path and succeeds without clobbering", async () => {
-    // Mark claude-sonnet-4.6 as built-in in the probe registry.
-    // The driver must use renderPiBaseUrlOverride (or write nothing) instead
-    // of renderPiModelRegistration, preserving built-in metadata.
+  test("catalogued id (non-openai-compatible) → no models.json written", async () => {
+    // Mark claude-sonnet-4.6 as built-in. The anthropic route is NOT
+    // openai-compatible, so renderPiBaseUrlOverride returns null → no file written.
+    // An inverted branch would write a registration stub instead.
     catalogued.add("anthropic/claude-sonnet-4.6")
     const workDir = mkdtempSync(path.join(tmpdir(), "skvm-pi-driver-test-"))
     try {
@@ -270,6 +288,35 @@ describe("runHeadlessAgent (driver=pi, library mode)", () => {
       })
       expect(result.driver).toBe("pi")
       expect(result.exitCode).toBe(0)
+
+      // renderPiBaseUrlOverride returns null for non-openai-compatible routes,
+      // so the driver must NOT write models.json at all.
+      expect(capturedModelsJson).toBeNull()
+    } finally {
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test("catalogued id (openai-compatible) → baseUrl-only models.json, no models array", async () => {
+    // ipads/gpt-5.5 is NOT in catalogued by default, so first mark it as built-in.
+    catalogued.add("openai/gpt-5.5")
+    const workDir = mkdtempSync(path.join(tmpdir(), "skvm-pi-driver-test-"))
+    try {
+      const result = await runHeadlessAgent({
+        cwd: workDir,
+        prompt: "say hi",
+        model: "ipads/gpt-5.5",
+        timeoutMs: 5000,
+      })
+      expect(result.driver).toBe("pi")
+      expect(result.exitCode).toBe(0)
+
+      // renderPiBaseUrlOverride for an openai-compatible route returns a baseUrl-only
+      // doc — no models[] array, preserving the built-in model's metadata.
+      expect(capturedModelsJson).not.toBeNull()
+      const doc = JSON.parse(capturedModelsJson!)
+      expect(doc.providers.openai.baseUrl).toBe("http://localhost:9/v1")
+      expect(doc.providers.openai.models).toBeUndefined()
     } finally {
       rmSync(workDir, { recursive: true, force: true })
     }
