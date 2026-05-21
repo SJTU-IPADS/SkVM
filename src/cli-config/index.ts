@@ -40,6 +40,7 @@ import {
   invalidateConfigCache,
 } from "../core/config.ts"
 import type { ProviderKind, ProviderRoute, AdapterConfigMode } from "../core/types.ts"
+import { appendDiscoveredRoute } from "../core/config-write.ts"
 import { ALL_ADAPTERS, type AdapterName } from "../adapters/registry.ts"
 import { resolveUserHermesDir as resolveHermesProfileDir } from "../adapters/hermes.ts"
 import { resolveUserOpencodeConfigFile as resolveOpencodeConfigFile } from "../adapters/opencode.ts"
@@ -1421,75 +1422,10 @@ function printHeader(title: string): void {
   console.log(c.dim(bar))
 }
 
-/**
- * Append a literal-match route to providers.routes in the active config file.
- * Called by `AutoProbeProvider` after a successful probe discovers a clean
- * Anthropic-shaped alternative.
- *
- * Idempotent: if a route with the same `match` already exists (whether
- * user-written or previously discovered), the write is skipped so that
- * hand-configured routes are never silently overwritten. Returns
- * `{ written: false }` in that case.
- *
- * The config path is derived fresh on each call from `process.env.SKVM_CACHE`
- * (falling back to `~/.skvm`) so that callers who override `SKVM_CACHE` at
- * runtime — including tests — see the correct path without relying on the
- * module-level constant that was frozen at import time.
- *
- * The write is atomic via `withFileLock` on a sibling `.lock` file. A backup
- * of the previous config is created before each write, and old backups are
- * rotated via `pruneOldConfigBackups`.
- */
-export async function appendDiscoveredRoute(
-  newRoute: ProviderRoute,
-): Promise<{ written: boolean }> {
-  // Derive the write path at call time so SKVM_CACHE overrides take effect
-  // even when the env var is set after the module was first imported.
-  const cacheRoot = process.env.SKVM_CACHE
-    ? path.resolve(process.env.SKVM_CACHE)
-    : path.join(process.env.HOME ?? "~", ".skvm")
-  const configPath = path.join(cacheRoot, "skvm.config.json")
-  const lockPath = `${configPath}.lock`
-
-  return withFileLock(lockPath, { timeoutMs: 5_000 }, async () => {
-    let raw: string | null = null
-    if (existsSync(configPath)) {
-      raw = readFileSync(configPath, "utf-8")
-    }
-
-    // Work directly with the raw JSON object so all fields — including
-    // discoveredAt/discoveredFrom from previous probes — are preserved
-    // round-trip without running through the wizard's ConfigDraft pipeline.
-    const doc: Record<string, unknown> = raw ? JSON.parse(raw) : {}
-    const providers = (doc.providers && typeof doc.providers === "object"
-      ? doc.providers
-      : {}) as Record<string, unknown>
-    const routes: unknown[] = Array.isArray(providers.routes) ? providers.routes : []
-
-    const alreadyExists = routes.some(
-      r => r && typeof r === "object" && (r as Record<string, unknown>).match === newRoute.match,
-    )
-    if (alreadyExists) {
-      return { written: false }
-    }
-
-    routes.unshift(newRoute)
-    providers.routes = routes
-    doc.providers = providers
-
-    mkdirSync(path.dirname(configPath), { recursive: true })
-    if (raw) {
-      const backup = `${configPath}.bak.${Date.now()}`
-      copyFileSync(configPath, backup)
-      try { chmodSync(backup, 0o600) } catch { /* best-effort */ }
-      pruneOldConfigBackups()
-    }
-    writeFileSync(configPath, JSON.stringify(doc, null, 2) + "\n")
-    try { chmodSync(configPath, 0o600) } catch { /* best-effort */ }
-    invalidateConfigCache()
-    return { written: true }
-  })
-}
+// Re-export from core so the CLI and registry share the same implementation
+// without any circular dependency. The function lives in src/core/config-write.ts
+// which has no prompt or cli-config dependencies.
+export { appendDiscoveredRoute } from "../core/config-write.ts"
 
 /**
  * The path skvm writes its config to, derived fresh at call time so callers

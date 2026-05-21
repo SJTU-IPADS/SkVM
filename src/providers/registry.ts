@@ -7,7 +7,7 @@ import { OpenAICompatibleProvider } from "./openai-compatible.ts"
 import { ProviderAuthError } from "./errors.ts"
 import { AutoProbeProvider, type ProbeOrchestrator } from "./auto-probe.ts"
 import { runProbe, inferAnthropicBaseUrl } from "./probe.ts"
-import { appendDiscoveredRoute } from "../cli-config/index.ts"
+import { appendDiscoveredRoute } from "../core/config-write.ts"
 
 /**
  * Built-in fallback route. Applied when `providers.routes` is empty or no

@@ -2,7 +2,7 @@ import { test, expect, describe, beforeEach, afterEach } from "bun:test"
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs"
 import path from "node:path"
 import { tmpdir } from "node:os"
-import { appendDiscoveredRoute } from "../../src/cli-config/index.ts"
+import { appendDiscoveredRoute } from "../../src/core/config-write.ts"
 import type { ProviderRoute } from "../../src/core/types.ts"
 
 let tmp: string
