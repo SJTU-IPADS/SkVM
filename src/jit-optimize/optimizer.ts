@@ -16,7 +16,7 @@ import type {
   OptimizeSubmission,
 } from "./types.ts"
 import { OptimizeSubmissionSchema } from "./types.ts"
-import { runHeadlessAgent } from "../core/headless-agent.ts"
+import { runHeadlessAgent } from "../core/headless-agent/index.ts"
 import { createLogger } from "../core/logger.ts"
 import {
   createWorkspace,

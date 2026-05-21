@@ -38,7 +38,7 @@ import { copySkillDir } from "../core/fs-utils.ts"
 import {
   runHeadlessAgent,
   isHeadlessAgentError,
-} from "../core/headless-agent.ts"
+} from "../core/headless-agent/index.ts"
 import { getHeadlessAgentConfig } from "../core/config.ts"
 import { TIMEOUT_DEFAULTS, resolveTaskGenTimeout, resolveSyntheticTaskTimeout } from "../core/timeouts.ts"
 

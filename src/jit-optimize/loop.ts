@@ -55,7 +55,8 @@ import { loadSkill, copySkillBundle, buildSkillBundle, type ResolvedSkill } from
 import { createProposal, finalizeProposal, type CreateProposalResult } from "../proposals/storage.ts"
 import { createProviderForModel } from "../providers/registry.ts"
 import { isProviderError } from "../providers/errors.ts"
-import { isHeadlessAgentError } from "../core/headless-agent.ts"
+import { isHeadlessAgentError } from "../core/headless-agent/index.ts"
+import { getHeadlessAgentConfig } from "../core/config.ts"
 import { type AdapterName, createAdapter } from "../adapters/registry.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import { resolveOptimizerTimeout } from "../core/timeouts.ts"
@@ -198,6 +199,7 @@ export async function runLoop(
   const targetModel = config.targetAdapter.model
   const harness = config.targetAdapter.harness
 
+  const optimizerDriver = getHeadlessAgentConfig().driver
   const proposal = opts.proposal ?? await createProposal({
     skillName,
     skillDir,
@@ -205,6 +207,7 @@ export async function runLoop(
     optimizerModel,
     targetModel,
     source: describeSource(config.taskSource),
+    optimizerDriver,
   })
   log.info(`Proposal: ${proposal.id}`)
   log.info(`Proposal dir: ${proposal.dir}`)

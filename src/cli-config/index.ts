@@ -28,6 +28,7 @@ import {
   LOGS_DIR,
   PROPOSALS_ROOT,
   CONFIG_WRITE_PATH,
+  JIT_OPTIMIZE_DIR,
   getConfigPath,
   expandHome,
   getProvidersConfig,
@@ -37,7 +38,8 @@ import {
   getDefaultAdapterConfigMode,
   detectLegacyHeadlessFields,
 } from "../core/config.ts"
-import type { ProviderKind, AdapterConfigMode } from "../core/types.ts"
+import type { ProviderKind, AdapterConfigMode, HeadlessAgentDriverName } from "../core/types.ts"
+import { HeadlessAgentDriverSchema } from "../core/types.ts"
 import { ALL_ADAPTERS, type AdapterName } from "../adapters/registry.ts"
 import { resolveUserHermesDir as resolveHermesProfileDir } from "../adapters/hermes.ts"
 import { resolveUserOpencodeConfigFile as resolveOpencodeConfigFile } from "../adapters/opencode.ts"
@@ -60,7 +62,7 @@ interface RouteDraft {
 }
 
 interface HeadlessAgentDraft {
-  driver?: "opencode"
+  driver?: HeadlessAgentDriverName
   opencodePath?: string
 }
 
@@ -512,7 +514,8 @@ function loadExistingDraft(): ConfigDraft {
   if (raw.headlessAgent && typeof raw.headlessAgent === "object") {
     const ha = raw.headlessAgent as Record<string, unknown>
     const preserved: HeadlessAgentDraft = {}
-    if (ha.driver === "opencode") preserved.driver = "opencode"
+    const parsedDriver = HeadlessAgentDriverSchema.safeParse(ha.driver)
+    if (parsedDriver.success) preserved.driver = parsedDriver.data
     if (typeof ha.opencodePath === "string") preserved.opencodePath = ha.opencodePath
     if (Object.keys(preserved).length > 0) draft.headlessAgent = preserved
   }
@@ -1223,6 +1226,22 @@ async function runDoctor(): Promise<void> {
     })
   }
 
+  // Headless driver pi — confirm @mariozechner/pi-coding-agent is importable.
+  const ha = getHeadlessAgentConfig()
+  if (ha.driver === "pi") {
+    try {
+      await import("@mariozechner/pi-coding-agent")
+      results.push({ status: "ok", label: "headless driver pi resolvable" })
+    } catch (err) {
+      results.push({
+        status: "fail",
+        label: "headless driver pi resolvable",
+        detail: `cannot import @mariozechner/pi-coding-agent (${(err as Error).message}). ` +
+                `Reinstall skvm via install.sh or 'npm install' to restore node_modules.`,
+      })
+    }
+  }
+
   // Adapter checkouts + native-mode readiness
   for (const a of ALL_ADAPTERS) {
     if (a === "bare-agent") continue
@@ -1344,6 +1363,20 @@ async function runDoctor(): Promise<void> {
     console.log(`  ${mark}  ${r.label}${detail}`)
   }
   console.log()
+
+  // Migration note: warn if prior opencode proposals exist but the config
+  // does not pin headlessAgent.driver (meaning the user may not have noticed
+  // that the default flipped from opencode to pi).
+  const hasLegacyOpencodeProposals = existsSync(path.join(JIT_OPTIMIZE_DIR, "opencode"))
+  const configRaw = existsSync(CONFIG_WRITE_PATH) ? readFileSync(CONFIG_WRITE_PATH, "utf-8") : ""
+  const explicitDriverSet = configRaw.includes(`"driver"`)
+  if (hasLegacyOpencodeProposals && !explicitDriverSet) {
+    console.log(c.dim(
+      `note: default headless-agent driver changed to "pi" in this release; ` +
+      `prior proposals were produced by opencode. Set headlessAgent.driver ` +
+      `explicitly in skvm.config.json to pin behavior.`
+    ))
+  }
 
   if (fails > 0) {
     console.log(c.yellow(`${fails} issue(s) to look at.`) + ` See the items above marked ${c.red("✗")}.`)

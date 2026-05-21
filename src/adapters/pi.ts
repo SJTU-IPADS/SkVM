@@ -5,14 +5,10 @@ import type {
   AdapterConfig,
   AdapterConfigMode,
   RunResult,
-  AgentStep,
-  ToolCall,
   SkillBundle,
-  ProviderRoute,
 } from "../core/types.ts"
-import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
-import { getAdapterRepoDir, getAdapterSettings, stripRoutingPrefix } from "../core/config.ts"
+import { getAdapterRepoDir, getAdapterSettings } from "../core/config.ts"
 import { envForRoute, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
 import { runCommand } from "./opencode.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
@@ -23,239 +19,18 @@ import {
   symlinkIfExists,
   type Sandbox,
 } from "../core/adapter-sandbox.ts"
+import {
+  parsePiNDJSON,
+  piEventsToRunResult,
+  toPiModel,
+  renderPiBaseUrlOverride,
+} from "../core/pi-runtime.ts"
 
 const log = createLogger("pi")
 
 const HOME = process.env.HOME ?? ""
 /** User-side pi config dir (`~/.pi/agent/`). Mirrored into sandbox in native mode. */
 const PI_USER_AGENT_DIR = path.join(HOME, ".pi", "agent")
-
-// ---------------------------------------------------------------------------
-// Pi NDJSON Event Types
-// ---------------------------------------------------------------------------
-
-export interface PiTextContent {
-  type: "text"
-  text: string
-}
-
-export interface PiToolCallContent {
-  type: "toolCall"
-  id: string
-  name: string
-  arguments: Record<string, unknown>
-}
-
-export interface PiUsage {
-  input: number
-  output: number
-  cacheRead: number
-  cacheWrite: number
-  totalTokens: number
-  cost: {
-    input: number
-    output: number
-    cacheRead: number
-    cacheWrite: number
-    total: number
-  }
-}
-
-export interface PiAssistantMessage {
-  role: "assistant"
-  content: (PiTextContent | PiToolCallContent)[]
-  api: string
-  provider: string
-  model: string
-  usage: PiUsage
-  stopReason: "stop" | "length" | "toolUse" | "error" | "aborted"
-  errorMessage?: string
-  timestamp: number
-}
-
-export interface PiToolResultMessage {
-  role: "toolResult"
-  toolCallId: string
-  toolName: string
-  content: PiTextContent[]
-  isError: boolean
-  timestamp: number
-}
-
-export interface PiUserMessage {
-  role: "user"
-  content: PiTextContent[] | string
-  timestamp: number
-}
-
-export type PiMessage = PiUserMessage | PiAssistantMessage | PiToolResultMessage
-
-export type PiEvent =
-  | { type: "session"; version: number; id: string; timestamp: string; cwd: string }
-  | { type: "agent_start" }
-  | { type: "agent_end"; messages: PiMessage[] }
-  | { type: "turn_start" }
-  | { type: "turn_end"; message: PiMessage; toolResults: PiToolResultMessage[] }
-  | { type: "message_start"; message: PiMessage }
-  | { type: "message_update"; message: PiMessage }
-  | { type: "message_end"; message: PiMessage }
-  | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown }
-  | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: unknown; partialResult: unknown }
-  | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean }
-  | { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
-
-// ---------------------------------------------------------------------------
-// Event Parsing
-// ---------------------------------------------------------------------------
-
-export function parsePiNDJSON(output: string): PiEvent[] {
-  const events: PiEvent[] = []
-  for (const line of output.split("\n")) {
-    if (!line.trim()) continue
-    try {
-      events.push(JSON.parse(line) as PiEvent)
-    } catch {
-      log.debug(`Skipping non-JSON line: ${line.slice(0, 100)}`)
-    }
-  }
-  return events
-}
-
-// ---------------------------------------------------------------------------
-// Build RunResult from Pi events
-// ---------------------------------------------------------------------------
-
-export function piEventsToRunResult(
-  events: PiEvent[],
-  workDir: string,
-  durationMs: number,
-): RunResult {
-  const agentEndEvents = events.filter((e): e is Extract<PiEvent, { type: "agent_end" }> => e.type === "agent_end")
-  const lastAgentEnd = agentEndEvents[agentEndEvents.length - 1]
-
-  const messages: PiMessage[] = lastAgentEnd?.messages ? [...lastAgentEnd.messages] : []
-
-  if (messages.length === 0) {
-    // Fallback: collect message_end events when agent_end is missing (timeout / kill).
-    const messageEnds = events.filter((e): e is Extract<PiEvent, { type: "message_end" }> => e.type === "message_end")
-    for (const me of messageEnds) {
-      if (me.message.role === "assistant" || me.message.role === "toolResult") {
-        messages.push(me.message)
-      }
-    }
-  }
-
-  const steps: AgentStep[] = []
-  let totalTokens = emptyTokenUsage()
-  let totalCost = 0
-  let finalText = ""
-  const errors: string[] = []
-
-  const toolOutputMap = new Map<string, { output: string; exitCode?: number }>()
-  for (const msg of messages) {
-    if (msg.role === "toolResult") {
-      const text = msg.content
-        .filter((c): c is PiTextContent => c.type === "text")
-        .map((c) => c.text)
-        .join("")
-      toolOutputMap.set(msg.toolCallId, { output: text, exitCode: msg.isError ? 1 : 0 })
-    }
-  }
-
-  for (const msg of messages) {
-    if (msg.role === "assistant") {
-      const textParts = msg.content
-        .filter((c): c is PiTextContent => c.type === "text")
-        .map((c) => c.text)
-      const text = textParts.join("")
-      if (text) finalText = text
-
-      const toolCalls: ToolCall[] = msg.content
-        .filter((c): c is PiToolCallContent => c.type === "toolCall")
-        .map((tc) => {
-          const out = toolOutputMap.get(tc.id)
-          return {
-            id: tc.id,
-            name: tc.name,
-            input: tc.arguments,
-            output: out?.output,
-            exitCode: out?.exitCode,
-          }
-        })
-
-      steps.push({
-        role: "assistant",
-        text: text || undefined,
-        toolCalls,
-        timestamp: msg.timestamp,
-      })
-
-      const usage = msg.usage
-      if (usage) {
-        totalTokens = {
-          input: totalTokens.input + (usage.input ?? 0),
-          output: totalTokens.output + (usage.output ?? 0),
-          cacheRead: totalTokens.cacheRead + (usage.cacheRead ?? 0),
-          cacheWrite: totalTokens.cacheWrite + (usage.cacheWrite ?? 0),
-        }
-        totalCost += usage.cost?.total ?? 0
-      }
-
-      if (msg.stopReason === "error" && msg.errorMessage) {
-        errors.push(msg.errorMessage)
-      }
-    } else if (msg.role === "toolResult") {
-      const text = msg.content
-        .filter((c): c is PiTextContent => c.type === "text")
-        .map((c) => c.text)
-        .join("")
-      const out = toolOutputMap.get(msg.toolCallId)
-      steps.push({
-        role: "tool",
-        toolCalls: [{
-          id: msg.toolCallId,
-          name: msg.toolName,
-          input: {},
-          output: text,
-          exitCode: out?.exitCode,
-        }],
-        timestamp: msg.timestamp,
-      })
-    }
-  }
-
-  const lastAssistant = messages
-    .filter((m): m is PiAssistantMessage => m.role === "assistant")
-    .pop()
-
-  let runStatus: RunResult["runStatus"] = "ok"
-  let statusDetail: string | undefined
-
-  if (!lastAgentEnd && messages.length === 0) {
-    runStatus = "parse-failed"
-    statusDetail = "pi produced no parseable events — telemetry only, workDir scored as-is"
-  } else if (lastAssistant?.stopReason === "error") {
-    statusDetail = `pi assistant stopped with error: ${lastAssistant.errorMessage ?? "unknown"}`
-  }
-
-  const result: RunResult = {
-    text: finalText,
-    steps,
-    tokens: totalTokens,
-    cost: totalCost,
-    durationMs,
-    llmDurationMs: 0,
-    workDir,
-    runStatus,
-    ...(statusDetail ? { statusDetail } : {}),
-  }
-
-  if (errors.length > 0) {
-    result.adapterError = { exitCode: 1, stderr: errors.join("; ").slice(0, 2000) }
-  }
-
-  return result
-}
 
 // ---------------------------------------------------------------------------
 // Command Resolution (tiered)
@@ -332,52 +107,6 @@ export async function resolvePiCmd(): Promise<string[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Model Translation
-// ---------------------------------------------------------------------------
-
-/**
- * Translate a skvm model id to pi's `--model` syntax (managed mode).
- *
- * Pi accepts `<known-provider>/<id>` where `<known-provider>` is one of its
- * built-in providers (openrouter / anthropic / openai / ...). Skvm's route
- * prefix is often the same name (e.g. `anthropic/claude-sonnet-4.6`) but
- * NOT always — `openai-compatible` routes use arbitrary user-chosen match
- * patterns like `ipads/gpt-4o-mini` that pi can't resolve.
- *
- * Translation:
- *   - openai-compatible → strip skvm's prefix and route through pi's
- *     `openai` provider, whose baseUrl we override via `models.json`
- *     (see `renderPiModelsJson`).
- *   - anthropic / openrouter → pass through; prefix already matches pi.
- *
- * Native mode skips this function — the user's own pi config owns model
- * resolution.
- */
-export function toPiModel(model: string, route: ProviderRoute): string {
-  if (route.kind === "openai-compatible") {
-    return `openai/${stripRoutingPrefix(model)}`
-  }
-  return model
-}
-
-// ---------------------------------------------------------------------------
-// Managed-mode models.json override
-// ---------------------------------------------------------------------------
-
-/**
- * Pi reads provider baseUrl overrides from `models.json`, NOT from
- * OPENAI_BASE_URL env var. For openai-compatible routes with a non-default
- * baseUrl, emit a minimal override so pi's built-in OpenAI models get
- * redirected to the user's endpoint. Returns null when no override is
- * needed (openrouter / anthropic / openai with default baseUrl).
- */
-export function renderPiModelsJson(route: ProviderRoute): string | null {
-  if (route.kind !== "openai-compatible" || !route.baseUrl) return null
-  const doc = { providers: { openai: { baseUrl: route.baseUrl } } }
-  return JSON.stringify(doc, null, 2) + "\n"
-}
-
-// ---------------------------------------------------------------------------
 // Pi Adapter
 // ---------------------------------------------------------------------------
 
@@ -448,12 +177,15 @@ export class PiAdapter implements AgentAdapter {
       symlinkIfExists(path.join(PI_USER_AGENT_DIR, "tools"), path.join(root, "tools"))
       symlinkIfExists(path.join(PI_USER_AGENT_DIR, "bin"), path.join(root, "bin"))
     } else {
-      // Managed: start from empty. Pi's auth precedence (auth.json → OAuth →
-      // env var → fallback) means we can authenticate via env vars alone, so
-      // no auth.json is needed. Only write models.json when the route has a
-      // custom baseUrl that pi can't pick up from env vars.
+      // Managed: start from empty. The pi CLI has a relaxed fallback that
+      // synthesises a model entry for uncatalogued ids, so we never need to
+      // register model ids here — doing so would clobber built-in metadata
+      // (reasoning / contextWindow / maxTokens) for any id pi already knows.
+      // We only write models.json when an openai-compatible baseUrl override
+      // is needed to redirect the endpoint. Auth flows in via env vars derived
+      // from the route — no auth.json needed.
       const route = resolveRoute(config.model)
-      const doc = renderPiModelsJson(route)
+      const doc = renderPiBaseUrlOverride(route)
       if (doc) await Bun.write(path.join(root, "models.json"), doc)
     }
 

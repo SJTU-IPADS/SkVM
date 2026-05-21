@@ -6,7 +6,7 @@ import { customEvaluators } from "./types.ts"
 import type { LLMProvider } from "../providers/types.ts"
 import { extractStructured } from "../providers/structured.ts"
 import { isProviderError } from "../providers/errors.ts"
-import { isHeadlessAgentError } from "../core/headless-agent.ts"
+import { isHeadlessAgentError } from "../core/headless-agent/index.ts"
 import { createLogger } from "../core/logger.ts"
 
 const log = createLogger("evaluator")

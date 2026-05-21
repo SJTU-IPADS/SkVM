@@ -30,6 +30,7 @@ Reference: **SkVM: Revisiting Language VM for Skills across Heterogenous LLMs an
 
 ## News
 
+- **2026-05-18 — Headless pi driver, on by default.** `jit-optimize` and `jit-boost` now run their internal coding agent via [`@mariozechner/pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent) in-process by default. Opencode remains a first-class peer — set `headlessAgent.driver: "opencode"` in `skvm.config.json` to keep using it. `ProposalMeta.optimizerDriver` records which driver produced each proposal for replay / audit.
 - **2026-05** — New `claude-code` adapter (drives the `claude -p` CLI). Note: heavy headless usage may hit account rate limits or usage-terms issues.
 - **2026-05** — Upload and optimize a skill with SkVM in your browser: [SkVM website](https://skillvm.ai/index.html#optimize-skill).
 

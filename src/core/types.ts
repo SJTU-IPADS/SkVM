@@ -510,7 +510,7 @@ export type ProvidersConfig = z.infer<typeof ProvidersConfigSchema>
 // Headless Agent Config (jit-optimize / jit-boost agent runs)
 // ---------------------------------------------------------------------------
 
-export const HeadlessAgentDriverSchema = z.enum(["opencode"])
+export const HeadlessAgentDriverSchema = z.enum(["opencode", "pi"])
 export type HeadlessAgentDriverName = z.infer<typeof HeadlessAgentDriverSchema>
 
 /**

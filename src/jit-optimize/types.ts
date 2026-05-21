@@ -284,7 +284,7 @@ export interface OptimizeConfig {
   /** Directory to persist the optimizer conversation log */
   logDir?: string
   /** Headless agent driver to use; defaults to the system default */
-  driver?: import("../core/headless-agent.ts").HeadlessAgentDriver
+  driver?: import("../core/headless-agent/index.ts").HeadlessAgentDriver
 }
 
 /**

@@ -31,6 +31,7 @@ import { format } from "node:util"
 
 import type { JitOptimizeConfig } from "./types.ts"
 import { createLogger } from "../core/logger.ts"
+import { getHeadlessAgentConfig } from "../core/config.ts"
 import {
   createProposal,
   acquireOptimizeLock,
@@ -289,6 +290,7 @@ export async function runDetachWorker(jsonArg: string): Promise<void> {
       optimizerModel: config.optimizer.model,
       targetModel: lockKey.targetModel,
       source: input.source,
+      optimizerDriver: getHeadlessAgentConfig().driver,
     })
   } catch (err) {
     reportErrorAndExit(`createProposal failed: ${err}`, 1)

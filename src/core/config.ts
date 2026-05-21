@@ -446,3 +446,36 @@ export function resolveAdapterConfigMode(flagValue: string | undefined): Adapter
 export function getProposalsRoot(): string {
   return PROPOSALS_ROOT
 }
+
+/**
+ * Reset all module-level config caches.
+ *
+ * Intended for test use only. When multiple test files run in the same Bun
+ * worker they share a module registry, so one file's cached config bleeds into
+ * the next file's `beforeAll`. Calling this in `beforeAll` before writing a new
+ * `skvm.config.json` guarantees the file will be read fresh.
+ *
+ * Also purges the `require.cache` entry for the config file path so that
+ * Bun/Node's JSON-require cache doesn't serve a stale value when
+ * `getProjectConfig` calls `require(getConfigPath())` again.
+ *
+ * Not intended for production use — the caches exist to avoid repeated disk
+ * I/O across the lifetime of a single CLI invocation.
+ */
+export function resetConfigCacheForTesting(): void {
+  // Flush our own singletons first so we get the new path on next read.
+  _configPath = undefined
+  _configCache = undefined
+  _providersConfigCache = undefined
+  _headlessAgentConfigCache = undefined
+  // Purge require.cache for the config JSON so require() re-reads from disk.
+  // getConfigPath() is undefined after the reset above, so resolve both
+  // well-known candidate paths.
+  const candidatePaths = [
+    CONFIG_WRITE_PATH,
+    path.join(PROJECT_ROOT, "skvm.config.json"),
+  ]
+  for (const p of candidatePaths) {
+    try { delete require.cache[require.resolve(p)] } catch { /* not cached */ }
+  }
+}
