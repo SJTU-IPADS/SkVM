@@ -4,7 +4,7 @@ import path from "node:path"
 import { tmpdir } from "node:os"
 import { createProviderForModel } from "../../src/providers/registry.ts"
 import { __resetProbeGuardForTest } from "../../src/providers/auto-probe.ts"
-import { __resetConfigCacheForTest } from "../../src/core/config.ts"
+import { invalidateConfigCache } from "../../src/core/config.ts"
 
 let tmp: string
 let savedCache: string | undefined
@@ -12,7 +12,7 @@ const realFetch = globalThis.fetch
 
 beforeEach(() => {
   __resetProbeGuardForTest()
-  __resetConfigCacheForTest()
+  invalidateConfigCache()
   tmp = path.join(tmpdir(), `skvm-it-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   mkdirSync(tmp, { recursive: true })
   savedCache = process.env.SKVM_CACHE
@@ -137,7 +137,7 @@ test("second createProviderForModel call in same process uses written literal ro
     toolChoice: { name: "anything" },
   })
 
-  // Second call in same process — no __resetConfigCacheForTest between calls.
+  // Second call in same process — no invalidateConfigCache between calls.
   // Before the fix, the stale cache serves the old openai-compatible route,
   // the auto-probe wrapper fires again but the per-process probe guard blocks
   // a re-probe, and ToolArgumentsParseError is thrown.

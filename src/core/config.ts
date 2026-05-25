@@ -473,9 +473,16 @@ export function getProposalsRoot(): string {
 
 /**
  * Invalidate all in-process config caches so the next read re-loads from disk.
- * Call after mutating the config file at runtime — e.g. when the auto-probe
- * layer writes a discovered route via appendDiscoveredRoute. Without this, a
- * same-process re-resolution would see the stale pre-write config.
+ *
+ * Two consumers:
+ *  - Production: call after mutating the config file at runtime — e.g. when
+ *    the auto-probe layer writes a discovered route via appendDiscoveredRoute.
+ *    Without this, a same-process re-resolution would see the stale pre-write
+ *    config.
+ *  - Tests: call in beforeAll/beforeEach when overriding SKVM_CACHE or
+ *    SKVM_PROPOSALS_DIR between runs, to prevent one file's cached config from
+ *    bleeding into the next. (Bun reuses module registries across test files
+ *    within a worker.)
  *
  * Also busts the CommonJS `require()` cache for the config file path(s) so that
  * `getProjectConfig`'s synchronous `require()` call re-reads the updated JSON
@@ -496,30 +503,4 @@ export function invalidateConfigCache(): void {
   _configCache = undefined
   _providersConfigCache = undefined
   _headlessAgentConfigCache = undefined
-}
-
-/**
- * Reset all module-level config caches.
- *
- * Intended for test use only. When multiple test files run in the same Bun
- * worker they share a module registry, so one file's cached config bleeds into
- * the next file's `beforeAll`. Calling this in `beforeAll` before writing a new
- * `skvm.config.json` guarantees the file will be read fresh. Delegates to
- * `invalidateConfigCache` (same singleton + require.cache busting).
- *
- * Not intended for production use — the caches exist to avoid repeated disk
- * I/O across the lifetime of a single CLI invocation.
- */
-export function resetConfigCacheForTesting(): void {
-  invalidateConfigCache()
-}
-
-/**
- * Test-only alias retained for the auto-probe test suite. Clears all
- * module-level config caches so the next call to `getConfigPath` /
- * `getProjectConfig` / `getProvidersConfig` re-derives from the current
- * `process.env.SKVM_CACHE`. Equivalent to `resetConfigCacheForTesting`.
- */
-export function __resetConfigCacheForTest(): void {
-  invalidateConfigCache()
 }

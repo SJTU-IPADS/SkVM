@@ -52,7 +52,7 @@ mock.module("@mariozechner/pi-coding-agent", () => {
 })
 
 import { runHeadlessAgent } from "../../src/core/headless-agent/index.ts"
-import { resetConfigCacheForTesting } from "../../src/core/config.ts"
+import { invalidateConfigCache } from "../../src/core/config.ts"
 
 const SKVM_CACHE = process.env.SKVM_CACHE!
 const CONFIG_PATH = path.join(SKVM_CACHE, "skvm.config.json")
@@ -71,13 +71,13 @@ beforeAll(async () => {
     },
     headlessAgent: { driver: "pi" },
   }))
-  resetConfigCacheForTesting()
+  invalidateConfigCache()
 })
 
 afterAll(() => {
   try { rmSync(CONFIG_PATH, { force: true }) } catch {}
   // Reset caches so subsequent files in the same worker don't see KEY-A/KEY-B.
-  resetConfigCacheForTesting()
+  invalidateConfigCache()
 })
 
 beforeEach(() => {
