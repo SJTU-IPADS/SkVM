@@ -519,6 +519,36 @@ export const ProvidersConfigSchema = z.object({
 export type ProvidersConfig = z.infer<typeof ProvidersConfigSchema>
 
 // ---------------------------------------------------------------------------
+// Sandbox Config (docker sandbox slice)
+// ---------------------------------------------------------------------------
+
+export const SandboxNetworkSchema = z.enum(["none", "bridge", "host"])
+
+export const SandboxExtraMountSchema = z.object({
+  host: z.string().min(1),
+  inner: z.string().min(1),
+  mode: z.enum(["ro", "rw"]),
+})
+
+export const SandboxDockerConfigSchema = z.object({
+  image: z.string().nullable().default(null),
+  network: SandboxNetworkSchema.default("bridge"),
+  memory: z.string().default("2g"),
+  cpus: z.string().default("2"),
+  pidsLimit: z.number().int().positive().default(512),
+  extraMounts: z.array(SandboxExtraMountSchema).default([]),
+})
+
+export const SandboxConfigSchema = z.object({
+  docker: SandboxDockerConfigSchema.default({}),
+})
+
+export type SandboxNetwork = z.infer<typeof SandboxNetworkSchema>
+export type SandboxExtraMount = z.infer<typeof SandboxExtraMountSchema>
+export type SandboxDockerConfig = z.infer<typeof SandboxDockerConfigSchema>
+export type SandboxConfig = z.infer<typeof SandboxConfigSchema>
+
+// ---------------------------------------------------------------------------
 // Headless Agent Config (jit-optimize / jit-boost agent runs)
 // ---------------------------------------------------------------------------
 
