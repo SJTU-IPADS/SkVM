@@ -1,8 +1,9 @@
-import { test, expect, describe } from "bun:test"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { test, expect, describe, beforeEach, afterEach } from "bun:test"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { SandboxConfigSchema } from "../../src/core/types.ts"
+import { invalidateConfigCache, getSandboxConfig } from "../../src/core/config.ts"
 
 describe("SandboxConfigSchema", () => {
   test("accepts an empty object and fills defaults", () => {
@@ -44,26 +45,35 @@ describe("SandboxConfigSchema", () => {
 })
 
 describe("getSandboxConfig", () => {
-  test("returns parsed defaults when the file has no sandbox slice", () => {
-    const tmp = mkdtempSync(path.join(tmpdir(), "skvm-cfg-"))
-    writeFileSync(path.join(tmp, "skvm.config.json"), JSON.stringify({}))
+  let tmp: string
+  let savedCache: string | undefined
+
+  beforeEach(() => {
+    savedCache = process.env.SKVM_CACHE
+    tmp = mkdtempSync(path.join(tmpdir(), "skvm-cfg-"))
     process.env.SKVM_CACHE = tmp
-    const { invalidateConfigCache, getSandboxConfig } = require("../../src/core/config.ts")
     invalidateConfigCache()
+  })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    if (savedCache === undefined) delete process.env.SKVM_CACHE
+    else process.env.SKVM_CACHE = savedCache
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  test("returns parsed defaults when the file has no sandbox slice", () => {
+    writeFileSync(path.join(tmp, "skvm.config.json"), JSON.stringify({}))
     const sb = getSandboxConfig()
     expect(sb.docker.network).toBe("bridge")
     expect(sb.docker.memory).toBe("2g")
   })
 
   test("throws on malformed sandbox slice", () => {
-    const tmp = mkdtempSync(path.join(tmpdir(), "skvm-cfg-bad-"))
     writeFileSync(
       path.join(tmp, "skvm.config.json"),
       JSON.stringify({ sandbox: { docker: { network: "wifi" } } }),
     )
-    process.env.SKVM_CACHE = tmp
-    const { invalidateConfigCache, getSandboxConfig } = require("../../src/core/config.ts")
-    invalidateConfigCache()
     expect(() => getSandboxConfig()).toThrow()
   })
 })
