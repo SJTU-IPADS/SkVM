@@ -26,9 +26,11 @@ export interface PathFlag {
 export const PATH_FLAGS: PathFlag[] = [
   // run / bench / jit-optimize — primary inputs
   { flag: "--skill",          kind: "dir",  mode: "ro", required: true  },
+  { flag: "--skill-list",     kind: "file", mode: "ro", required: false },
   { flag: "--task",           kind: "file", mode: "ro", required: true  },
   { flag: "--out",            kind: "dir",  mode: "rw", required: false },
   { flag: "--workspace",      kind: "dir",  mode: "rw", required: false },
+  { flag: "--workdir",        kind: "dir",  mode: "rw", required: false },
 
   // global path overrides
   { flag: "--skvm-cache",     kind: "dir",  mode: "rw", required: false },
@@ -37,16 +39,29 @@ export const PATH_FLAGS: PathFlag[] = [
   { flag: "--logs-dir",       kind: "dir",  mode: "rw", required: false },
   { flag: "--proposals-dir",  kind: "dir",  mode: "rw", required: false },
 
+  // aot-compile / pipeline / bench — profile TCP file
+  { flag: "--profile",        kind: "file", mode: "ro", required: false },
+
   // jit-optimize specifics
   { flag: "--skill-source",   kind: "dir",  mode: "ro", required: false },
   { flag: "--log-source",     kind: "file", mode: "ro", required: false },
+  // NOTE: --logs and --failures take comma-separated path lists, not a single
+  // path, so they cannot be represented as a single PathFlag entry.
+  // TODO(docker-sandbox): comma-list path flag not yet handled by PATH_FLAGS
 
   // proposals
   { flag: "--proposal",       kind: "dir",  mode: "ro", required: false },
+  { flag: "--target",         kind: "dir",  mode: "rw", required: false },
 
   // bench
   { flag: "--bench-config",   kind: "file", mode: "ro", required: false },
   { flag: "--bench-report",   kind: "dir",  mode: "rw", required: false },
+  { flag: "--custom",         kind: "file", mode: "ro", required: false },
+  { flag: "--manifest",       kind: "dir",  mode: "ro", required: false },
+  { flag: "--output-dir",     kind: "dir",  mode: "rw", required: false },
+  { flag: "--path",           kind: "dir",  mode: "ro", required: false },
+  { flag: "--report",         kind: "file", mode: "rw", required: false },
+  { flag: "--skill-path",     kind: "dir",  mode: "ro", required: false },
 
   // logs / clean
   { flag: "--log-dir",        kind: "dir",  mode: "rw", required: false },

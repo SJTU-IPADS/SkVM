@@ -2048,6 +2048,8 @@ function buildTaskSource(flags: Record<string, string>): import("./jit-optimize/
     return { kind: "real-task", trainTasks, testTasks }
   }
   if (kind === "log" || kind === "execution-log") {
+    // TODO(docker-sandbox): --logs and --failures are comma-separated path lists;
+    // comma-list path flags are not yet handled by PATH_FLAGS in src/launcher/path-flags.ts.
     const raw = flags.logs
     if (!raw) {
       console.error("jit-optimize: --logs is required for --task-source=log")

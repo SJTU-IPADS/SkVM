@@ -11,6 +11,11 @@ describe("PATH_FLAGS", () => {
     }
   })
 
+  test("flag list has no duplicates", () => {
+    const flags = PATH_FLAGS.map(e => e.flag)
+    expect(new Set(flags).size).toBe(flags.length)
+  })
+
   test("--skill, --task, --out are present", () => {
     const flags = new Set(PATH_FLAGS.map(e => e.flag))
     expect(flags.has("--skill")).toBe(true)
