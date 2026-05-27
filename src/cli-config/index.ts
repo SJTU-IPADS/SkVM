@@ -80,7 +80,7 @@ interface AdapterDraft {
 interface ConfigDraft {
   adapters: Partial<Record<AdapterName, AdapterDraft>>
   providers: { routes: RouteDraft[] }
-  defaults?: { adapterConfigMode?: AdapterConfigMode }
+  defaults?: { adapterConfigMode?: AdapterConfigMode; sandbox?: boolean }
   /**
    * Preserved as an opaque passthrough on re-init — the wizard doesn't
    * configure these fields (credentials and endpoints come from
@@ -409,6 +409,7 @@ async function runInit(): Promise<void> {
       if (action.section === "providers") await stepProviders(draft)
       else if (action.section === "mode") await stepDefaultMode(draft)
       else if (action.section === "adapters") await stepAdapters(draft)
+      else if (action.section === "sandbox") await stepSandbox(draft)
     }
 
     tuiClear()
@@ -533,9 +534,14 @@ function loadExistingDraft(): ConfigDraft {
   }
   if (raw.defaults && typeof raw.defaults === "object") {
     const d = raw.defaults as Record<string, unknown>
+    const restored: ConfigDraft["defaults"] = {}
     if (d.adapterConfigMode === "native" || d.adapterConfigMode === "managed") {
-      draft.defaults = { adapterConfigMode: d.adapterConfigMode }
+      restored.adapterConfigMode = d.adapterConfigMode
     }
+    if (typeof d.sandbox === "boolean") {
+      restored.sandbox = d.sandbox
+    }
+    if (Object.keys(restored).length > 0) draft.defaults = restored
   }
   if (raw.providers && typeof raw.providers === "object") {
     const routes = (raw.providers as { routes?: unknown }).routes
@@ -1066,9 +1072,35 @@ async function pickNativeAgent(opts: {
   })).trim() || def
 }
 
+// --- Step 4: sandbox (Docker) ------------------------------------------------
+
+async function stepSandbox(draft: ConfigDraft): Promise<void> {
+  try {
+    console.log(c.bold("Sandbox (Docker)"))
+    console.log(c.dim("  When --sandbox is set on a command, skvm re-execs itself inside an"))
+    console.log(c.dim("  ephemeral Docker container. You can opt in per-invocation or make"))
+    console.log(c.dim("  sandbox the default for every command."))
+
+    const sandboxDefault = await confirm({
+      message: "Make --sandbox the default for every command?",
+      default: draft.defaults?.sandbox ?? false,
+    })
+
+    draft.defaults = draft.defaults ?? {}
+    draft.defaults.sandbox = sandboxDefault
+
+    if (sandboxDefault) {
+      console.log(c.dim("  (You can opt out of any single invocation with --sandbox=false.)"))
+    }
+  } catch (e) {
+    if (isExit(e)) return
+    throw e
+  }
+}
+
 // --- TUI section pager -------------------------------------------------------
 
-type SectionId = "providers" | "mode" | "adapters" | "write"
+type SectionId = "providers" | "mode" | "adapters" | "sandbox" | "write"
 
 interface Section {
   id: SectionId
@@ -1079,6 +1111,7 @@ const SECTIONS: Section[] = [
   { id: "providers", label: "Providers" },
   { id: "mode", label: "Default mode" },
   { id: "adapters", label: "Adapters" },
+  { id: "sandbox", label: "Sandbox" },
   { id: "write", label: "✓ Write & exit" },
 ]
 
@@ -1130,11 +1163,15 @@ function renderSectionBody(draft: ConfigDraft, index: number): string {
     case "adapters":
       return indent(summarizeAdapters(draft).trimStart())
         + "\n\n  " + c.dim("Press Enter to configure adapters.")
+    case "sandbox":
+      return indent(summarizeSandbox(draft).trimStart())
+        + "\n\n  " + c.dim("Press Enter to configure sandbox defaults.")
     case "write": {
       const full = [
         summarizeProviders(draft),
         summarizeDefaultMode(draft),
         summarizeAdapters(draft),
+        summarizeSandbox(draft),
       ].join("\n")
       const target = shortenPath(CONFIG_WRITE_PATH)
       return indent(full.trimStart())
@@ -1183,6 +1220,11 @@ function summarizeAdapters(draft: ConfigDraft): string {
     lines.push(`  ${k.padEnd(labelW)}  ${parts.join("  ")}`)
   }
   return lines.join("\n")
+}
+
+function summarizeSandbox(draft: ConfigDraft): string {
+  const on = draft.defaults?.sandbox === true
+  return `\n${c.bold("Sandbox (Docker):")} default --sandbox ${on ? c.green("on") : c.dim("off")}`
 }
 
 // ---------------------------------------------------------------------------
@@ -1465,8 +1507,11 @@ export { appendDiscoveredRoute } from "../core/config-write.ts"
 function serialize(draft: ConfigDraft): string {
   // Drop empty optional fields so the output stays minimal.
   const out: Record<string, unknown> = {}
-  if (draft.defaults && draft.defaults.adapterConfigMode !== undefined) {
-    out.defaults = { adapterConfigMode: draft.defaults.adapterConfigMode }
+  if (draft.defaults && (draft.defaults.adapterConfigMode !== undefined || draft.defaults.sandbox !== undefined)) {
+    const d: Record<string, unknown> = {}
+    if (draft.defaults.adapterConfigMode !== undefined) d.adapterConfigMode = draft.defaults.adapterConfigMode
+    if (draft.defaults.sandbox !== undefined) d.sandbox = draft.defaults.sandbox
+    out.defaults = d
   }
   const adaptersOut: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(draft.adapters)) {
