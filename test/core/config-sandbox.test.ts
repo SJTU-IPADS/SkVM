@@ -19,7 +19,7 @@ describe("SandboxConfigSchema", () => {
   test("accepts a fully populated block", () => {
     const parsed = SandboxConfigSchema.parse({
       docker: {
-        image: "ghcr.io/SJTU-IPADS/skvm-sandbox:0.1.4",
+        image: "ghcr.io/sjtu-ipads/skvm-sandbox:0.1.4",
         network: "none",
         memory: "4g",
         cpus: "4",
@@ -27,7 +27,7 @@ describe("SandboxConfigSchema", () => {
         extraMounts: [{ host: "/home/x/.ssh", inner: "/root/.ssh", mode: "ro" }],
       },
     })
-    expect(parsed.docker.image).toBe("ghcr.io/SJTU-IPADS/skvm-sandbox:0.1.4")
+    expect(parsed.docker.image).toBe("ghcr.io/sjtu-ipads/skvm-sandbox:0.1.4")
     expect(parsed.docker.extraMounts[0]!.mode).toBe("ro")
   })
 

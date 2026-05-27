@@ -9,7 +9,7 @@ export interface ResolveImageRefArgs {
 export function resolveImageRef(opts: ResolveImageRefArgs): string {
   if (opts.cliOverride) return opts.cliOverride
   if (opts.configImage) return opts.configImage
-  return `ghcr.io/SJTU-IPADS/skvm-sandbox:${opts.skvmVersion}`
+  return `ghcr.io/sjtu-ipads/skvm-sandbox:${opts.skvmVersion}`
 }
 
 export function buildBuildCommandHint(ref: string): string {

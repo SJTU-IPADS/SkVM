@@ -23,15 +23,15 @@ describe("resolveImageRef", () => {
       cliOverride: null,
       configImage: null,
       skvmVersion: "0.1.4",
-    })).toBe("ghcr.io/SJTU-IPADS/skvm-sandbox:0.1.4")
+    })).toBe("ghcr.io/sjtu-ipads/skvm-sandbox:0.1.4")
   })
 })
 
 describe("buildBuildCommandHint", () => {
   test("includes the resolved image ref so the user can copy-paste", () => {
-    const hint = buildBuildCommandHint("ghcr.io/SJTU-IPADS/skvm-sandbox:0.1.4")
+    const hint = buildBuildCommandHint("ghcr.io/sjtu-ipads/skvm-sandbox:0.1.4")
     expect(hint).toContain("docker build")
     expect(hint).toContain("-f docker/skvm-sandbox.Dockerfile")
-    expect(hint).toContain("-t ghcr.io/SJTU-IPADS/skvm-sandbox:0.1.4")
+    expect(hint).toContain("-t ghcr.io/sjtu-ipads/skvm-sandbox:0.1.4")
   })
 })

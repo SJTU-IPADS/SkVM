@@ -268,14 +268,14 @@ skvm jit-optimize --sandbox --skill=./foo --target-model=openrouter/...
 ### Image
 
 The launcher pulls
-`ghcr.io/SJTU-IPADS/skvm-sandbox:<your-skvm-version>` from GitHub Container
+`ghcr.io/sjtu-ipads/skvm-sandbox:<your-skvm-version>` from GitHub Container
 Registry. If the pull fails (offline, no auth, image not published yet for
 your version), build the image locally:
 
 ```bash
 bun run build:binary
 docker build -f docker/skvm-sandbox.Dockerfile \
-  -t ghcr.io/SJTU-IPADS/skvm-sandbox:$(bun run skvm --version) .
+  -t ghcr.io/sjtu-ipads/skvm-sandbox:$(bun run skvm --version) .
 ```
 
 ### Cleaning up leaked containers
