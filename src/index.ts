@@ -162,6 +162,7 @@ Global Options:
   --skvm-cache=<path>      Override cache root (default: ~/.skvm)
   --skvm-data-dir=<path>   Override dataset root (default: ./skvm-data)
   --verbose                Enable debug logging
+  --sandbox[=false]        Run inside a Docker sandbox (or opt out when defaults.sandbox=true)
   --no-auto-probe          Disable auto-probe for this invocation (also via SKVM_AUTO_PROBE=0)
   --version, -v            Print version and exit
   --help, -h               Print this help and exit

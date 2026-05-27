@@ -50,6 +50,15 @@ describe("assertKnownFlags", () => {
     expect(exitCode).toBeNull()
   })
 
+  test("accepts sandbox as a global flag so --sandbox=false opt-out passes per-command assertKnownFlags", () => {
+    // Regression: when defaults.sandbox=true and user passes --sandbox=false,
+    // dispatch strips it but assertKnownFlags in the subcommand still sees it.
+    // sandbox must be in GLOBAL_FLAGS so it is accepted without per-command declaration.
+    assertKnownFlags("run", { sandbox: "false" }, new Set(["skill", "task", "model"]))
+    expect(exitCode).toBeNull()
+    expect(stderr).toBe("")
+  })
+
   test("rejects an unknown flag with a 'did you mean' hint", () => {
     expect(() => {
       assertKnownFlags("profile", { adpter: "claude-code", model: "x/y" }, new Set(["adapter", "model"]))
