@@ -43,6 +43,32 @@ function parseFlags(args: string[]): Record<string, string> {
   return flags
 }
 
+export interface SandboxFlagParse {
+  value: boolean
+  present: boolean
+}
+
+export function parseSandboxFlag(args: string[]): SandboxFlagParse {
+  for (const a of args) {
+    if (a === "--sandbox") return { value: true, present: true }
+    if (a === "--sandbox=true") return { value: true, present: true }
+    if (a === "--sandbox=false") return { value: false, present: true }
+  }
+  return { value: false, present: false }
+}
+
+export interface ShouldEnterLauncherArgs {
+  parsed: SandboxFlagParse
+  defaultsSandbox: boolean
+  inSandboxEnv: boolean
+}
+
+export function shouldEnterLauncher(o: ShouldEnterLauncherArgs): boolean {
+  if (o.inSandboxEnv) return false
+  if (o.parsed.present) return o.parsed.value
+  return o.defaultsSandbox
+}
+
 async function main() {
   // Hidden subcommand for `skvm jit-optimize --detach`. Spawned by the
   // parent CLI with stdio: ignore + IPC channel; takes a JSON-stringified
@@ -59,6 +85,25 @@ async function main() {
   const flags = parseFlags(args.slice(1))
 
   if (flags.verbose) setLogLevel("debug")
+
+  // Strategy C — sandbox dispatch. If `--sandbox` is set (or sandbox is the
+  // configured default) and we are not already inside the container, hand off
+  // to the launcher and never return.
+  const sandboxParsed = parseSandboxFlag(args)
+  const inSandboxEnv = process.env.SKVM_IN_SANDBOX === "1"
+  {
+    let defaultsSandbox = false
+    if (!inSandboxEnv && !sandboxParsed.present) {
+      const { getDefaultSandboxMode } = await import("./core/config.ts")
+      defaultsSandbox = getDefaultSandboxMode()
+    }
+    if (shouldEnterLauncher({ parsed: sandboxParsed, defaultsSandbox, inSandboxEnv })) {
+      const forwarded = args.filter(a => a !== "--sandbox" && !a.startsWith("--sandbox="))
+      const { runLauncher } = await import("./launcher/index.ts")
+      await runLauncher(forwarded)
+      /* unreachable */ return
+    }
+  }
 
   if (isTopLevelVersion) {
     console.log(pkgJson.version)
@@ -2238,7 +2283,9 @@ async function resolveSkillDirs(flags: Record<string, string>): Promise<string[]
   return dirs
 }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })
+}
