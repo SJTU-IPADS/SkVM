@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test"
-import { shouldEnterLauncher, parseSandboxFlag } from "../../src/index.ts"
+import { shouldEnterLauncher, parseSandboxFlag, assertSandboxCompatible } from "../../src/index.ts"
 
 describe("parseSandboxFlag", () => {
   test("--sandbox alone means true", () => {
@@ -50,5 +50,43 @@ describe("shouldEnterLauncher", () => {
       defaultsSandbox: false,
       inSandboxEnv: true,
     })).toBe(false)
+  })
+})
+
+describe("assertSandboxCompatible", () => {
+  test("hard-errors on --sandbox + config init", () => {
+    expect(() => assertSandboxCompatible({
+      sandboxOn: true,
+      command: "config",
+      subcommand: "init",
+      adapterMode: undefined,
+    })).toThrow(/config commands always run on host/)
+  })
+
+  test("hard-errors on --sandbox + native adapter mode", () => {
+    expect(() => assertSandboxCompatible({
+      sandboxOn: true,
+      command: "run",
+      subcommand: undefined,
+      adapterMode: "native",
+    })).toThrow(/managed adapter mode/)
+  })
+
+  test("passes on --sandbox + managed adapter", () => {
+    expect(() => assertSandboxCompatible({
+      sandboxOn: true,
+      command: "run",
+      subcommand: undefined,
+      adapterMode: "managed",
+    })).not.toThrow()
+  })
+
+  test("passes on --sandbox + config show absent", () => {
+    expect(() => assertSandboxCompatible({
+      sandboxOn: false,
+      command: "config",
+      subcommand: "show",
+      adapterMode: undefined,
+    })).not.toThrow()
   })
 })

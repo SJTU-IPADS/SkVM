@@ -69,6 +69,30 @@ export function shouldEnterLauncher(o: ShouldEnterLauncherArgs): boolean {
   return o.defaultsSandbox
 }
 
+export interface AssertSandboxCompatibleArgs {
+  sandboxOn: boolean
+  command: string | undefined
+  subcommand: string | undefined
+  adapterMode: "native" | "managed" | undefined
+}
+
+export function assertSandboxCompatible(o: AssertSandboxCompatibleArgs): void {
+  if (!o.sandboxOn) return
+  if (o.command === "config") {
+    throw new Error(
+      `skvm config ${o.subcommand ?? ""} cannot run under --sandbox: ` +
+      `config commands always run on host (they manage host-side state).`,
+    )
+  }
+  if (o.adapterMode === "native") {
+    throw new Error(
+      `--sandbox requires managed adapter mode. ` +
+      `Native mode imports host credentials, which defeats container isolation. ` +
+      `Pass --adapter-config=managed or set defaults.adapterConfigMode = "managed".`,
+    )
+  }
+}
+
 async function main() {
   // Hidden subcommand for `skvm jit-optimize --detach`. Spawned by the
   // parent CLI with stdio: ignore + IPC channel; takes a JSON-stringified
@@ -98,6 +122,15 @@ async function main() {
       defaultsSandbox = getDefaultSandboxMode()
     }
     if (shouldEnterLauncher({ parsed: sandboxParsed, defaultsSandbox, inSandboxEnv })) {
+      // Guard: config commands always run on host — reject early before launching container.
+      // Note: per-command native-adapter guard (assertSandboxCompatible with adapterMode
+      // resolved) is deferred to each command entry point and is a follow-up task.
+      assertSandboxCompatible({
+        sandboxOn: true,
+        command: rawCommand,
+        subcommand: args[1],
+        adapterMode: undefined,
+      })
       const forwarded = args.filter(a => a !== "--sandbox" && !a.startsWith("--sandbox="))
       const { runLauncher } = await import("./launcher/index.ts")
       await runLauncher(forwarded)
