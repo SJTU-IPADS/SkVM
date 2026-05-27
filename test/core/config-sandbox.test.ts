@@ -1,4 +1,7 @@
 import { test, expect, describe } from "bun:test"
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { SandboxConfigSchema } from "../../src/core/types.ts"
 
 describe("SandboxConfigSchema", () => {
@@ -37,5 +40,30 @@ describe("SandboxConfigSchema", () => {
         docker: { extraMounts: [{ host: "/x", inner: "/y", mode: "exec" }] },
       }),
     ).toThrow()
+  })
+})
+
+describe("getSandboxConfig", () => {
+  test("returns parsed defaults when the file has no sandbox slice", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "skvm-cfg-"))
+    writeFileSync(path.join(tmp, "skvm.config.json"), JSON.stringify({}))
+    process.env.SKVM_CACHE = tmp
+    const { invalidateConfigCache, getSandboxConfig } = require("../../src/core/config.ts")
+    invalidateConfigCache()
+    const sb = getSandboxConfig()
+    expect(sb.docker.network).toBe("bridge")
+    expect(sb.docker.memory).toBe("2g")
+  })
+
+  test("throws on malformed sandbox slice", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "skvm-cfg-bad-"))
+    writeFileSync(
+      path.join(tmp, "skvm.config.json"),
+      JSON.stringify({ sandbox: { docker: { network: "wifi" } } }),
+    )
+    process.env.SKVM_CACHE = tmp
+    const { invalidateConfigCache, getSandboxConfig } = require("../../src/core/config.ts")
+    invalidateConfigCache()
+    expect(() => getSandboxConfig()).toThrow()
   })
 })

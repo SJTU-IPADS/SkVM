@@ -3,8 +3,10 @@ import { existsSync } from "node:fs"
 import {
   ProvidersConfigSchema,
   HeadlessAgentConfigSchema,
+  SandboxConfigSchema,
   type ProvidersConfig,
   type HeadlessAgentConfig,
+  type SandboxConfig,
   type AdapterConfigMode,
 } from "./types.ts"
 
@@ -273,8 +275,10 @@ interface SkVMConfig {
   proposalsDir?: string
   providers?: unknown
   headlessAgent?: unknown
+  sandbox?: unknown
   defaults?: {
     adapterConfigMode?: AdapterConfigMode
+    sandbox?: boolean
   }
 }
 
@@ -396,6 +400,19 @@ export function getProvidersConfig(): ProvidersConfig {
   return _providersConfigCache
 }
 
+let _sandboxConfigCache: SandboxConfig | undefined
+
+export function getSandboxConfig(): SandboxConfig {
+  if (_sandboxConfigCache) return _sandboxConfigCache
+  const raw = getProjectConfig().sandbox
+  _sandboxConfigCache = SandboxConfigSchema.parse(raw ?? {})
+  return _sandboxConfigCache
+}
+
+export function getDefaultSandboxMode(): boolean {
+  return getProjectConfig().defaults?.sandbox === true
+}
+
 let _headlessAgentConfigCache: HeadlessAgentConfig | undefined
 
 /**
@@ -503,4 +520,5 @@ export function invalidateConfigCache(): void {
   _configCache = undefined
   _providersConfigCache = undefined
   _headlessAgentConfigCache = undefined
+  _sandboxConfigCache = undefined
 }
