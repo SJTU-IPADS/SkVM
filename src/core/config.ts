@@ -400,6 +400,36 @@ export function getProvidersConfig(): ProvidersConfig {
   return _providersConfigCache
 }
 
+/**
+ * Sanitize a route match string for use as the suffix of an env var. The
+ * launcher exports each route's key as `SKVM_ROUTE_<safeRouteId>_KEY`; the
+ * in-container loader reads from the same form when the route's in-config
+ * `apiKey` is absent.
+ */
+export function safeRouteId(match: string): string {
+  return match.replace(/[^a-zA-Z0-9]/g, "_")
+}
+
+/**
+ * Resolve a route's API key. Order:
+ *   1. `route.apiKey` from skvm.config.json
+ *   2. `process.env[SKVM_ROUTE_<safeRouteId>_KEY]` — populated by the launcher
+ *      inside the sandbox so the on-disk config can stay sanitized
+ *   3. `process.env[route.apiKeyEnv]` — the existing user-controlled env hook
+ */
+export function resolveRouteApiKey(route: {
+  match: string
+  apiKey?: string
+  apiKeyEnv?: string
+}): string | undefined {
+  if (route.apiKey) return route.apiKey
+  const envKey = `SKVM_ROUTE_${safeRouteId(route.match)}_KEY`
+  const fromSandboxEnv = process.env[envKey]
+  if (fromSandboxEnv) return fromSandboxEnv
+  if (route.apiKeyEnv) return process.env[route.apiKeyEnv]
+  return undefined
+}
+
 let _sandboxConfigCache: SandboxConfig | undefined
 
 export function getSandboxConfig(): SandboxConfig {

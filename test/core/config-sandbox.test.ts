@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { SandboxConfigSchema } from "../../src/core/types.ts"
-import { invalidateConfigCache, getSandboxConfig } from "../../src/core/config.ts"
+import { invalidateConfigCache, getSandboxConfig, resolveRouteApiKey, safeRouteId } from "../../src/core/config.ts"
 
 describe("SandboxConfigSchema", () => {
   test("accepts an empty object and fills defaults", () => {
@@ -75,5 +75,45 @@ describe("getSandboxConfig", () => {
       JSON.stringify({ sandbox: { docker: { network: "wifi" } } }),
     )
     expect(() => getSandboxConfig()).toThrow()
+  })
+})
+
+describe("resolveRouteApiKey", () => {
+  // Restore env state between tests so the `SKVM_ROUTE_openai_KEY` etc. don't leak.
+  let savedSandboxKey: string | undefined
+  let savedCustomKey: string | undefined
+  beforeEach(() => {
+    savedSandboxKey = process.env.SKVM_ROUTE_openai_KEY
+    savedCustomKey = process.env.MY_CUSTOM_KEY
+    delete process.env.SKVM_ROUTE_openai_KEY
+    delete process.env.MY_CUSTOM_KEY
+  })
+  afterEach(() => {
+    if (savedSandboxKey === undefined) delete process.env.SKVM_ROUTE_openai_KEY
+    else process.env.SKVM_ROUTE_openai_KEY = savedSandboxKey
+    if (savedCustomKey === undefined) delete process.env.MY_CUSTOM_KEY
+    else process.env.MY_CUSTOM_KEY = savedCustomKey
+  })
+
+  test("returns the in-config apiKey when present", () => {
+    const route = { match: "openai", kind: "openai-compatible" as const, apiKey: "sk-direct" }
+    expect(resolveRouteApiKey(route)).toBe("sk-direct")
+  })
+
+  test("falls back to SKVM_ROUTE_<safe-id>_KEY when apiKey is absent", () => {
+    process.env.SKVM_ROUTE_openai_KEY = "sk-from-env"
+    const route = { match: "openai", kind: "openai-compatible" as const }
+    expect(resolveRouteApiKey(route)).toBe("sk-from-env")
+  })
+
+  test("honours apiKeyEnv when neither apiKey nor the standard fallback env are set", () => {
+    process.env.MY_CUSTOM_KEY = "sk-custom"
+    const route = { match: "openai", kind: "openai-compatible" as const, apiKeyEnv: "MY_CUSTOM_KEY" }
+    expect(resolveRouteApiKey(route)).toBe("sk-custom")
+  })
+
+  test("safe-id replaces every non-alphanumeric run in the route match string", () => {
+    expect(safeRouteId("openrouter/anthropic/claude-sonnet-4.6")).toBe("openrouter_anthropic_claude_sonnet_4_6")
+    expect(safeRouteId("openai/*")).toBe("openai__")
   })
 })
