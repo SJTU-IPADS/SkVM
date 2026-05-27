@@ -253,6 +253,70 @@ mkdir -p ~/.skvm/profiles
 cp -R skvm-data/profiles/. ~/.skvm/profiles/
 ```
 
+## Sandbox (Docker)
+
+Pass `--sandbox` to any skvm command to run the entire skvm process inside an
+ephemeral Docker container. Default behaviour is unchanged — without
+`--sandbox`, skvm runs on the host as before.
+
+```bash
+skvm run --sandbox --skill=./my-skill --task=./task.json
+skvm bench --sandbox --suite=...
+skvm jit-optimize --sandbox --skill=./foo --target-model=openrouter/...
+```
+
+### Image
+
+The launcher pulls
+`ghcr.io/SJTU-IPADS/skvm-sandbox:<your-skvm-version>` from GitHub Container
+Registry. If the pull fails (offline, no auth, image not published yet for
+your version), build the image locally:
+
+```bash
+bun run build:binary
+docker build -f docker/skvm-sandbox.Dockerfile \
+  -t ghcr.io/SJTU-IPADS/skvm-sandbox:$(bun run skvm --version) .
+```
+
+### Cleaning up leaked containers
+
+The launcher reaps containers automatically on the next invocation, but you
+can force-clean any time:
+
+```bash
+docker ps -a --filter label=skvm-sandbox=1 -q | xargs docker rm -f
+```
+
+### Mounts
+
+Three host paths are bind-mounted into the container:
+
+| Host | Inner | Mode |
+| --- | --- | --- |
+| `$(pwd)` | `/workspace` (container `WORKDIR`) | rw |
+| `$SKVM_CACHE` (default `~/.skvm`) | `/skvm-cache` | rw |
+| `$SKVM_DATA_DIR` (if set) | `/skvm-data` | ro |
+
+Path-shaped CLI flags whose values fall outside these roots get a dynamic
+per-flag mount under `/extra/`. The launcher rewrites the value to the
+inner path automatically.
+
+### Making sandbox the default
+
+Set `defaults.sandbox = true` in `~/.skvm/skvm.config.json` (or via
+`skvm config init`). With the default on, every command runs in sandbox
+unless you pass `--sandbox=false`.
+
+### Limits
+
+Default `--cap-drop=ALL`, `--security-opt no-new-privileges`,
+`--network=bridge`, `--memory=2g`, `--cpus=2`, `--pids-limit=512`. Override
+any of these in `sandbox.docker.*` in `skvm.config.json`.
+
+`--sandbox` is incompatible with `native` adapter mode (which imports host
+credentials by design) and with `skvm config init|show|doctor` (which
+manage host-side state).
+
 ## Learn more
 
 - **[docs/usage.md](docs/usage.md)** — full command reference: `profile`, `aot-compile`, `run`, `bench`, `jit-optimize`, `proposals`, and more
