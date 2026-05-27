@@ -2,9 +2,8 @@ import path from "node:path"
 import { existsSync as fsExistsSync } from "node:fs"
 import { PATH_FLAGS, resolvePathFlagValue, type PathFlag } from "./path-flags.ts"
 
-// fsExistsSync is used by callers who want real filesystem checks.
-// The composeMounts default is () => true (pure path manipulation) — callers
-// that need hard existence validation inject fsExistsSync or a stub.
+// The composeMounts default is fsExistsSync (real fs check). Tests that
+// exercise non-existent paths inject `() => true` or `() => false`.
 export { fsExistsSync }
 
 export interface HostRoots {
@@ -111,41 +110,6 @@ function getHostRoot(hostPath: string, kind: "file" | "dir"): string {
 }
 
 /**
- * For an out-of-root path-flag entry, compute the inner path (what the flag
- * value should become inside the container) given the group's inner mount root
- * and the group's host root.
- *
- * For singleton groups (no prefix dedup):
- *  - dir-kind: inner = innerGroupRoot + "/" + basename(hostPath)
- *  - file-kind: inner = innerGroupRoot + "/" + basename(hostPath)
- *    (host root is the parent dir; basename is the filename)
- *
- * For dedup'd groups:
- *  - inner = path.posix.join(innerGroupRoot, path.relative(groupHostRoot, hostPath))
- *    where groupHostRoot is the broader (shorter) root shared by the group.
- */
-function computeInnerPath(
-  hostPath: string,
-  kind: "file" | "dir",
-  innerGroupRoot: string,
-  groupHostRoot: string,
-  singleton: boolean,
-): string {
-  if (singleton) {
-    // dir-kind: mount = /extra/<idx>/<basename(hostPath)>
-    // file-kind: mount = /extra/<idx> (parent), flag = /extra/<idx>/<basename>
-    const base = path.basename(hostPath)
-    return innerGroupRoot + "/" + base
-  }
-  // Dedup'd: compute relative from the group's host root.
-  const rel = path.relative(groupHostRoot, hostPath)
-  if (rel === "") {
-    return innerGroupRoot
-  }
-  return innerGroupRoot + "/" + rel
-}
-
-/**
  * Compose all Docker bind-mount arguments and rewritten CLI args for the
  * Strategy-C launcher.
  *
@@ -162,7 +126,7 @@ function computeInnerPath(
  *  6. Compute rewritten arg values from group inner roots.
  *
  * Prefix dedup:
- *  - Entries are processed in order of their host root length (shorter first).
+ *  - Entries are processed in input (CLI arg) order.
  *  - If a new entry's host root starts with an already-registered group's
  *    host root, the new entry joins that group.
  *  - Sibling paths (neither is a prefix of the other) each get their own group.
