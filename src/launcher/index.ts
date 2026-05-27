@@ -39,6 +39,8 @@ export async function runLauncher(args: string[]): Promise<never> {
   // --docker-image override (parsed inline; doesn't need to live in path-flags.ts)
   let cliImageOverride: string | null = null
   let cliNetworkOverride: typeof sandboxCfg.docker.network | null = null
+  const cliExtraMounts: Array<{ host: string; inner: string; mode: "ro" | "rw" }> = []
+  let debugSandbox = false
   const forwarded: string[] = []
   for (const a of args) {
     if (a.startsWith("--docker-image=")) {
@@ -53,6 +55,15 @@ export async function runLauncher(args: string[]): Promise<never> {
       cliNetworkOverride = v
       continue
     }
+    if (a.startsWith("--mount-extra=")) {
+      const triple = a.slice("--mount-extra=".length).split(":")
+      if (triple.length !== 3 || (triple[2] !== "ro" && triple[2] !== "rw")) {
+        throw new Error(`--mount-extra expects host:inner:ro|rw (got ${a})`)
+      }
+      cliExtraMounts.push({ host: triple[0]!, inner: triple[1]!, mode: triple[2] as "ro" | "rw" })
+      continue
+    }
+    if (a === "--debug-sandbox") { debugSandbox = true; continue }
     forwarded.push(a)
   }
 
@@ -64,6 +75,8 @@ export async function runLauncher(args: string[]): Promise<never> {
       skvmDataDir: skvmDataExists,
       sanitizedConfigPath,
     },
+    configExtraMounts: sandboxCfg.docker.extraMounts,
+    cliExtraMounts,
   })
 
   const env = composeEnv({
@@ -94,6 +107,11 @@ export async function runLauncher(args: string[]): Promise<never> {
     hostPid: process.pid,
     command: ["skvm", ...rewrittenArgs],
   })
+
+  if (debugSandbox) {
+    for (const tok of argv) console.log(tok)
+    process.exit(0)
+  }
 
   // Exec docker. spawnSync with stdio: "inherit" gives us signal forwarding +
   // exit code propagation. (Bun lacks an execvp wrapper; spawnSync + exit is

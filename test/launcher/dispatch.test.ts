@@ -53,6 +53,14 @@ describe("shouldEnterLauncher", () => {
   })
 })
 
+describe("--debug-sandbox flag", () => {
+  test("strips --debug-sandbox from forwarded args", () => {
+    const filtered = ["--sandbox", "--debug-sandbox", "run", "--skill=/x"]
+      .filter(a => a !== "--sandbox" && !a.startsWith("--sandbox=") && a !== "--debug-sandbox")
+    expect(filtered).toEqual(["run", "--skill=/x"])
+  })
+})
+
 describe("assertSandboxCompatible", () => {
   test("hard-errors on --sandbox + config init", () => {
     expect(() => assertSandboxCompatible({

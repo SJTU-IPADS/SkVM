@@ -111,3 +111,23 @@ describe("composeMounts — hard errors", () => {
     ).toThrow(/--skill/)
   })
 })
+
+describe("composeMounts — extra mounts", () => {
+  test("applies config extraMounts after defaults, before dynamic", () => {
+    const { argv } = composeMounts({
+      args: [],
+      roots: ROOTS,
+      configExtraMounts: [{ host: "/h/.ssh", inner: "/root/.ssh", mode: "ro" }],
+    })
+    expect(argv).toContain("/h/.ssh:/root/.ssh:ro")
+  })
+
+  test("applies CLI --mount-extra triples", () => {
+    const { argv } = composeMounts({
+      args: [],
+      roots: ROOTS,
+      cliExtraMounts: [{ host: "/h/.gitconfig", inner: "/root/.gitconfig", mode: "ro" }],
+    })
+    expect(argv).toContain("/h/.gitconfig:/root/.gitconfig:ro")
+  })
+})

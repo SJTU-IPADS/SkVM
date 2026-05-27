@@ -23,6 +23,8 @@ export interface ComposeMountsArgs {
   args: string[]
   roots: HostRoots
   existsSync?: (p: string) => boolean
+  configExtraMounts?: Array<{ host: string; inner: string; mode: "ro" | "rw" }>
+  cliExtraMounts?: Array<{ host: string; inner: string; mode: "ro" | "rw" }>
 }
 
 export interface ComposeMountsResult {
@@ -136,6 +138,8 @@ export function composeMounts({
   args,
   roots,
   existsSync = fsExistsSync,
+  configExtraMounts = [],
+  cliExtraMounts = [],
 }: ComposeMountsArgs): ComposeMountsResult {
   // ── 1. Fixed default mounts ──────────────────────────────────────────────
   const defaultMounts: DockerMount[] = [
@@ -150,6 +154,10 @@ export function composeMounts({
       inner: INNER_CACHE + "/skvm.config.json",
       mode: "ro" as const,
     },
+    // Config-level extra mounts (sandbox.docker.extraMounts).
+    ...configExtraMounts,
+    // CLI-level extra mounts (--mount-extra=host:inner:ro|rw).
+    ...cliExtraMounts,
   ]
 
   // ── 2. Walk args for path flags ──────────────────────────────────────────
