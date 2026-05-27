@@ -16,6 +16,9 @@ import { spawnSync } from "node:child_process"
 import path from "node:path"
 import { stdin } from "node:process"
 
+import pkgJson from "../../package.json" with { type: "json" }
+import { resolveImageRef } from "../launcher/image.ts"
+
 import { checkbox, confirm, input, password, select } from "@inquirer/prompts"
 import { createPrompt, isEnterKey, useKeypress, useState } from "@inquirer/core"
 
@@ -1452,6 +1455,48 @@ async function runDoctor(): Promise<void> {
     })
   }
 
+  // Sandbox (Docker) checks — rendered as a separate section after the main
+  // results table so the output groups clearly. `sandboxOk` participates in
+  // the overall exit code only when sandbox is the default for all invocations.
+  let sandboxOk = true
+  const sandboxSectionLines: string[] = []
+  let sandboxSlice
+  try {
+    sandboxSlice = getSandboxConfig()
+  } catch (e) {
+    sandboxSectionLines.push(`  ${c.red("✗")} sandbox slice malformed: ${e}`)
+    sandboxOk = false
+  }
+
+  const sandboxDefaultsOn = getDefaultSandboxMode()
+  sandboxSectionLines.push(`  default --sandbox: ${sandboxDefaultsOn ? "on" : "off"}`)
+
+  const dockerCheck = spawnSync("docker", ["--version"], { encoding: "utf-8" })
+  if (dockerCheck.status === 0) {
+    sandboxSectionLines.push(`  ${c.green("✓")} docker available (${dockerCheck.stdout.trim()})`)
+  } else {
+    const sev = sandboxDefaultsOn ? "✗" : "(info)"
+    sandboxSectionLines.push(`  ${sandboxDefaultsOn ? c.red(sev) : c.dim(sev)} docker not on PATH`)
+    if (sandboxDefaultsOn) sandboxOk = false
+  }
+
+  if (sandboxSlice) {
+    const imageRef = resolveImageRef({
+      cliOverride: null,
+      configImage: sandboxSlice.docker.image,
+      skvmVersion: (pkgJson as { version: string }).version,
+    })
+    const inspect = spawnSync("docker", ["image", "inspect", imageRef], { stdio: "ignore" })
+    if (inspect.status === 0) {
+      sandboxSectionLines.push(`  ${c.green("✓")} image present: ${imageRef}`)
+    } else {
+      const sev = sandboxDefaultsOn ? "✗" : "(info)"
+      sandboxSectionLines.push(`  ${sandboxDefaultsOn ? c.red(sev) : c.dim(sev)} image not pulled: ${imageRef}`)
+      sandboxSectionLines.push(`     build with: docker build -f docker/skvm-sandbox.Dockerfile -t ${imageRef} .`)
+      if (sandboxDefaultsOn) sandboxOk = false
+    }
+  }
+
   // Print results
   console.log()
   let fails = 0, warns = 0
@@ -1465,6 +1510,11 @@ async function runDoctor(): Promise<void> {
     const detail = r.detail ? c.dim(`  ${r.status === "info" ? "·" : "—"} ${r.detail}`) : ""
     console.log(`  ${mark}  ${r.label}${detail}`)
   }
+  console.log()
+
+  // Sandbox section output
+  console.log(c.bold("Sandbox (Docker):"))
+  for (const line of sandboxSectionLines) console.log(line)
   console.log()
 
   // Migration note: warn if prior opencode proposals exist but the config
@@ -1481,8 +1531,9 @@ async function runDoctor(): Promise<void> {
     ))
   }
 
-  if (fails > 0) {
-    console.log(c.yellow(`${fails} issue(s) to look at.`) + ` See the items above marked ${c.red("✗")}.`)
+  const totalFails = fails + (sandboxOk ? 0 : 1)
+  if (totalFails > 0) {
+    console.log(c.yellow(`${totalFails} issue(s) to look at.`) + ` See the items above marked ${c.red("✗")}.`)
   } else if (warns > 0) {
     console.log(c.yellow(`${warns} warning(s).`) + " Things should work, but read the notes above.")
   } else {
