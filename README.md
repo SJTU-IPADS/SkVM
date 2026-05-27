@@ -31,6 +31,7 @@ Reference: **SkVM: Revisiting Language VM for Skills across Heterogenous LLMs an
 ## News
 
 - **2026-05-18 — Headless pi driver, on by default.** `jit-optimize` and `jit-boost` now run their internal coding agent via [`@mariozechner/pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent) in-process by default. Opencode remains a first-class peer — set `headlessAgent.driver: "opencode"` in `skvm.config.json` to keep using it. `ProposalMeta.optimizerDriver` records which driver produced each proposal for replay / audit.
+- **2026-05** — New `codebuddy` adapter (drives the `codebuddy -p` / `cbc -p` CLI). Supports both managed mode (API key via `CODEBUDDY_API_KEY`) and native mode (user's `~/.codebuddy` config).
 - **2026-05** — New `claude-code` adapter (drives the `claude -p` CLI). Note: heavy headless usage may hit account rate limits or usage-terms issues.
 - **2026-05** — Upload and optimize a skill with SkVM in your browser: [SkVM website](https://skillvm.ai/index.html#optimize-skill).
 
@@ -75,6 +76,11 @@ cp -r ~/.local/share/skvm/skills/skvm-general ~/.hermes/skills/
 mkdir -p ~/.pi/agent/skills
 cp -r ~/.local/share/skvm/skills/skvm-jit ~/.pi/agent/skills/
 cp -r ~/.local/share/skvm/skills/skvm-general ~/.pi/agent/skills/
+
+# CodeBuddy Code
+mkdir -p ~/.codebuddy/skills
+cp -r ~/.local/share/skvm/skills/skvm-jit ~/.codebuddy/skills/
+cp -r ~/.local/share/skvm/skills/skvm-general ~/.codebuddy/skills/
 ```
 
 - `skvm-jit` — post-task JIT optimization skill for submitting conversation logs to `skvm jit-optimize`

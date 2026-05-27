@@ -30,6 +30,7 @@ SkVM 是一个面向 LLM Agent Skill 的编译与运行时系统，用来让 Ski
 
 ## 最新动态
 
+- **2026-05** — 新增 `codebuddy` adapter（驱动 `codebuddy -p` / `cbc -p` CLI）。支持 managed 模式（通过 `CODEBUDDY_API_KEY` 认证）和 native 模式（使用用户本地 `~/.codebuddy` 配置）。
 - **2026-05** — 新增 `claude-code` adapter（驱动 `claude -p` CLI）。注意：大量 headless 调用可能触发账号限流或与使用条款冲突。
 - **2026-05** — 在浏览器里上传并使用 SkVM 优化 Skill：[SkVM website](https://skillvm.ai/index.html#optimize-skill)。
 
@@ -72,6 +73,11 @@ cp -r ~/.local/share/skvm/skills/skvm-general ~/.openclaw/workspace/skills/
 # Hermes Agent
 cp -r ~/.local/share/skvm/skills/skvm-jit ~/.hermes/skills/
 cp -r ~/.local/share/skvm/skills/skvm-general ~/.hermes/skills/
+
+# CodeBuddy Code
+mkdir -p ~/.codebuddy/skills
+cp -r ~/.local/share/skvm/skills/skvm-jit ~/.codebuddy/skills/
+cp -r ~/.local/share/skvm/skills/skvm-general ~/.codebuddy/skills/
 ```
 
 - `skvm-jit` — 任务结束后收集对话日志，并提交给 `skvm jit-optimize`
