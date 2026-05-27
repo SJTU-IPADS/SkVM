@@ -171,7 +171,7 @@ function computeInnerPath(
 export function composeMounts({
   args,
   roots,
-  existsSync = () => true,
+  existsSync = fsExistsSync,
 }: ComposeMountsArgs): ComposeMountsResult {
   // ── 1. Fixed default mounts ──────────────────────────────────────────────
   const defaultMounts: DockerMount[] = [

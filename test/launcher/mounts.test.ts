@@ -52,6 +52,7 @@ describe("composeMounts — out-of-root dynamic mounts", () => {
     const { argv, rewrittenArgs } = composeMounts({
       args: ["--skill=/elsewhere/skills/foo"],
       roots: ROOTS,
+      existsSync: () => true,
     })
     expect(argv).toContain("/elsewhere/skills/foo:/extra/0/foo:ro")
     expect(rewrittenArgs).toEqual(["--skill=/extra/0/foo"])
@@ -61,6 +62,7 @@ describe("composeMounts — out-of-root dynamic mounts", () => {
     const { argv, rewrittenArgs } = composeMounts({
       args: ["--task=/tmp/x/task.json"],
       roots: ROOTS,
+      existsSync: () => true,
     })
     expect(argv).toContain("/tmp/x:/extra/0:ro")
     expect(rewrittenArgs).toEqual(["--task=/extra/0/task.json"])
@@ -70,6 +72,7 @@ describe("composeMounts — out-of-root dynamic mounts", () => {
     const { argv, rewrittenArgs } = composeMounts({
       args: ["--skill=/elsewhere/a/skill", "--out=/elsewhere/b/out"],
       roots: ROOTS,
+      existsSync: () => true,
     })
     const extraCount = argv.filter(s => s.startsWith("/elsewhere/")).length
     expect(extraCount).toBe(2)
@@ -83,6 +86,7 @@ describe("composeMounts — out-of-root dynamic mounts", () => {
     const { argv, rewrittenArgs } = composeMounts({
       args: ["--out=/elsewhere/work", "--skill=/elsewhere/work/skill"],
       roots: ROOTS,
+      existsSync: () => true,
     })
     const extraCount = argv.filter(s => s.startsWith("/elsewhere/")).length
     expect(extraCount).toBe(1)
