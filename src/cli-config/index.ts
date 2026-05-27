@@ -37,6 +37,8 @@ import {
   getAdapterRepoDir,
   getAdapterSettings,
   getDefaultAdapterConfigMode,
+  getSandboxConfig,
+  getDefaultSandboxMode,
   detectLegacyHeadlessFields,
   invalidateConfigCache,
   resolveConfigWritePath,
@@ -230,6 +232,23 @@ async function runShow(): Promise<void> {
   console.log(c.bold("\nDefaults"))
   const defMode = getDefaultAdapterConfigMode() ?? "(unset → managed)"
   printRow("Adapter mode", String(defMode), "defaults.adapterConfigMode")
+
+  console.log(c.bold("\nSandbox (Docker):"))
+  try {
+    const sandboxSlice = getSandboxConfig()
+    const sandboxDefaultsOn = getDefaultSandboxMode()
+    console.log(`  Default for new invocations: ${sandboxDefaultsOn ? c.green("on") : c.dim("off")}`)
+    console.log(`  Image:    ${sandboxSlice.docker.image ?? c.dim("(built-in default)")}`)
+    console.log(`  Network:  ${sandboxSlice.docker.network}`)
+    console.log(`  Resources: memory=${sandboxSlice.docker.memory}  cpus=${sandboxSlice.docker.cpus}  pids=${sandboxSlice.docker.pidsLimit}`)
+    const xm = sandboxSlice.docker.extraMounts
+    if (xm.length > 0) {
+      console.log(`  Extra mounts:`)
+      for (const m of xm) console.log(`    ${m.host} → ${m.inner} (${m.mode})`)
+    }
+  } catch (e) {
+    console.log(`  ${c.red("✗")} could not parse: ${String(e)}`)
+  }
 
   console.log(c.bold("\nAdapters"))
   const labelW = Math.max(...ALL_ADAPTERS.map(a => a.length))
