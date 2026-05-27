@@ -98,7 +98,7 @@ cp.append({"name": "word_occurrence", "score": 1.0 if count == 1 else 0.0,
   "reason": None if count == 1 else f'word "${s.word}" appears {count} times, expected 1'})
 
 # Rule 2: starts with the right word
-first_word = text.split()[0].strip('"\'\`') if text.split() else ''
+first_word = text.split()[0].strip('"' + "'" + '\`') if text.split() else ''
 ok2 = first_word.lower().startswith('${s.firstWord}'.lower())
 cp.append({"name": "start_word", "score": 1.0 if ok2 else 0.0,
   "reason": None if ok2 else f'should start with "${s.firstWord}", starts with "{first_word}"'})
