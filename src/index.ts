@@ -122,16 +122,20 @@ async function main() {
       defaultsSandbox = getDefaultSandboxMode()
     }
     if (shouldEnterLauncher({ parsed: sandboxParsed, defaultsSandbox, inSandboxEnv })) {
-      // Guard: config commands always run on host — reject early before launching container.
-      // Note: per-command native-adapter guard (assertSandboxCompatible with adapterMode
-      // resolved) is deferred to each command entry point and is a follow-up task.
+      const forwarded = args.filter(a => a !== "--sandbox" && !a.startsWith("--sandbox="))
+      // Guard: config commands always run on host — reject early before launching
+      // the container. Derive command/subcommand from positional args (not
+      // rawCommand), because parseSandboxFlag scans positionally: `--sandbox`
+      // may precede the subcommand, making rawCommand === "--sandbox".
+      // Note: per-command native-adapter guard (assertSandboxCompatible with
+      // adapterMode resolved) is deferred to each command entry point.
+      const positionals = forwarded.filter(a => !a.startsWith("-"))
       assertSandboxCompatible({
         sandboxOn: true,
-        command: rawCommand,
-        subcommand: args[1],
+        command: positionals[0],
+        subcommand: positionals[1],
         adapterMode: undefined,
       })
-      const forwarded = args.filter(a => a !== "--sandbox" && !a.startsWith("--sandbox="))
       const { runLauncher } = await import("./launcher/index.ts")
       await runLauncher(forwarded)
       /* unreachable */ return
