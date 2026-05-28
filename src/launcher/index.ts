@@ -82,6 +82,7 @@ export async function runLauncher(args: string[]): Promise<never> {
   const env = composeEnv({
     routes: providers.routes,
     hostEnv: process.env as Record<string, string | undefined>,
+    skvmDataMounted: skvmDataExists !== null,
   })
 
   const image = resolveImageRef({

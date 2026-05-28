@@ -8,6 +8,18 @@ describe("composeEnv", () => {
     expect(env.HOME).toBe("/workspace")
   })
 
+  test("points SKVM_CACHE at the mounted /skvm-cache", () => {
+    const env = composeEnv({ routes: [], hostEnv: {} })
+    expect(env.SKVM_CACHE).toBe("/skvm-cache")
+  })
+
+  test("sets SKVM_DATA_DIR=/skvm-data only when the dataset is mounted", () => {
+    const without = composeEnv({ routes: [], hostEnv: {} })
+    expect(without.SKVM_DATA_DIR).toBeUndefined()
+    const withData = composeEnv({ routes: [], hostEnv: {}, skvmDataMounted: true })
+    expect(withData.SKVM_DATA_DIR).toBe("/skvm-data")
+  })
+
   test("forwards HTTP_PROXY, HTTPS_PROXY, NO_PROXY in both cases", () => {
     const env = composeEnv({
       routes: [],

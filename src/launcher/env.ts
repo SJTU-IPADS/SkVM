@@ -10,6 +10,9 @@ interface RouteLike {
 export interface ComposeEnvArgs {
   routes: RouteLike[]
   hostEnv: Record<string, string | undefined>
+  /** Whether the launcher mounted the dataset at /skvm-data. When true the
+   *  container is told to resolve its dataset root there. */
+  skvmDataMounted?: boolean
 }
 
 const PROXY_VARS = [
@@ -21,6 +24,16 @@ export function composeEnv(opts: ComposeEnvArgs): Record<string, string> {
   const env: Record<string, string> = {
     SKVM_IN_SANDBOX: "1",
     HOME: "/workspace",
+    // Point the in-container skvm at the mounted cache (which holds the
+    // sanitized config + profiles/logs/proposals). Without this, the
+    // container resolves SKVM_CACHE to ~/.skvm = /workspace/.skvm (because
+    // HOME=/workspace) and never sees the mounted config or its routes.
+    SKVM_CACHE: "/skvm-cache",
+  }
+
+  // Dataset root, only when the launcher actually mounted it at /skvm-data.
+  if (opts.skvmDataMounted) {
+    env.SKVM_DATA_DIR = "/skvm-data"
   }
 
   // Proxy passthrough
