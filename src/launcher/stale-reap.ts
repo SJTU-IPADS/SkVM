@@ -26,8 +26,10 @@ function listLabeledContainers(): ContainerInfo[] {
   const res = spawnSync(
     "docker",
     ["ps", "-a", "--filter", "label=skvm-sandbox=1", "--format", "{{.ID}} {{.Labels}}"],
-    { encoding: "utf-8" },
+    { encoding: "utf-8", timeout: 5000 },
   )
+  // status is non-zero (or null on timeout) when the daemon is down/hung —
+  // treat as "nothing to reap" so a stuck daemon never blocks the launch.
   if (res.status !== 0) return []
   return res.stdout.trim().split("\n").filter(Boolean).map(line => {
     const [id, ...rest] = line.split(" ")
@@ -40,7 +42,7 @@ function listLabeledContainers(): ContainerInfo[] {
 function reapContainers(): void {
   for (const c of listLabeledContainers()) {
     if (c.hostPid === null || !isPidAlive(c.hostPid)) {
-      spawnSync("docker", ["rm", "-f", c.id], { stdio: "ignore" })
+      spawnSync("docker", ["rm", "-f", c.id], { stdio: "ignore", timeout: 10000 })
     }
   }
 }
@@ -58,6 +60,9 @@ function reapTmpDirs(): void {
 }
 
 export function reapLeaked(): void {
-  reapContainers()
-  reapTmpDirs()
+  // Reaping is best-effort cleanup of prior crashed runs — it must never
+  // abort or block the current launch. Any failure (daemon down, timeout,
+  // permission) is swallowed.
+  try { reapContainers() } catch { /* best-effort */ }
+  try { reapTmpDirs() } catch { /* best-effort */ }
 }
