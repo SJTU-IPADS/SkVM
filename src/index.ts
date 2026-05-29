@@ -2331,7 +2331,15 @@ async function resolveSkillDirs(flags: Record<string, string>): Promise<string[]
 
 if (import.meta.main) {
   main().catch((err) => {
-    console.error(err)
+    // Print a clean `error: <message>` for expected user-errors (bad flags,
+    // sandbox guards, config validation) instead of a raw stack trace. Pass
+    // --verbose or set SKVM_DEBUG=1 to see the full stack when debugging.
+    const verbose = process.argv.includes("--verbose") || process.env.SKVM_DEBUG === "1"
+    if (verbose && err instanceof Error && err.stack) {
+      console.error(err.stack)
+    } else {
+      console.error(err instanceof Error ? `error: ${err.message}` : String(err))
+    }
     process.exit(1)
   })
 }
