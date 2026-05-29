@@ -18,6 +18,23 @@ import { buildDockerRunArgv } from "./docker-argv.ts"
 import { reapLeaked } from "./stale-reap.ts"
 
 /**
+ * Redact the value of any `NAME=VALUE` argv token whose NAME looks like it
+ * carries a secret, so `--debug-sandbox` output is safe to paste into issues,
+ * CI logs, or a screen share. The injected provider keys live in
+ * `SKVM_ROUTE_<id>_KEY=...` env tokens; we also catch generic key/token/
+ * secret/password names defensively.
+ */
+export function redactSecretToken(tok: string): string {
+  const eq = tok.indexOf("=")
+  if (eq <= 0) return tok
+  const name = tok.slice(0, eq)
+  if (name.startsWith("SKVM_ROUTE_") || /key|token|secret|password/i.test(name)) {
+    return `${name}=<redacted>`
+  }
+  return tok
+}
+
+/**
  * Sandbox-mode dispatch. Composes mounts, env, image ref, and a hardened
  * `docker run` argv from the user's CLI args; then replaces this process
  * with `docker run`. Never returns on success.
@@ -110,7 +127,7 @@ export async function runLauncher(args: string[]): Promise<never> {
   })
 
   if (debugSandbox) {
-    for (const tok of argv) console.log(tok)
+    for (const tok of argv) console.log(redactSecretToken(tok))
     process.exit(0)
   }
 
