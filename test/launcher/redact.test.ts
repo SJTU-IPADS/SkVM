@@ -1,5 +1,21 @@
 import { test, expect, describe } from "bun:test"
-import { redactSecretToken } from "../../src/launcher/index.ts"
+import { redactSecretToken, assertMountExtraAllowed } from "../../src/launcher/index.ts"
+
+describe("assertMountExtraAllowed", () => {
+  test("rejects the host root", () => {
+    expect(() => assertMountExtraAllowed("/")).toThrow(/host root/)
+  })
+
+  test("rejects the docker socket at common paths", () => {
+    expect(() => assertMountExtraAllowed("/var/run/docker.sock")).toThrow(/Docker socket/)
+    expect(() => assertMountExtraAllowed("/run/docker.sock")).toThrow(/Docker socket/)
+  })
+
+  test("allows ordinary host paths", () => {
+    expect(() => assertMountExtraAllowed("/home/u/.ssh")).not.toThrow()
+    expect(() => assertMountExtraAllowed("/tmp/data")).not.toThrow()
+  })
+})
 
 describe("redactSecretToken", () => {
   test("redacts injected route key values", () => {

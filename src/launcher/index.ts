@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
+import path from "node:path"
 
 import {
   SKVM_CACHE,
@@ -24,6 +25,26 @@ import { reapLeaked } from "./stale-reap.ts"
  * `SKVM_ROUTE_<id>_KEY=...` env tokens; we also catch generic key/token/
  * secret/password names defensively.
  */
+/**
+ * Reject `--mount-extra` host paths that would hand the container control of
+ * the host: the Docker socket (→ full host root via the daemon API) and the
+ * host filesystem root. `--mount-extra` is a deliberate escape hatch, but
+ * these two break containment so completely that they should never be a
+ * frictionless one-liner — especially when a value is forwarded from a script.
+ */
+export function assertMountExtraAllowed(hostPath: string): void {
+  const resolved = path.resolve(hostPath)
+  if (resolved === "/") {
+    throw new Error(`--mount-extra refuses to mount the host root "/" into the sandbox.`)
+  }
+  if (/(^|\/)docker\.sock$/.test(resolved)) {
+    throw new Error(
+      `--mount-extra refuses to mount the Docker socket (${hostPath}); ` +
+      `that grants the container full control of the host Docker daemon.`,
+    )
+  }
+}
+
 export function redactSecretToken(tok: string): string {
   const eq = tok.indexOf("=")
   if (eq <= 0) return tok
@@ -77,6 +98,7 @@ export async function runLauncher(args: string[]): Promise<never> {
       if (triple.length !== 3 || (triple[2] !== "ro" && triple[2] !== "rw")) {
         throw new Error(`--mount-extra expects host:inner:ro|rw (got ${a})`)
       }
+      assertMountExtraAllowed(triple[0]!)
       cliExtraMounts.push({ host: triple[0]!, inner: triple[1]!, mode: triple[2] as "ro" | "rw" })
       continue
     }
@@ -110,6 +132,19 @@ export async function runLauncher(args: string[]): Promise<never> {
 
   ensureImagePresent(image)
 
+  // Run the container as the host user so bind-mounted writes are owned by the
+  // invoker. Refuse to silently fall back to uid 0 (root) when getuid is
+  // unavailable — running the sandbox as root would undermine the isolation
+  // the `-u` flag is meant to provide.
+  const getuid = process.getuid
+  const getgid = process.getgid
+  if (!getuid || !getgid) {
+    throw new Error(
+      `--sandbox: cannot determine host uid/gid on this platform ` +
+      `(process.getuid unavailable); refusing to run the container as root.`,
+    )
+  }
+
   const argv = buildDockerRunArgv({
     mountArgv,
     env,
@@ -120,8 +155,8 @@ export async function runLauncher(args: string[]): Promise<never> {
       cpus: sandboxCfg.docker.cpus,
       pidsLimit: sandboxCfg.docker.pidsLimit,
     },
-    hostUid: process.getuid?.() ?? 0,
-    hostGid: process.getgid?.() ?? 0,
+    hostUid: getuid(),
+    hostGid: getgid(),
     hostPid: process.pid,
     command: ["skvm", ...rewrittenArgs],
   })
