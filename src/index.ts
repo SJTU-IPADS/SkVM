@@ -51,8 +51,16 @@ export interface SandboxFlagParse {
 export function parseSandboxFlag(args: string[]): SandboxFlagParse {
   for (const a of args) {
     if (a === "--sandbox") return { value: true, present: true }
-    if (a === "--sandbox=true") return { value: true, present: true }
-    if (a === "--sandbox=false") return { value: false, present: true }
+    if (a.startsWith("--sandbox=")) {
+      const v = a.slice("--sandbox=".length)
+      if (v === "true") return { value: true, present: true }
+      if (v === "false") return { value: false, present: true }
+      // Hard error on any other value. Silently treating `--sandbox=yes` as
+      // "flag absent" would run UNSANDBOXED while the user believes they are
+      // contained — the exact silent-no-containment failure this feature
+      // must never produce.
+      throw new Error(`--sandbox must be "true" or "false" (got "${v}")`)
+    }
   }
   return { value: false, present: false }
 }

@@ -17,6 +17,11 @@ describe("parseSandboxFlag", () => {
   test("absent means present:false", () => {
     expect(parseSandboxFlag(["run", "--skill=/x"])).toEqual({ value: false, present: false })
   })
+
+  test("throws on an unrecognized --sandbox=<value> instead of running unsandboxed", () => {
+    expect(() => parseSandboxFlag(["--sandbox=yes"])).toThrow(/must be "true" or "false"/)
+    expect(() => parseSandboxFlag(["--sandbox=1", "run"])).toThrow(/got "1"/)
+  })
 })
 
 describe("shouldEnterLauncher", () => {
