@@ -496,17 +496,35 @@ export function getDefaultAdapterConfigMode(): AdapterConfigMode | undefined {
  *
  * Throws on an invalid flag value so the user sees a clear error instead of
  * the adapter silently reverting to `"managed"`.
+ *
+ * Sandbox guard: this is the single choke point through which every
+ * adapter-running command resolves its mode, so it is also where the
+ * `--sandbox` + native incompatibility is enforced. Inside the container
+ * (`SKVM_IN_SANDBOX=1`) a resolved `native` mode is a hard error — native
+ * imports host credentials that are deliberately not mounted, which defeats
+ * isolation. Commands that never resolve an adapter mode (e.g. `logs`,
+ * `clean-jit`) are unaffected.
  */
 export function resolveAdapterConfigMode(flagValue: string | undefined): AdapterConfigMode {
+  let mode: AdapterConfigMode
   if (flagValue !== undefined) {
     if (flagValue !== "native" && flagValue !== "managed") {
       throw new Error(
         `--adapter-config must be "native" or "managed" (got "${flagValue}")`,
       )
     }
-    return flagValue
+    mode = flagValue
+  } else {
+    mode = getDefaultAdapterConfigMode() ?? "managed"
   }
-  return getDefaultAdapterConfigMode() ?? "managed"
+  if (mode === "native" && process.env.SKVM_IN_SANDBOX === "1") {
+    throw new Error(
+      `--sandbox requires managed adapter mode. Native mode imports host ` +
+      `credentials, which defeats container isolation. Pass ` +
+      `--adapter-config=managed or set defaults.adapterConfigMode = "managed".`,
+    )
+  }
+  return mode
 }
 
 /**

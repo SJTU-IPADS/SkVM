@@ -3,7 +3,31 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { SandboxConfigSchema } from "../../src/core/types.ts"
-import { invalidateConfigCache, getSandboxConfig, resolveRouteApiKey, safeRouteId } from "../../src/core/config.ts"
+import { invalidateConfigCache, getSandboxConfig, resolveRouteApiKey, safeRouteId, resolveAdapterConfigMode } from "../../src/core/config.ts"
+
+describe("resolveAdapterConfigMode — sandbox native guard", () => {
+  let savedInSandbox: string | undefined
+  beforeEach(() => { savedInSandbox = process.env.SKVM_IN_SANDBOX })
+  afterEach(() => {
+    if (savedInSandbox === undefined) delete process.env.SKVM_IN_SANDBOX
+    else process.env.SKVM_IN_SANDBOX = savedInSandbox
+  })
+
+  test("throws on native mode inside the sandbox", () => {
+    process.env.SKVM_IN_SANDBOX = "1"
+    expect(() => resolveAdapterConfigMode("native")).toThrow(/managed adapter mode/)
+  })
+
+  test("allows managed mode inside the sandbox", () => {
+    process.env.SKVM_IN_SANDBOX = "1"
+    expect(resolveAdapterConfigMode("managed")).toBe("managed")
+  })
+
+  test("allows native mode on the host (not in sandbox)", () => {
+    delete process.env.SKVM_IN_SANDBOX
+    expect(resolveAdapterConfigMode("native")).toBe("native")
+  })
+})
 
 describe("SandboxConfigSchema", () => {
   test("accepts an empty object and fills defaults", () => {
