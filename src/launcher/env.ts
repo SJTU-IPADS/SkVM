@@ -42,15 +42,30 @@ export function composeEnv(opts: ComposeEnvArgs): Record<string, string> {
     if (val && val.length > 0) env[v] = val
   }
 
-  // Route key injection
+  // Route key injection. safeRouteId collapses punctuation to `_`, so two
+  // distinct matches that differ only by punctuation (e.g. "openai-x/*" and
+  // "openai_x/*") would map to the same SKVM_ROUTE_<id>_KEY and the second
+  // would silently overwrite the first — injecting the wrong key for one
+  // route. Detect that collision on the host and fail loud before launching.
+  const idToMatch = new Map<string, string>()
   for (const r of opts.routes) {
+    const id = safeRouteId(r.match)
+    const prior = idToMatch.get(id)
+    if (prior !== undefined && prior !== r.match) {
+      throw new Error(
+        `route match collision: "${prior}" and "${r.match}" both map to ` +
+        `SKVM_ROUTE_${id}_KEY. Rename one route's match so the two differ by ` +
+        `more than punctuation.`,
+      )
+    }
+    idToMatch.set(id, r.match)
     const key = resolveRouteApiKey({
       match: r.match,
       apiKey: r.apiKey,
       apiKeyEnv: r.apiKeyEnv,
     })
     if (key) {
-      env[`SKVM_ROUTE_${safeRouteId(r.match)}_KEY`] = key
+      env[`SKVM_ROUTE_${id}_KEY`] = key
     }
   }
 

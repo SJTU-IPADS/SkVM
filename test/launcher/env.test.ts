@@ -53,4 +53,21 @@ describe("composeEnv", () => {
     })
     expect(Object.keys(env).some(k => k.startsWith("SKVM_ROUTE_"))).toBe(false)
   })
+
+  test("throws on a route-match collision (distinct matches → same env var)", () => {
+    expect(() => composeEnv({
+      routes: [
+        { match: "openai-x/*", kind: "openai-compatible", apiKey: "sk-1" },
+        { match: "openai_x/*", kind: "openai-compatible", apiKey: "sk-2" },
+      ],
+      hostEnv: {},
+    })).toThrow(/route match collision/)
+  })
+
+  test("does not flag the same match string appearing once", () => {
+    expect(() => composeEnv({
+      routes: [{ match: "openai/*", kind: "openai-compatible", apiKey: "sk-1" }],
+      hostEnv: {},
+    })).not.toThrow()
+  })
 })
