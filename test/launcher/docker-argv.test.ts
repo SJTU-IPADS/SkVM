@@ -14,6 +14,13 @@ describe("buildDockerRunArgv", () => {
     command: ["skvm", "run", "--skill=/workspace/foo"],
   }
 
+  test("throws when an env value contains a newline", () => {
+    expect(() => buildDockerRunArgv({
+      ...base,
+      env: { ...base.env, SKVM_ROUTE_x_KEY: "sk-abc\n" },
+    })).toThrow(/newline or NUL/)
+  })
+
   test("includes hardening flags", () => {
     const argv = buildDockerRunArgv(base)
     expect(argv).toContain("--rm")

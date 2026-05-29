@@ -533,8 +533,13 @@ export const SandboxExtraMountSchema = z.object({
 export const SandboxDockerConfigSchema = z.object({
   image: z.string().nullable().default(null),
   network: SandboxNetworkSchema.default("bridge"),
-  memory: z.string().default("2g"),
-  cpus: z.string().default("2"),
+  // Docker `--memory` form: a number with an optional b/k/m/g unit (e.g.
+  // "2g", "512m", "1073741824"). Validated here so a typo like "banana"
+  // fails at config-load with a clear message instead of as a cryptic
+  // docker-daemon error at container start.
+  memory: z.string().regex(/^\d+(\.\d+)?[bkmg]?$/i, "memory must be a docker size like \"2g\", \"512m\", or a byte count").default("2g"),
+  // Docker `--cpus` form: a positive decimal (e.g. "2", "1.5", "0.5").
+  cpus: z.string().regex(/^\d+(\.\d+)?$/, "cpus must be a positive number like \"2\" or \"1.5\"").default("2"),
   pidsLimit: z.number().int().positive().default(512),
   extraMounts: z.array(SandboxExtraMountSchema).default([]),
 })

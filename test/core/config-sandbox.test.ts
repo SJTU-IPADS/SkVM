@@ -59,6 +59,13 @@ describe("SandboxConfigSchema", () => {
     expect(() => SandboxConfigSchema.parse({ docker: { network: "wifi" } })).toThrow()
   })
 
+  test("rejects malformed memory / cpus values", () => {
+    expect(() => SandboxConfigSchema.parse({ docker: { memory: "banana" } })).toThrow()
+    expect(() => SandboxConfigSchema.parse({ docker: { cpus: "alot" } })).toThrow()
+    // valid forms pass
+    expect(SandboxConfigSchema.parse({ docker: { memory: "512m", cpus: "1.5" } }).docker.memory).toBe("512m")
+  })
+
   test("rejects extra-mount with bad mode", () => {
     expect(() =>
       SandboxConfigSchema.parse({
