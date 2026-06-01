@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test"
-import { redactSecretToken, assertMountExtraAllowed } from "../../src/launcher/index.ts"
+import { redactSecretToken, assertMountExtraAllowed, assertExtraMountsAllowed } from "../../src/launcher/index.ts"
 
 describe("assertMountExtraAllowed", () => {
   test("rejects the host root", () => {
@@ -14,6 +14,22 @@ describe("assertMountExtraAllowed", () => {
   test("allows ordinary host paths", () => {
     expect(() => assertMountExtraAllowed("/home/u/.ssh")).not.toThrow()
     expect(() => assertMountExtraAllowed("/tmp/data")).not.toThrow()
+  })
+})
+
+describe("assertExtraMountsAllowed — config mounts share the CLI denylist", () => {
+  test("throws when a config extra mount targets the Docker socket", () => {
+    expect(() =>
+      assertExtraMountsAllowed([{ host: "/var/run/docker.sock" }]),
+    ).toThrow(/Docker socket/)
+  })
+
+  test("throws when a config extra mount targets the host root", () => {
+    expect(() => assertExtraMountsAllowed([{ host: "/" }])).toThrow(/host root/)
+  })
+
+  test("allows ordinary config extra mounts", () => {
+    expect(() => assertExtraMountsAllowed([{ host: "/home/u/.ssh" }, { host: "/tmp/d" }])).not.toThrow()
   })
 })
 

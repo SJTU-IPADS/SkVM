@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, mkdirSync } from "node:fs"
 import path from "node:path"
 
 import {
@@ -45,6 +45,17 @@ export function assertMountExtraAllowed(hostPath: string): void {
   }
 }
 
+/**
+ * Validate every host path in a list of extra mounts against the denylist.
+ * Both CLI `--mount-extra` and config `sandbox.docker.extraMounts` flow through
+ * this so the two escape hatches share one set of rules.
+ */
+export function assertExtraMountsAllowed(mounts: Array<{ host: string }>): void {
+  for (const m of mounts) {
+    assertMountExtraAllowed(m.host)
+  }
+}
+
 export function redactSecretToken(tok: string): string {
   const eq = tok.indexOf("=")
   if (eq <= 0) return tok
@@ -69,6 +80,19 @@ export async function runLauncher(args: string[]): Promise<never> {
   const sandboxCfg = getSandboxConfig()
   const providers = getProvidersConfig()
   const hostConfigPath = getConfigPath()
+
+  // Ensure the cache root exists on the host before docker bind-mounts it.
+  // A missing bind source is created by the daemon as root; the container then
+  // runs as the host uid and cannot write /skvm-cache (logs/config/profiles),
+  // and the host is left with a root-owned ~/.skvm. Creating it here keeps it
+  // owned by the invoking user.
+  mkdirSync(SKVM_CACHE, { recursive: true })
+
+  // Config-supplied extra mounts are an escape hatch like --mount-extra, and
+  // must clear the same denylist (Docker socket, host root). Validate before
+  // composing mounts so a malformed config fails loud, not silently inside the
+  // container.
+  assertExtraMountsAllowed(sandboxCfg.docker.extraMounts)
 
   const sanitizedConfigPath = writeSanitizedConfig(hostConfigPath, process.pid)
 
