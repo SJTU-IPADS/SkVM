@@ -12,7 +12,7 @@
 import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync, chmodSync, readdirSync, unlinkSync } from "node:fs"
 import path from "node:path"
 import { withFileLock } from "./file-lock.ts"
-import { invalidateConfigCache } from "./config.ts"
+import { invalidateConfigCache, resolveConfigWritePath } from "./config.ts"
 import { createLogger } from "./logger.ts"
 import type { ProviderRoute } from "./types.ts"
 
@@ -20,19 +20,6 @@ const log = createLogger("config-write")
 
 /** Cap on the number of `.bak.<ts>` backup files kept alongside the config. */
 const MAX_CONFIG_BACKUPS = 5
-
-/**
- * Derive the skvm.config.json write path from the current SKVM_CACHE env at
- * call time. Re-reads the env var rather than using the module-level constant
- * so test code that overrides SKVM_CACHE between calls sees the updated path.
- */
-function resolveConfigWritePath(): string {
-  const env = process.env.SKVM_CACHE
-  const cacheRoot = env
-    ? path.resolve(env)
-    : path.join(process.env.HOME ?? "~", ".skvm")
-  return path.join(cacheRoot, "skvm.config.json")
-}
 
 /**
  * Prune old `.bak.<ts>` files alongside the config, keeping the most recent

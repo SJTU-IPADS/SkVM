@@ -28,7 +28,6 @@ import {
   PROFILES_DIR,
   LOGS_DIR,
   PROPOSALS_ROOT,
-  CONFIG_WRITE_PATH,
   JIT_OPTIMIZE_DIR,
   getConfigPath,
   expandHome,
@@ -154,7 +153,7 @@ Usage:
   skvm config <subcommand>
 
 Subcommands:
-  init              Interactive wizard; writes ${shortenPath(CONFIG_WRITE_PATH)}
+  init              Interactive wizard; writes ${shortenPath(resolveConfigWritePath())}
   show              Print the resolved config and where each value came from
   doctor            Verify that providers, adapters, and paths actually work
   probes list       Show auto-discovered provider routes
@@ -377,7 +376,7 @@ async function runInit(): Promise<void> {
   if (!stdin.isTTY) {
     console.error(c.red("skvm config init requires an interactive terminal (TTY)."))
     console.error("Edit skvm.config.json directly, or copy the example template:")
-    console.error(`  cp ${shortenPath(EXAMPLE_PATH)} ${shortenPath(CONFIG_WRITE_PATH)}`)
+    console.error(`  cp ${shortenPath(EXAMPLE_PATH)} ${shortenPath(resolveConfigWritePath())}`)
     process.exit(1)
   }
 
@@ -412,10 +411,11 @@ async function runInit(): Promise<void> {
     }
 
     tuiClear()
-    mkdirSync(path.dirname(CONFIG_WRITE_PATH), { recursive: true })
-    if (existsSync(CONFIG_WRITE_PATH)) {
-      const backup = `${CONFIG_WRITE_PATH}.bak.${Date.now()}`
-      copyFileSync(CONFIG_WRITE_PATH, backup)
+    const configPath = resolveConfigWritePath()
+    mkdirSync(path.dirname(configPath), { recursive: true })
+    if (existsSync(configPath)) {
+      const backup = `${configPath}.bak.${Date.now()}`
+      copyFileSync(configPath, backup)
       try { chmodSync(backup, 0o600) } catch { /* best-effort, not fatal on Windows */ }
       console.log(c.dim(`Backed up previous config → ${shortenPath(backup)}`))
       const pruned = pruneOldConfigBackups()
@@ -424,10 +424,10 @@ async function runInit(): Promise<void> {
       }
     }
     const json = serialize(draft)
-    writeFileSync(CONFIG_WRITE_PATH, json + "\n")
+    writeFileSync(configPath, json + "\n")
     // 0600 because the file may now contain plaintext API keys.
-    try { chmodSync(CONFIG_WRITE_PATH, 0o600) } catch { /* best-effort, not fatal on Windows */ }
-    console.log(c.green(`✓ Wrote ${shortenPath(CONFIG_WRITE_PATH)} (chmod 0600)`))
+    try { chmodSync(configPath, 0o600) } catch { /* best-effort, not fatal on Windows */ }
+    console.log(c.green(`✓ Wrote ${shortenPath(configPath)} (chmod 0600)`))
 
     console.log(c.bold("\nNext steps"))
     console.log("  skvm config doctor       # verify env vars + paths")
@@ -453,7 +453,7 @@ function tuiClear(): void {
 
 function printInitHeader(sourcePath: string): void {
   printHeader("skvm config")
-  console.log(c.dim(`Writes ${c.bold(shortenPath(CONFIG_WRITE_PATH))}`))
+  console.log(c.dim(`Writes ${c.bold(shortenPath(resolveConfigWritePath()))}`))
   if (existsSync(sourcePath) && sourcePath === CONFIG_LEGACY_PATH) {
     console.log(c.yellow(`Loading defaults from legacy path ${shortenPath(sourcePath)}.`))
   }
@@ -511,7 +511,7 @@ function loadExistingDraft(): ConfigDraft {
   // Try cache-dir first, fall back to legacy. tryReadJson swallows ENOENT so
   // we don't pre-check existence — that avoids a TOCTOU window and keeps the
   // path linear.
-  const raw = tryReadJson(CONFIG_WRITE_PATH) ?? tryReadJson(CONFIG_LEGACY_PATH)
+  const raw = tryReadJson(resolveConfigWritePath()) ?? tryReadJson(CONFIG_LEGACY_PATH)
   if (!raw) return draft
 
   if (raw.adapters && typeof raw.adapters === "object") {
@@ -1136,7 +1136,7 @@ function renderSectionBody(draft: ConfigDraft, index: number): string {
         summarizeDefaultMode(draft),
         summarizeAdapters(draft),
       ].join("\n")
-      const target = shortenPath(CONFIG_WRITE_PATH)
+      const target = shortenPath(resolveConfigWritePath())
       return indent(full.trimStart())
         + "\n\n  " + c.dim(`Press Enter to write ${target}.`)
     }
@@ -1410,7 +1410,8 @@ async function runDoctor(): Promise<void> {
   // does not pin headlessAgent.driver (meaning the user may not have noticed
   // that the default flipped from opencode to pi).
   const hasLegacyOpencodeProposals = existsSync(path.join(JIT_OPTIMIZE_DIR, "opencode"))
-  const configRaw = existsSync(CONFIG_WRITE_PATH) ? readFileSync(CONFIG_WRITE_PATH, "utf-8") : ""
+  const cfgWritePath = resolveConfigWritePath()
+  const configRaw = existsSync(cfgWritePath) ? readFileSync(cfgWritePath, "utf-8") : ""
   const explicitDriverSet = configRaw.includes(`"driver"`)
   if (hasLegacyOpencodeProposals && !explicitDriverSet) {
     console.log(c.dim(

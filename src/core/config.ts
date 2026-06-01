@@ -280,32 +280,23 @@ interface SkVMConfig {
 
 let _configCache: SkVMConfig | undefined
 
-/** Always the cache-dir location — where `skvm config init` writes. */
-export const CONFIG_WRITE_PATH = path.join(SKVM_CACHE, "skvm.config.json")
-
 let _configPath: string | undefined
 
 /**
- * Derive the skvm.config.json path under the current SKVM_CACHE root.
- * Re-reads `process.env.SKVM_CACHE` at call time so test code that
- * overrides the env var between calls sees the updated path. When
- * `SKVM_CACHE` is not set, falls back to `~/.skvm/` resolved via
- * `expandHome` (which uses `process.env.HOME` with an empty-string
- * fallback, consistent with the rest of the cache-root logic).
+ * On-disk path where `skvm.config.json` is written and read. Re-resolves the
+ * cache root on every call via `resolveCacheRoot()` — honoring
+ * `--skvm-cache` > `SKVM_CACHE` > `~/.skvm`, including `~` expansion — rather
+ * than capturing a module-level constant. The call-time evaluation lets
+ * runtime mutations (e.g. `appendDiscoveredRoute`) and tests that override the
+ * env between calls (paired with `invalidateConfigCache`) see the update.
  *
- * Exported so callers that need to write or probe the config path at
- * runtime (e.g. cli-config's `probes clear`) don't have to re-derive
- * it independently and risk inconsistency.
+ * Single source of truth for the config location: the init wizard, `probes
+ * clear`, doctor, and the provider registry's route writer all call this, so
+ * the resolved path can never drift between the code that writes the file and
+ * the code that reads it.
  */
 export function resolveConfigWritePath(): string {
-  const env = process.env.SKVM_CACHE
-  if (env) return path.join(path.resolve(env), "skvm.config.json")
-  return CONFIG_WRITE_PATH
-}
-
-/** @internal alias kept for in-file callers */
-function currentConfigWritePath(): string {
-  return resolveConfigWritePath()
+  return path.join(resolveCacheRoot(), "skvm.config.json")
 }
 
 /**
@@ -322,7 +313,7 @@ function currentConfigWritePath(): string {
  */
 export function getConfigPath(): string {
   if (_configPath) return _configPath
-  const writePath = currentConfigWritePath()
+  const writePath = resolveConfigWritePath()
   if (existsSync(writePath)) return _configPath = writePath
   const legacy = path.join(PROJECT_ROOT, "skvm.config.json")
   if (existsSync(legacy)) return _configPath = legacy
@@ -492,10 +483,10 @@ export function getProposalsRoot(): string {
  */
 export function invalidateConfigCache(): void {
   const candidatePaths = new Set<string>([
-    _configPath ?? currentConfigWritePath(),
-    CONFIG_WRITE_PATH,
+    resolveConfigWritePath(),
     path.join(PROJECT_ROOT, "skvm.config.json"),
   ])
+  if (_configPath) candidatePaths.add(_configPath)
   for (const p of candidatePaths) {
     try { delete require.cache[require.resolve(p)] } catch { /* path may not be in cache */ }
   }
