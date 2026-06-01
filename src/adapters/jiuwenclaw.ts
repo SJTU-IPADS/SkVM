@@ -1,9 +1,9 @@
-import { mkdir, copyFile, writeFile, unlink } from "node:fs/promises"
+import { mkdir, copyFile, writeFile, unlink, readdir, stat, realpath } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import net from "node:net"
-import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, SkillBundle } from "../core/types.ts"
-import { emptyTokenUsage } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, SkillBundle, SkillMode, TokenUsage } from "../core/types.ts"
+import { emptyTokenUsage, addTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, stripRoutingPrefix } from "../core/config.ts"
 import { acquireFileLock, releaseFileLock } from "../core/file-lock.ts"
@@ -18,19 +18,22 @@ const log = createLogger("jiuwenclaw")
 // Sidecar lifecycle constants
 // ---------------------------------------------------------------------------
 //
-// Jiuwenclaw's AgentServer reads its LLM credentials and target model from
-// ~/.jiuwenclaw/config/.env at *startup* (jiuwenclaw/app.py → load_dotenv →
-// resources/config.yaml ${API_BASE}/${API_KEY}/${MODEL_NAME}/${MODEL_PROVIDER}).
-// There is no per-request model override — the ACP session/prompt request only
-// carries `content`. So each target model needs its own sidecar launched with
-// its own .env.
+// Jiuwenclaw (renamed jiuwenswarm upstream) AgentServer reads its LLM
+// credentials and target model from ~/.jiuwenswarm/config/.env at *startup*
+// (jiuwenswarm/app.py → load_dotenv → resources/config.yaml
+// ${API_BASE}/${API_KEY}/${MODEL_NAME}/${MODEL_PROVIDER}). There is no
+// per-request model override — the ACP session/prompt request only carries
+// `content`. So each target model needs its own sidecar launched with its
+// own .env.
 //
-// Port 19001 and ~/.jiuwenclaw/config/.env are both user-global singletons, so
-// at most one sidecar may live at a time across all processes on the host. We
-// enforce that with a cross-process file lock (reused from openclaw's pattern).
+// Port 19001 and ~/.jiuwenswarm/config/.env are both user-global singletons,
+// so at most one sidecar may live at a time across all processes on the host.
+// We enforce that with a cross-process file lock (reused from openclaw's
+// pattern). The SkVM adapter name stays `jiuwenclaw` for stable CLI / cache /
+// proposals paths even though the upstream package was renamed.
 
 const HOME = process.env.HOME ?? ""
-const JIUWEN_DIR = path.join(HOME, ".jiuwenclaw")
+const JIUWEN_DIR = path.join(HOME, ".jiuwenswarm")
 const JIUWEN_ENV_PATH = path.join(JIUWEN_DIR, "config", ".env")
 const JIUWEN_ENV_BACKUP = path.join(JIUWEN_DIR, "config", ".env.skvm-backup")
 const JIUWEN_LOCK_PATH = path.join(JIUWEN_DIR, "jiuwenclaw.sidecar.lock")
@@ -56,11 +59,12 @@ const SIDECAR_SHUTDOWN_TIMEOUT_MS = 15_000
 // ---------------------------------------------------------------------------
 
 /**
- * A single record in ~/.jiuwenclaw/agent/sessions/{session_id}/history.json.
+ * A single record in ~/.jiuwenswarm/agent/sessions/{session_id}/history.json.
  *
- * For streaming events, `event_type` and `event_payload` are present.
- * See jiuwenclaw/agentserver/session_history.py for the write logic and
- * jiuwenclaw/agentserver/deep_agent/interface_deep.py for event payload format.
+ * Upstream writes per-event fields directly on the record (flat shape); the
+ * fields below are populated based on `event_type`. See
+ * jiuwenswarm/server/runtime/session/session_history.py and
+ * jiuwenswarm/server/runtime/agent_adapter/interface_deep.py for the write logic.
  */
 interface HistoryRecord {
   id: string
@@ -70,8 +74,16 @@ interface HistoryRecord {
   timestamp: number
   content: string
   event_type?: string
-  /** Present for stream events — contains the full event payload dict. */
-  event_payload?: Record<string, unknown>
+  /** chat.tool_call: function name, arguments JSON, tool_call_id */
+  tool_call?: { name?: string; arguments?: string; tool_call_id?: string }
+  /** chat.tool_result */
+  result?: string
+  tool_name?: string
+  tool_call_id?: string
+  /** chat.usage_metadata */
+  metadata?: { usage_metadata?: Record<string, unknown> }
+  /** chat.error: exception class (e.g. "ValueError") */
+  error_type?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -81,14 +93,11 @@ interface HistoryRecord {
 /**
  * Parse jiuwenclaw history.json records into a RunResult.
  *
- * History records include event_type-tagged entries for tool calls, tool results,
- * delta text, and final responses.
- *
- * Note: `tokens` and `cost` are always zero. jiuwenclaw upstream does not
- * persist per-message usage in history.json, and no per-request generation ID
- * is exposed to query OpenRouter post-hoc. Downstream aggregators (bench cost
- * totals, proposal meta, profile cost summaries) will therefore under-report
- * spend for jiuwenclaw runs until upstream adds usage persistence.
+ * Tokens and cost are summed from `chat.usage_metadata` events emitted per
+ * LLM round-trip; the trailing `chat.usage_summary` aggregate is ignored
+ * (redundant with the per-call sum and lacks cost). Tool calls and tool
+ * results stream as flat fields on each record (upstream stopped nesting
+ * under `event_payload` -- see jiuwenclaw `session_history.append_history_record`).
  */
 export function parseJiuwenClawHistory(
   records: HistoryRecord[],
@@ -97,69 +106,75 @@ export function parseJiuwenClawHistory(
 ): RunResult {
   const steps: AgentStep[] = []
   let finalText = ""
-  const toolCallMap = new Map<string, ToolCall>()
+  let tokens: TokenUsage = emptyTokenUsage()
+  let cost = 0
 
   for (const rec of records) {
     if (rec.role === "user") continue
 
-    const et = rec.event_type
-    const payload = rec.event_payload ?? {}
-
-    if (et === "chat.tool_call") {
-      // Tool call event — payload: {event_type, tool_call: {name, arguments, id, ...}}
-      const tcInfo = (payload.tool_call as Record<string, unknown>) ?? payload
-      const name = (tcInfo.name as string) ?? ""
-      const id = (tcInfo.id as string) ?? (tcInfo.tool_call_id as string) ?? `tc-${rec.timestamp}`
-      let input: Record<string, unknown> = {}
-      const rawArgs = tcInfo.arguments ?? tcInfo.args
-      if (typeof rawArgs === "string") {
-        try { input = JSON.parse(rawArgs) } catch { /* keep empty */ }
-      } else if (typeof rawArgs === "object" && rawArgs !== null) {
-        input = rawArgs as Record<string, unknown>
+    switch (rec.event_type) {
+      case "chat.tool_call": {
+        const tc = rec.tool_call ?? {}
+        const id = tc.tool_call_id ?? `tc-${rec.timestamp}`
+        const name = tc.name ?? ""
+        let input: Record<string, unknown> = {}
+        if (typeof tc.arguments === "string") {
+          try { input = JSON.parse(tc.arguments) } catch { /* keep empty */ }
+        }
+        steps.push({
+          role: "assistant",
+          toolCalls: [{ id, name, input }],
+          timestamp: rec.timestamp * 1000,
+        })
+        break
       }
-
-      const toolCall: ToolCall = { id, name, input }
-      toolCallMap.set(id, toolCall)
-
-      steps.push({
-        role: "assistant",
-        toolCalls: [toolCall],
-        timestamp: rec.timestamp * 1000,
-      })
-    } else if (et === "chat.tool_result") {
-      // Tool result event — payload: {event_type, result, tool_name, tool_call_id}
-      const result = (payload.result as string) ?? rec.content ?? ""
-      const toolName = (payload.tool_name as string) ?? ""
-      const toolCallId = (payload.tool_call_id as string) ?? ""
-
-      // Enrich matching ToolCall
-      if (toolCallId) {
-        const tc = toolCallMap.get(toolCallId)
-        if (tc) tc.output = result
+      case "chat.tool_result": {
+        const id = rec.tool_call_id ?? `tr-${rec.timestamp}`
+        steps.push({
+          role: "tool",
+          toolCalls: [{
+            id,
+            name: rec.tool_name ?? "",
+            input: {},
+            output: rec.result ?? rec.content ?? "",
+          }],
+          timestamp: rec.timestamp * 1000,
+        })
+        break
       }
-
-      steps.push({
-        role: "tool",
-        toolCalls: [{
-          id: toolCallId || `tr-${rec.timestamp}`,
-          name: toolName,
-          input: {},
-          output: result,
-        }],
-        timestamp: rec.timestamp * 1000,
-      })
-    } else if (et === "chat.final") {
-      finalText = rec.content
-      steps.push({
-        role: "assistant",
-        text: rec.content,
-        toolCalls: [],
-        timestamp: rec.timestamp * 1000,
-      })
-    } else if (et === "chat.error") {
-      log.warn(`JiuwenClaw error event: ${rec.content}`)
+      case "chat.usage_metadata": {
+        const usage = rec.metadata?.usage_metadata ?? {}
+        const inT = Number(usage.input_tokens ?? 0)
+        const outT = Number(usage.output_tokens ?? 0)
+        tokens = addTokenUsage(tokens, {
+          input: Number.isFinite(inT) ? inT : 0,
+          output: Number.isFinite(outT) ? outT : 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+        })
+        const c = Number(usage.total_cost ?? 0)
+        if (Number.isFinite(c)) cost += c
+        break
+      }
+      case "chat.final": {
+        finalText = rec.content
+        steps.push({
+          role: "assistant",
+          text: rec.content,
+          toolCalls: [],
+          timestamp: rec.timestamp * 1000,
+        })
+        break
+      }
+      case "chat.error": {
+        const prefix = rec.error_type ? `[${rec.error_type}] ` : ""
+        log.warn(`JiuwenClaw error event: ${prefix}${rec.content}`)
+        break
+      }
+      // chat.delta, chat.tool_update (in-progress), chat.usage_summary (aggregate),
+      // chat.processing_status: deliberately skipped — they don't add signal beyond
+      // the per-event records above.
     }
-    // Skip chat.delta, chat.processing_status, etc.
   }
 
   // Fallback: if no chat.final, use the last assistant content
@@ -176,8 +191,8 @@ export function parseJiuwenClawHistory(
   return {
     text: finalText,
     steps,
-    tokens: emptyTokenUsage(),
-    cost: 0,
+    tokens,
+    cost,
     durationMs,
     llmDurationMs: 0,
     workDir,
@@ -190,34 +205,37 @@ export function parseJiuwenClawHistory(
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve jiuwenclaw-cli command.
- * Priority: custom path from skvm.config.json → globally installed `jiuwenclaw-cli`.
+ * Resolve the ACP stdio bridge command (upstream renamed `jiuwenclaw-cli` to
+ * `jiuwenswarm-tui`; new module path is `jiuwenswarm.channels.acp.app_acp`).
+ * Priority: custom path from skvm.config.json → globally installed binary.
  */
 export async function resolveJiuwenClawCmd(): Promise<string[]> {
-  // 1. Custom path from config — run via python3 -m jiuwenclaw.app_cli
+  // 1. Custom path from config — run via python3 -m jiuwenswarm.channels.acp.app_acp
   const repoDir = getAdapterRepoDir("jiuwenclaw")
   if (repoDir) {
-    const mainModule = path.join(repoDir, "jiuwenclaw", "app_cli.py")
+    const mainModule = path.join(repoDir, "jiuwenswarm", "channels", "acp", "app_acp.py")
     if (await Bun.file(mainModule).exists()) {
-      log.info(`Using jiuwenclaw from source: ${repoDir}`)
-      return ["python3", "-m", "jiuwenclaw.app_cli"]
+      log.info(`Using jiuwenswarm from source: ${repoDir}`)
+      return ["python3", "-m", "jiuwenswarm.channels.acp.app_acp"]
     }
-    throw new Error(`jiuwenclaw not found at ${repoDir} (no jiuwenclaw/app_cli.py)`)
+    throw new Error(
+      `jiuwenswarm not found at ${repoDir} (no jiuwenswarm/channels/acp/app_acp.py)`,
+    )
   }
 
   // 2. Global install
-  const { exitCode, stdout } = await runCommandWithEnv(["which", "jiuwenclaw-cli"])
+  const { exitCode, stdout } = await runCommandWithEnv(["which", "jiuwenswarm-tui"])
   if (exitCode === 0 && stdout.trim()) {
-    log.info(`Using global jiuwenclaw-cli: ${stdout.trim()}`)
+    log.info(`Using global jiuwenswarm-tui: ${stdout.trim()}`)
     return [stdout.trim()]
   }
   throw new Error(
-    "jiuwenclaw-cli not found. Either install it globally or set adapters.jiuwenclaw in skvm.config.json",
+    "jiuwenswarm-tui not found. Either install it globally or set adapters.jiuwenclaw in skvm.config.json",
   )
 }
 
 /**
- * Resolve the python interpreter that should run `python3 -m jiuwenclaw.app`.
+ * Resolve the python interpreter that should run `python3 -m jiuwenswarm.app`.
  *
  * For source-checkout mode (`repoDir` set), `cmdPrefix[0]` is the literal
  * string "python3" — fall back to PATH resolution because `run()` already
@@ -225,7 +243,7 @@ export async function resolveJiuwenClawCmd(): Promise<string[]> {
  * here.
  *
  * For global-install mode, `cliFirstArg` is the absolute path to the
- * `jiuwenclaw-cli` script, which is a Python entry-point with a shebang
+ * `jiuwenswarm-tui` script, which is a Python entry-point with a shebang
  * pointing at the venv interpreter (true for venv, virtualenv, pipx, and
  * any pip-installed setup). Use that interpreter directly so the sidecar
  * never depends on whether the active PATH happens to expose the same venv.
@@ -244,7 +262,7 @@ async function resolveSidecarPython(
   // Try shebang first (handles `#!/abs/path/python` and `#!/usr/bin/env python3`).
   // Only trust the shebang if its interpreter actually looks like a Python —
   // a `#!/bin/sh` wrapper script that activates a venv before exec'ing the
-  // real CLI would otherwise leave us trying to run `/bin/sh -m jiuwenclaw.app`.
+  // real CLI would otherwise leave us trying to run `/bin/sh -m jiuwenswarm.app`.
   try {
     const head = await Bun.file(cliFirstArg).text()
     const firstLine = head.split("\n", 1)[0] ?? ""
@@ -298,8 +316,18 @@ export class JiuwenClawAdapter implements AgentAdapter {
   private envWritten = false
   private lockHeld = false
   private sidecarPython = "python3"
+  // setup/teardown are refcounted so the bench orchestrator can hold a
+  // session-long sidecar across many task runs while `runTask` (which does
+  // its own setup/teardown around each task) becomes a no-op for the
+  // jiuwenclaw adapter. Without this, the inner setup() blocks on the
+  // host-wide sidecar lock the orchestrator already owns.
+  private setupCount = 0
 
   async setup(config: AdapterConfig): Promise<void> {
+    if (this.setupCount > 0) {
+      this.setupCount += 1
+      return
+    }
     this.model = config.model
     this.apiKey = config.apiKey
     this.timeoutMs = config.timeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs
@@ -309,7 +337,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
         "jiuwenclaw does not support --adapter-config=native: its set_user_home() Python API " +
         "only scopes config for the in-process Python side, not for the subprocess AgentServer " +
         "+ gateway sidecars. Use --adapter-config=managed (or set defaults.adapterConfigMode=managed " +
-        "in skvm.config.json) — skvm writes a minimal ~/.jiuwenclaw/config/.env from providers.routes " +
+        "in skvm.config.json) — skvm writes a minimal ~/.jiuwenswarm/config/.env from providers.routes " +
         "and backs up / restores the user's .env around the run.",
       )
     }
@@ -327,7 +355,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
         staleMs: JIUWEN_LOCK_STALE_MS,
         timeoutMs: JIUWEN_LOCK_ACQUIRE_TIMEOUT_MS,
         heartbeatMs: JIUWEN_LOCK_HEARTBEAT_MS,
-        // jiuwenclaw.app leaves app_agentserver + app_gateway as independent
+        // jiuwenswarm.app leaves app_agentserver + app_gateway as independent
         // children that outlive the wrapper pid, so releasing the lock on
         // abnormal parent exit would let another skvm process acquire while
         // the orphans still own port 19001 and the adapter-owned .env. Hold
@@ -348,6 +376,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
       registerLiveAdapter(this)
 
       await this.startSidecar()
+      this.setupCount = 1
     } catch (err) {
       log.warn(`jiuwenclaw setup failed: ${(err as Error).message}; rolling back`)
       await this.teardownInternal()
@@ -364,7 +393,26 @@ export class JiuwenClawAdapter implements AgentAdapter {
     timeoutMs?: number
   }): Promise<RunResult> {
     let skillLoaded: boolean | undefined
+
+    // Resolve symlinks (macOS mkdtemp hands back /var/folders/... which is a
+    // symlink to /private/var/folders/...). jiuwenswarm scopes the agent's
+    // workspace by passing --workspace-dir through Path.resolve(), so its
+    // fs_operation sandbox checks writes against the *realpath*. If we hand the
+    // agent the raw /var/... path in the hint and --workspace-dir, any
+    // ABSOLUTE path it writes (/var/...) fails the membership check against the
+    // resolved workspace (/private/var/...) and the write is silently dropped
+    // (empty tool result, no file). Relative paths happen to work because they
+    // resolve against the already-resolved cwd — but models that emit absolute
+    // paths from the hint then score 0 on every file-output task. Resolve once
+    // so the hint, --workspace-dir, and the agent's absolute paths all agree.
+    const workDir = await realpath(task.workDir).catch(() => task.workDir)
+
     let prompt = `IMPORTANT: Do not ask clarifying questions. Proceed directly with implementation. Execute all steps immediately without waiting for user input.\n\n`
+
+    // Filesystem tools resolve relative paths against sys_operation.work_dir
+    // (scoped to workDir via --workspace-dir below); the hint nudges the model
+    // to use them instead of hard-coding home-dir paths.
+    prompt += `Your working directory is ${workDir}. Use relative paths (or absolute paths under that directory) for all file operations.\n\n`
 
     // --- Skill handling ---
     if (task.skill) {
@@ -377,17 +425,27 @@ export class JiuwenClawAdapter implements AgentAdapter {
 
     const startMs = performance.now()
     const sessionId = `bench_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    // jiuwenclaw's AgentServer maps the client-supplied session_id to an
+    // internal `acp_*` id and writes history.json under the internal path.
+    // The wire protocol surfaces only the external id back to the client, so
+    // we observe the sessions/ directory pre/post-run and pick the newly
+    // created entry as the correct path. Workaround pending an upstream fix
+    // that surfaces the internal mapping (or writes history under the
+    // external id directly).
+    const sessionsRoot = path.join(JIUWEN_DIR, "agent", "sessions")
+    const sessionsBefore = await snapshotSessionDirs(sessionsRoot)
 
     // --- Build command ---
     const cmd = [
       ...this.cmdPrefix,
       "acp",
       "--session-id", sessionId,
+      "--workspace-dir", workDir,
       prompt,
     ]
 
     // Build env with PYTHONPATH for source installs. Model routing lives in
-    // ~/.jiuwenclaw/config/.env (rewritten by setup()) and is read by the
+    // ~/.jiuwenswarm/config/.env (rewritten by setup()) and is read by the
     // long-running sidecar, not the short-lived ACP stdio client below.
     const env: Record<string, string | undefined> = { ...process.env }
     if (this.repoDir) {
@@ -398,7 +456,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
     }
 
     const { stdout, stderr, exitCode, timedOut } = await runCommandWithEnv(cmd, {
-      cwd: task.workDir,
+      cwd: workDir,
       timeout: task.timeoutMs ?? this.timeoutMs,
       env,
     })
@@ -431,37 +489,52 @@ export class JiuwenClawAdapter implements AgentAdapter {
       responseText = stdout.trim()
     }
 
-    // --- Read history.json for detailed conversation data ---
-    const historyPath = path.join(
-      process.env.HOME ?? "",
-      ".jiuwenclaw", "agent", "sessions", responseSessionId, "history.json",
+    // --- Read history.json ---
+    // history.json is auxiliary: the primary run signal is responseText +
+    // workDir contents, so missing/malformed history downgrades telemetry
+    // but stays runStatus=ok. Subprocess-level failures (timeout / non-zero
+    // exit) override below. We try the externally-known session id first,
+    // then fall back to a freshly-created session dir (see snapshotSessionDirs
+    // above) because AgentServer writes history under an internal id we
+    // don't see on the wire.
+    let result: RunResult | undefined
+    let usedHistoryPath: string | undefined
+    let usedHistoryText: string | undefined
+    const candidates = await historyCandidatePaths(
+      path.join(sessionsRoot, responseSessionId, "history.json"),
+      sessionsRoot,
+      sessionsBefore,
     )
-
-    // history.json is the AUXILIARY source for richer per-step data. The
-    // primary signal that the agent ran is the JSON-RPC `responseText` and
-    // the populated workDir — when history.json is missing or malformed we
-    // lose telemetry but the workDir is still trustworthy. Mark 'ok' so the
-    // runner gate evaluates normally; subprocess-level failures (timeout,
-    // non-zero exit) are upgraded to non-ok further down. Per CLAUDE.md the
-    // upstream CLI does not always persist token/cost data — this branch is
-    // jiuwenclaw's normal reduced-telemetry mode, NOT a failure. See round-3
-    // Codex review for the regression that drove this fix.
-    let result: RunResult
-    const historyFile = Bun.file(historyPath)
-    if (await historyFile.exists()) {
+    for (const candidate of candidates) {
+      let text: string
       try {
-        const historyData = await historyFile.json() as HistoryRecord[]
-        result = parseJiuwenClawHistory(historyData, task.workDir, durationMs)
-        log.debug(`Parsed ${historyData.length} history records from ${historyPath}`)
+        text = await Bun.file(candidate).text()
       } catch (err) {
-        log.warn(`Failed to parse jiuwenclaw history.json: ${err}`)
-        result = buildMinimalResult(responseText, task.workDir, durationMs, "ok",
-          `jiuwenclaw history.json invalid: ${String(err).slice(0, 200)} — telemetry unavailable, workDir scored as-is`)
+        const code = (err as NodeJS.ErrnoException).code
+        if (code !== "ENOENT") {
+          log.warn(`Failed to read jiuwenclaw history.json at ${candidate}: ${err}`)
+        }
+        continue
       }
-    } else {
-      log.debug(`No history.json found at ${historyPath}, using JSON-RPC response only`)
-      result = buildMinimalResult(responseText, task.workDir, durationMs, "ok",
-        `jiuwenclaw history.json not written at ${historyPath} — telemetry unavailable, workDir scored as-is`)
+      try {
+        const historyData = JSON.parse(text) as HistoryRecord[]
+        result = parseJiuwenClawHistory(historyData, workDir, durationMs)
+        usedHistoryPath = candidate
+        usedHistoryText = text
+        log.debug(`Parsed ${historyData.length} history records from ${candidate}`)
+        break
+      } catch (err) {
+        log.warn(`Failed to parse jiuwenclaw history.json at ${candidate}: ${err}`)
+        result = buildMinimalResult(responseText, workDir, durationMs, "ok",
+          `jiuwenclaw history.json invalid: ${String(err).slice(0, 200)} — telemetry unavailable, workDir scored as-is`)
+        usedHistoryPath = candidate
+        break
+      }
+    }
+    if (!result) {
+      log.debug(`No history.json near ${candidates[0]}, using JSON-RPC response only`)
+      result = buildMinimalResult(responseText, workDir, durationMs, "ok",
+        `jiuwenclaw history.json not written for session ${responseSessionId} — telemetry unavailable, workDir scored as-is`)
     }
 
     // --- Save conv log ---
@@ -469,14 +542,14 @@ export class JiuwenClawAdapter implements AgentAdapter {
       try {
         const destDir = path.dirname(task.convLog.filePath)
         await mkdir(destDir, { recursive: true })
-        // Save both JSON-RPC response and history.json if available
         let logContent = stdout
-        if (await historyFile.exists()) {
-          const historyText = await historyFile.text()
-          logContent = JSON.stringify({
-            jsonrpc_response: stdout.trim(),
-            history: JSON.parse(historyText),
-          }, null, 2)
+        if (usedHistoryText !== undefined) {
+          try {
+            logContent = JSON.stringify({
+              jsonrpc_response: stdout.trim(),
+              history: JSON.parse(usedHistoryText),
+            }, null, 2)
+          } catch { /* fall back to plain stdout */ }
         }
         await Bun.write(task.convLog.filePath, logContent)
         log.debug(`Saved jiuwenclaw conv log to ${task.convLog.filePath}`)
@@ -503,7 +576,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
     if (skillLoaded !== undefined) {
       result.skillLoaded = skillLoaded
     }
-    // jiuwenclaw's app_cli + acp_channel log INFO messages to stderr as a
+    // jiuwenswarm's app_acp + acp_connect log INFO messages to stderr as a
     // matter of course (e.g. "[CLI] starting ACP stdio gateway"), so we can't
     // treat a non-empty stderr as a failure. Only exitCode != 0 is a real
     // error — the parsed RunResult is authoritative.
@@ -513,6 +586,21 @@ export class JiuwenClawAdapter implements AgentAdapter {
     if (timedOut) {
       result.runStatus = "timeout"
       result.statusDetail = `jiuwenclaw subprocess killed after ${task.timeoutMs ?? this.timeoutMs}ms`
+      // runCommandWithEnv group-killed the ACP client tree, but the long-lived
+      // sidecar's AgentServer keeps running the (possibly runaway) session —
+      // it is a separate process tree, not the client's child, so the client
+      // timeout alone does not stop the server-side work. Without this, a
+      // degenerate run (observed: 1200+ tool calls looping on memory lookups)
+      // keeps burning API quota and can poison the next run sharing this
+      // sidecar. Restart it to abort the session cleanly.
+      log.warn("jiuwenclaw timed out; restarting sidecar to abort the server-side session")
+      try {
+        await this.stopSidecar()
+        await this.startSidecar()
+        result.statusDetail += " (sidecar restarted to clear the session)"
+      } catch (err) {
+        log.warn(`jiuwenclaw sidecar restart after timeout failed: ${(err as Error).message}`)
+      }
     } else if (exitCode !== 0) {
       result.runStatus = "adapter-crashed"
       result.statusDetail = `jiuwenclaw exited with code ${exitCode}`
@@ -535,6 +623,11 @@ export class JiuwenClawAdapter implements AgentAdapter {
   }
 
   async teardown(): Promise<void> {
+    if (this.setupCount > 1) {
+      this.setupCount -= 1
+      return
+    }
+    this.setupCount = 0
     await this.teardownInternal()
   }
 
@@ -620,7 +713,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
     if (await tcpProbe(GATEWAY_HOST, GATEWAY_PORT)) {
       log.warn(`jiuwenclaw port ${GATEWAY_PORT} already in use; killing orphan sidecar`)
       try {
-        const killProc = Bun.spawn(["pkill", "-f", "jiuwenclaw\\.app"], { stdout: "pipe", stderr: "pipe" })
+        const killProc = Bun.spawn(["pkill", "-f", "jiuwenswarm\\.(app|server\\.app_agentserver|gateway\\.app_gateway)"], { stdout: "pipe", stderr: "pipe" })
         await killProc.exited
       } catch { /* ignore */ }
       // Wait up to 5s for the port to actually release.
@@ -631,7 +724,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
       }
       if (await tcpProbe(GATEWAY_HOST, GATEWAY_PORT)) {
         throw new Error(
-          `jiuwenclaw port ${GATEWAY_PORT} still in use after pkill — please kill jiuwenclaw.app manually`,
+          `jiuwenclaw port ${GATEWAY_PORT} still in use after pkill — please kill jiuwenswarm.app manually`,
         )
       }
       log.info(`jiuwenclaw orphan sidecar cleared from port ${GATEWAY_PORT}`)
@@ -639,8 +732,8 @@ export class JiuwenClawAdapter implements AgentAdapter {
 
     // repoDir is optional: when the user configured a source checkout we use
     // it as both cwd and PYTHONPATH; when only a venv-installed
-    // `jiuwenclaw-cli` is available, `python3 -m jiuwenclaw.app` resolves from
-    // site-packages and cwd doesn't matter.
+    // `jiuwenswarm-tui` is available, `python3 -m jiuwenswarm.app` resolves
+    // from site-packages and cwd doesn't matter.
     const env: Record<string, string> = {}
     for (const [k, v] of Object.entries(process.env)) {
       if (typeof v === "string") env[k] = v
@@ -652,8 +745,8 @@ export class JiuwenClawAdapter implements AgentAdapter {
     if (this.apiKey) env.OPENROUTER_API_KEY = this.apiKey
 
     const cwd = this.repoDir ?? process.cwd()
-    log.info(`jiuwenclaw spawning sidecar: ${this.sidecarPython} -m jiuwenclaw.app (cwd=${cwd})`)
-    const proc = Bun.spawn([this.sidecarPython, "-m", "jiuwenclaw.app"], {
+    log.info(`jiuwenclaw spawning sidecar: ${this.sidecarPython} -m jiuwenswarm.app (cwd=${cwd})`)
+    const proc = Bun.spawn([this.sidecarPython, "-m", "jiuwenswarm.app"], {
       cwd,
       stdout: "pipe",
       stderr: "pipe",
@@ -704,14 +797,14 @@ export class JiuwenClawAdapter implements AgentAdapter {
       }
     }
 
-    // jiuwenclaw/app.py's main() Popens app_agentserver + app_gateway as
+    // jiuwenswarm/app.py's main() Popens app_agentserver + app_gateway as
     // independent children, and only runs its `_terminate_all()` finally block
     // on KeyboardInterrupt — not on SIGTERM. So killing the orchestrator
     // reliably leaves its two children orphaned. We own the sidecar lock, so
-    // sweep any remaining jiuwenclaw.app* processes and wait for the port to
+    // sweep any remaining jiuwenswarm.app* processes and wait for the port to
     // clear.
     try {
-      const killProc = Bun.spawn(["pkill", "-f", "jiuwenclaw\\.app"], { stdout: "pipe", stderr: "pipe" })
+      const killProc = Bun.spawn(["pkill", "-f", "jiuwenswarm\\.(app|server\\.app_agentserver|gateway\\.app_gateway)"], { stdout: "pipe", stderr: "pipe" })
       await killProc.exited
     } catch { /* ignore */ }
 
@@ -831,7 +924,7 @@ function pumpToLogger(stream: ReadableStream<Uint8Array> | null, tag: string): v
 // ---------------------------------------------------------------------------
 //
 // If the SkVM process is interrupted mid-run, best-effort kill the sidecar
-// and restore ~/.jiuwenclaw/config/.env so the user's config isn't left in
+// and restore ~/.jiuwenswarm/config/.env so the user's config isn't left in
 // an adapter-owned state. The file lock already auto-releases on process exit
 // (see src/core/file-lock.ts); this hook only handles the sidecar + .env.
 
@@ -885,6 +978,69 @@ function installProcessExitHook(): void {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Snapshot session dir names so we can detect which one a fresh run wrote to. */
+async function snapshotSessionDirs(sessionsRoot: string): Promise<Set<string>> {
+  try {
+    return new Set(await readdir(sessionsRoot))
+  } catch {
+    return new Set()
+  }
+}
+
+/**
+ * Pick the most recently created session dir that wasn't in `before`. Returns
+ * `undefined` when no new dir appeared.
+ */
+async function pickNewSessionDir(
+  sessionsRoot: string,
+  before: Set<string>,
+): Promise<string | undefined> {
+  let names: string[]
+  try {
+    names = await readdir(sessionsRoot)
+  } catch {
+    return undefined
+  }
+  const fresh = names.filter((n) => !before.has(n))
+  if (fresh.length === 0) return undefined
+  if (fresh.length === 1) return fresh[0]
+  const stats = await Promise.all(fresh.map(async (n) => {
+    try {
+      return { name: n, mtime: (await stat(path.join(sessionsRoot, n))).mtimeMs }
+    } catch {
+      return undefined
+    }
+  }))
+  let bestName: string | undefined
+  let bestMtime = -Infinity
+  for (const s of stats) {
+    if (s && s.mtime > bestMtime) {
+      bestMtime = s.mtime
+      bestName = s.name
+    }
+  }
+  return bestName
+}
+
+/**
+ * Ordered candidate paths for history.json: the externally-known session id
+ * first, then any session dir created during the run (covers the
+ * external→internal id remap that AgentServer applies before writing).
+ */
+async function historyCandidatePaths(
+  primaryPath: string,
+  sessionsRoot: string,
+  before: Set<string>,
+): Promise<string[]> {
+  const paths = [primaryPath]
+  const fallback = await pickNewSessionDir(sessionsRoot, before)
+  if (fallback) {
+    const fallbackPath = path.join(sessionsRoot, fallback, "history.json")
+    if (fallbackPath !== primaryPath) paths.push(fallbackPath)
+  }
+  return paths
+}
 
 function buildMinimalResult(
   text: string,

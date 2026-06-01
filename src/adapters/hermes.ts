@@ -698,6 +698,32 @@ export function buildMinimalResult(
   }
 }
 
+/** Drain a byte stream to text, with the ability to abandon a read that is
+ *  blocked on a pipe whose EOF never arrives (e.g. a surviving grandchild
+ *  still holds the FD). `abandon()` cancels the reader so the in-flight
+ *  `read()` resolves instead of hanging forever. */
+function drainStreamText(stream: ReadableStream<Uint8Array>): {
+  text: Promise<string>
+  abandon: () => void
+} {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let out = ""
+  const text = (async () => {
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value) out += decoder.decode(value, { stream: true })
+      }
+    } catch {
+      // reader was cancelled (abandon) or the stream errored — return partial
+    }
+    return out
+  })()
+  return { text, abandon: () => { reader.cancel().catch(() => {}) } }
+}
+
 export async function runCommandWithEnv(
   cmd: string[],
   opts?: { cwd?: string; timeout?: number; env?: Record<string, string | undefined> },
@@ -707,6 +733,12 @@ export async function runCommandWithEnv(
     stdout: "pipe",
     stderr: "pipe",
     env: opts?.env ?? process.env,
+    // Own process group, so a timeout can reap the WHOLE tree. The spawned
+    // CLI may fork grandchildren that inherit our stdout/stderr pipe FDs;
+    // killing only the direct child orphans them holding the pipes open, and
+    // the EOF reads below would then hang forever (observed: an 8.75h hang
+    // where a jiuwenswarm ACP child outlived a SIGTERM'd parent).
+    detached: true,
   })
 
   let timedOut = false
@@ -714,14 +746,29 @@ export async function runCommandWithEnv(
   if (opts?.timeout) {
     timer = setTimeout(() => {
       timedOut = true
-      proc.kill()
+      // Negative pid = kill the whole process group (child + grandchildren).
+      // SIGKILL so a parent that ignores SIGTERM (or dies before cleaning up
+      // its children) can't leave the tree alive holding our pipes.
+      try {
+        process.kill(-proc.pid, "SIGKILL")
+      } catch {
+        try { proc.kill() } catch { /* already gone */ }
+      }
     }, opts.timeout)
   }
 
-  const [exitCode, stdout, stderr] = await Promise.all([
-    proc.exited.then((code) => { if (timer) clearTimeout(timer); return code }),
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ])
+  // Read both pipes, but never block past process exit. Group-kill above
+  // should close the pipes, but as a backstop: once the process is gone, give
+  // the pipes a short grace to drain, then abandon the readers so a stray FD
+  // holder can't deadlock us on EOF.
+  const so = drainStreamText(proc.stdout)
+  const se = drainStreamText(proc.stderr)
+  const exitCode = await proc.exited
+  if (timer) clearTimeout(timer)
+
+  const drainGrace = setTimeout(() => { so.abandon(); se.abandon() }, 2000)
+  const [stdout, stderr] = await Promise.all([so.text, se.text])
+  clearTimeout(drainGrace)
+
   return { stdout, stderr, exitCode, timedOut }
 }

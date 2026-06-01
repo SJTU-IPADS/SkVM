@@ -166,6 +166,35 @@ describe("diagnoseJiuwenclaw", () => {
     }
   })
 
+  test("prefixes chat.error summary with error_type when present", async () => {
+    const sandbox = freshSandbox("jiuwenclaw")
+    try {
+      const sessionDir = path.join(sandbox, "agent", "sessions", "sess2")
+      mkdirSync(sessionDir, { recursive: true })
+      const history = [
+        { event_type: "chat.user", content: "hi" },
+        {
+          event_type: "chat.error",
+          content: "rate limited",
+          error_type: "RateLimitError",
+        },
+      ]
+      writeFileSync(path.join(sessionDir, "history.json"), JSON.stringify(history))
+      const out = await diagnoseJiuwenclaw({
+        sandboxRoot: sandbox,
+        sessionId: "sess2",
+        stdout: "",
+        stderr: "",
+        exitCode: 1,
+      })
+      expect(out).not.toBeNull()
+      expect(out!.summary).toContain("[RateLimitError]")
+      expect(out!.summary).toContain("rate limited")
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true })
+    }
+  })
+
   test("returns null when sessionId unknown and no stderr", async () => {
     const sandbox = freshSandbox("jiuwenclaw")
     try {
