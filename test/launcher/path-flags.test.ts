@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test"
-import { PATH_FLAGS, resolvePathFlagValue } from "../../src/launcher/path-flags.ts"
+import { PATH_FLAGS, resolvePathFlagValue, looksLikePath } from "../../src/launcher/path-flags.ts"
 
 describe("PATH_FLAGS", () => {
   test("each entry has flag/kind/mode/required", () => {
@@ -21,6 +21,32 @@ describe("PATH_FLAGS", () => {
     expect(flags.has("--skill")).toBe(true)
     expect(flags.has("--task")).toBe(true)
     expect(flags.has("--out")).toBe(true)
+  })
+
+  test("csv list flags are marked shape:csv", () => {
+    const byFlag = new Map(PATH_FLAGS.map(e => [e.flag, e]))
+    for (const f of ["--skill", "--logs", "--failures", "--tasks", "--test-tasks"]) {
+      expect(byFlag.get(f)?.shape).toBe("csv")
+    }
+  })
+
+  test("--tasks / --test-tasks are pathLikeOnly (mixed IDs + paths)", () => {
+    const byFlag = new Map(PATH_FLAGS.map(e => [e.flag, e]))
+    expect(byFlag.get("--tasks")?.pathLikeOnly).toBe(true)
+    expect(byFlag.get("--test-tasks")?.pathLikeOnly).toBe(true)
+  })
+})
+
+describe("looksLikePath", () => {
+  test("treats .json files and slashed values as paths", () => {
+    expect(looksLikePath("/tmp/task.json")).toBe(true)
+    expect(looksLikePath("task.json")).toBe(true)
+    expect(looksLikePath("dir/task")).toBe(true)
+  })
+
+  test("treats bare identifiers as non-paths", () => {
+    expect(looksLikePath("bench_task_id")).toBe(false)
+    expect(looksLikePath("pinch_foo")).toBe(false)
   })
 })
 

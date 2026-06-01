@@ -112,6 +112,48 @@ describe("composeMounts — hard errors", () => {
   })
 })
 
+describe("composeMounts — csv path flags", () => {
+  test("rewrites each element of an out-of-root --skill list to its own /extra mount", () => {
+    const { argv, rewrittenArgs } = composeMounts({
+      args: ["--skill=/tmp/a,/tmp/b"],
+      roots: ROOTS,
+      existsSync: () => true,
+    })
+    expect(rewrittenArgs).toEqual(["--skill=/extra/0/a,/extra/1/b"])
+    expect(argv).toContain("/tmp/a:/extra/0/a:ro")
+    expect(argv).toContain("/tmp/b:/extra/1/b:ro")
+  })
+
+  test("rewrites each element of an out-of-root --logs list (file-kind parent mounts)", () => {
+    const { argv, rewrittenArgs } = composeMounts({
+      args: ["--logs=/tmp/a.jsonl,/tmp/b.jsonl"],
+      roots: ROOTS,
+      existsSync: () => true,
+    })
+    // Both files share parent /tmp → prefix dedup into a single /extra/0 mount.
+    expect(rewrittenArgs).toEqual(["--logs=/extra/0/a.jsonl,/extra/0/b.jsonl"])
+    expect(argv).toContain("/tmp:/extra/0:ro")
+  })
+
+  test("mixes fixed-root and out-of-root elements within one csv flag", () => {
+    const { rewrittenArgs } = composeMounts({
+      args: ["--skill=/home/u/proj/skills/in,/tmp/out"],
+      roots: ROOTS,
+      existsSync: () => true,
+    })
+    expect(rewrittenArgs).toEqual(["--skill=/workspace/skills/in,/extra/0/out"])
+  })
+
+  test("--tasks (pathLikeOnly) leaves bare task IDs untouched and rewrites only paths", () => {
+    const { rewrittenArgs } = composeMounts({
+      args: ["--tasks=bench_task_id,/tmp/task.json"],
+      roots: ROOTS,
+      existsSync: () => true,
+    })
+    expect(rewrittenArgs).toEqual(["--tasks=bench_task_id,/extra/0/task.json"])
+  })
+})
+
 describe("composeMounts — extra mounts", () => {
   test("applies config extraMounts after defaults, before dynamic", () => {
     const { argv } = composeMounts({

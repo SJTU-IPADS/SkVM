@@ -1,6 +1,6 @@
 import path from "node:path"
 import { existsSync as fsExistsSync } from "node:fs"
-import { PATH_FLAGS, resolvePathFlagValue, type PathFlag } from "./path-flags.ts"
+import { PATH_FLAGS, resolvePathFlagValue, looksLikePath, type PathFlag } from "./path-flags.ts"
 
 // The composeMounts default is fsExistsSync (real fs check). Tests that
 // exercise non-existent paths inject `() => true` or `() => false`.
@@ -161,8 +161,15 @@ export function composeMounts({
   ]
 
   // ── 2. Walk args for path flags ──────────────────────────────────────────
+  //
+  // Each path-flag arg expands into one or more *elements* (single flags have
+  // one; csv flags split on ","). Every element is rewritten independently:
+  // fixed-root elements are resolved here; out-of-root elements are deferred to
+  // the dynamic-mount grouping below and back-filled into their slot. After
+  // grouping, each arg is reassembled from its (now-complete) element list.
   interface OutOfRootEntry {
     argIndex: number    // index in rewrittenArgs array
+    elementSlot: number // which csv element of that arg this is
     hostPath: string    // absolute resolved host path
     hostRoot: string    // the path to mount (parent for file-kind, self for dir-kind)
     kind: "file" | "dir"
@@ -170,8 +177,15 @@ export function composeMounts({
     flagName: string
   }
 
+  interface PendingArg {
+    argIndex: number
+    flagName: string
+    elements: Array<string | null>  // inner value per element; null = out-of-root pending
+  }
+
   const rewrittenArgs: string[] = [...args]
   const outOfRoot: OutOfRootEntry[] = []
+  const pendingByIndex = new Map<number, PendingArg>()
 
   for (let i = 0; i < args.length; i++) {
     const raw = args[i]
@@ -180,32 +194,47 @@ export function composeMounts({
     if (parsed === null) continue
 
     const { flag, value } = parsed
-    const hostPath = resolvePathFlagValue(value, roots.cwd)
+    const rawElements = (flag.shape ?? "single") === "csv" ? value.split(",") : [value]
+    const elements: Array<string | null> = new Array(rawElements.length).fill(null)
 
-    // Try to rewrite under a fixed root (no new mount needed).
-    const innerFixed = rewriteUnderFixedRoots(hostPath, roots)
-    if (innerFixed !== null) {
-      rewrittenArgs[i] = flag.flag + "=" + innerFixed
-      continue
+    for (let slot = 0; slot < rawElements.length; slot++) {
+      const el = rawElements[slot]!
+
+      // pathLikeOnly: leave non-path tokens (e.g. bench task IDs) verbatim.
+      if (flag.pathLikeOnly && !looksLikePath(el)) {
+        elements[slot] = el
+        continue
+      }
+
+      const hostPath = resolvePathFlagValue(el, roots.cwd)
+
+      // Try to rewrite under a fixed root (no new mount needed).
+      const innerFixed = rewriteUnderFixedRoots(hostPath, roots)
+      if (innerFixed !== null) {
+        elements[slot] = innerFixed
+        continue
+      }
+
+      // Out-of-root path: check existence for required flags before mounting.
+      if (flag.required && !existsSync(hostPath)) {
+        throw new Error(
+          `${flag.flag}: required path does not exist: ${hostPath}`,
+        )
+      }
+
+      // Out-of-root: register for dynamic mount assignment; slot stays null.
+      outOfRoot.push({
+        argIndex: i,
+        elementSlot: slot,
+        hostPath,
+        hostRoot: getHostRoot(hostPath, flag.kind),
+        kind: flag.kind,
+        mode: flag.mode,
+        flagName: flag.flag,
+      })
     }
 
-    // Out-of-root path: check existence for required flags before mounting.
-    if (flag.required && !existsSync(hostPath)) {
-      throw new Error(
-        `${flag.flag}: required path does not exist: ${hostPath}`,
-      )
-    }
-
-    // Out-of-root: register for dynamic mount assignment.
-    const hostRoot = getHostRoot(hostPath, flag.kind)
-    outOfRoot.push({
-      argIndex: i,
-      hostPath,
-      hostRoot,
-      kind: flag.kind,
-      mode: flag.mode,
-      flagName: flag.flag,
-    })
+    pendingByIndex.set(i, { argIndex: i, flagName: flag.flag, elements })
   }
 
   // ── 3. Group out-of-root entries by prefix dedup ─────────────────────────
@@ -315,7 +344,7 @@ export function composeMounts({
       mode: group.mode,
     })
 
-    // Rewrite each member's arg.
+    // Back-fill each member's element slot with its computed inner path.
     for (const member of group.members) {
       let innerPath: string
       if (singleton) {
@@ -330,11 +359,18 @@ export function composeMounts({
         const rel = path.relative(group.hostRoot, member.hostPath)
         innerPath = rel === "" ? mountInner : mountInner + "/" + rel
       }
-      rewrittenArgs[member.argIndex] = member.flagName + "=" + innerPath
+      const pending = pendingByIndex.get(member.argIndex)
+      if (pending !== undefined) pending.elements[member.elementSlot] = innerPath
     }
   }
 
-  // ── 5. Assemble result ────────────────────────────────────────────────────
+  // ── 5. Reassemble each path-flag arg from its (now-complete) elements ─────
+  for (const pending of pendingByIndex.values()) {
+    const joined = pending.elements.map(e => e ?? "").join(",")
+    rewrittenArgs[pending.argIndex] = pending.flagName + "=" + joined
+  }
+
+  // ── 6. Assemble result ────────────────────────────────────────────────────
   const allMounts: DockerMount[] = [...defaultMounts, ...dynamicMounts]
 
   const argv: string[] = []

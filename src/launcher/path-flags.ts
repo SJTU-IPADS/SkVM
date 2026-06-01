@@ -1,10 +1,35 @@
 import path from "node:path"
 
+/**
+ * Whether a flag carries a single path value or a comma-separated list of
+ * them. `--skill`, `--logs`, `--tasks` etc. accept `a,b,c`; each element is a
+ * path that must be mounted / rewritten independently.
+ */
+export type PathValueShape = "single" | "csv"
+
 export interface PathFlag {
   flag: string                    // e.g. "--skill"
   kind: "file" | "dir"
   mode: "ro" | "rw"
   required: boolean               // is the host path expected to exist?
+  shape?: PathValueShape          // default "single"
+  /**
+   * When true, only rewrite elements that look like filesystem paths; leave
+   * non-path tokens untouched. Used by `--tasks` / `--test-tasks`, whose
+   * values are either bench task IDs (e.g. `bench_foo`) or paths to task JSON
+   * files. The predicate mirrors the JIT/bench resolver: a value is path-like
+   * if it ends in `.json` or contains a `/`.
+   */
+  pathLikeOnly?: boolean
+}
+
+/**
+ * Mirror of the JIT/bench task-ref resolver: a value is treated as a path
+ * (and therefore mounted / rewritten) only when it ends in `.json` or contains
+ * a slash. Bare identifiers like `bench_task_id` are left alone.
+ */
+export function looksLikePath(ref: string): boolean {
+  return ref.endsWith(".json") || ref.includes("/")
 }
 
 /**
@@ -25,7 +50,7 @@ export interface PathFlag {
  */
 export const PATH_FLAGS: PathFlag[] = [
   // run / bench / jit-optimize — primary inputs
-  { flag: "--skill",          kind: "dir",  mode: "ro", required: true  },
+  { flag: "--skill",          kind: "dir",  mode: "ro", required: true,  shape: "csv" },
   { flag: "--skill-list",     kind: "file", mode: "ro", required: false },
   { flag: "--task",           kind: "file", mode: "ro", required: true  },
   { flag: "--out",            kind: "dir",  mode: "rw", required: false },
@@ -45,9 +70,13 @@ export const PATH_FLAGS: PathFlag[] = [
   // jit-optimize specifics
   { flag: "--skill-source",   kind: "dir",  mode: "ro", required: false },
   { flag: "--log-source",     kind: "file", mode: "ro", required: false },
-  // NOTE: --logs and --failures take comma-separated path lists, not a single
-  // path, so they cannot be represented as a single PathFlag entry.
-  // TODO(docker-sandbox): comma-list path flag not yet handled by PATH_FLAGS
+  // --task-source=log: comma-separated lists of execution-log / failures files.
+  { flag: "--logs",           kind: "file", mode: "ro", required: true,  shape: "csv" },
+  { flag: "--failures",       kind: "file", mode: "ro", required: false, shape: "csv" },
+  // --task-source=real: comma-separated list of bench task IDs *or* task JSON
+  // paths. pathLikeOnly leaves bare IDs untouched and rewrites only paths.
+  { flag: "--tasks",          kind: "file", mode: "ro", required: false, shape: "csv", pathLikeOnly: true },
+  { flag: "--test-tasks",     kind: "file", mode: "ro", required: false, shape: "csv", pathLikeOnly: true },
 
   // proposals
   { flag: "--proposal",       kind: "dir",  mode: "ro", required: false },
