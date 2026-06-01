@@ -369,7 +369,7 @@ describe("renderPiModelRegistration", () => {
       providers: {
         openai: {
           baseUrl: "http://example/v1",
-          models: [{ id: "gpt-4o-mini" }],
+          models: [{ id: "gpt-4o-mini", api: "openai-completions" }],
         },
       },
     })
@@ -378,15 +378,33 @@ describe("renderPiModelRegistration", () => {
   test("registers the exact modelId provided for openai-compatible routes", () => {
     const route = { match: "cheap_ipads/*", kind: "openai-compatible" as const, baseUrl: "http://proxy/v1" }
     const json = renderPiModelRegistration(route, "gpt-5.5")
-    expect(JSON.parse(json).providers.openai.models).toEqual([{ id: "gpt-5.5" }])
+    expect(JSON.parse(json).providers.openai.models).toEqual([
+      { id: "gpt-5.5", api: "openai-completions" },
+    ])
   })
 
   test("omits baseUrl for openai-compatible routes with no baseUrl", () => {
     const route = { match: "ipads/*", kind: "openai-compatible" as const }
     const json = renderPiModelRegistration(route, "gpt-4o")
     const parsed = JSON.parse(json)
-    expect(parsed.providers.openai.models).toEqual([{ id: "gpt-4o" }])
+    expect(parsed.providers.openai.models).toEqual([{ id: "gpt-4o", api: "openai-completions" }])
     expect(parsed.providers.openai.baseUrl).toBeUndefined()
+  })
+
+  test("pins api=openai-completions so pi does not route to the Responses endpoint", () => {
+    // Regression guard for the deepseek 404. Pi's built-in `openai` provider
+    // defaults custom-registered models to its API (openai-responses, used
+    // for real OpenAI). Non-OpenAI openai-compatible backends — DeepSeek,
+    // vLLM, OpenAI-proxy frontends — only speak /chat/completions, so
+    // without this override pi POSTs to {baseUrl}/responses and gets 404.
+    const route = {
+      match: "deepseek/*",
+      kind: "openai-compatible" as const,
+      baseUrl: "https://api.deepseek.com",
+    }
+    const json = renderPiModelRegistration(route, "deepseek-v4-pro")
+    const parsed = JSON.parse(json)
+    expect(parsed.providers.openai.models[0].api).toBe("openai-completions")
   })
 
   test("registers openrouter model under openrouter provider key without baseUrl", () => {

@@ -296,13 +296,29 @@ export function renderPiBaseUrlOverride(route: ProviderRoute): string | null {
  * ModelRegistry.find() (library path) resolves it. Use only when the id is NOT
  * in pi's built-in catalogue — registering a built-in id with a bare {id}
  * stub would clobber its metadata (reasoning / contextWindow / maxTokens).
- * For openai-compatible routes the baseUrl override is included too. Custom
- * entries inherit api/baseUrl from the built-in provider, so a minimal {id}
- * is sufficient.
+ * For openai-compatible routes the baseUrl override is included too.
+ *
+ * For openai-compatible routes the model entry pins `api: "openai-completions"`.
+ * Pi's built-in `openai` provider defaults custom models to its API
+ * (`openai-responses` — the newer Responses endpoint pi uses for real OpenAI
+ * models). Non-OpenAI openai-compatible backends (DeepSeek, vLLM, any
+ * OpenAI-proxy frontend) almost never implement Responses; they only speak
+ * the `/chat/completions` Completions API. Without this override pi POSTs to
+ * `{baseUrl}/responses` and the backend returns 404. Confirmed against
+ * pi-ai's own `models.generated.js`: every non-OpenAI deepseek-* / qwen3-* /
+ * etc. entry registered under the openai provider sets
+ * `api: "openai-completions"` explicitly for the same reason.
+ *
+ * Other route kinds (openrouter, anthropic) already inherit a correct `api`
+ * default from pi's built-in provider definitions, so no override needed.
  */
 export function renderPiModelRegistration(route: ProviderRoute, modelId: string): string {
   const piProviderKey = route.kind === "openai-compatible" ? "openai" : route.kind
-  const providerConfig: Record<string, unknown> = { models: [{ id: modelId }] }
+  const modelEntry: Record<string, unknown> = { id: modelId }
+  if (route.kind === "openai-compatible") {
+    modelEntry.api = "openai-completions"
+  }
+  const providerConfig: Record<string, unknown> = { models: [modelEntry] }
   if (route.kind === "openai-compatible" && route.baseUrl) {
     providerConfig.baseUrl = route.baseUrl
   }
