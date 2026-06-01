@@ -36,6 +36,14 @@ export function composeEnv(opts: ComposeEnvArgs): Record<string, string> {
     env.SKVM_DATA_DIR = "/skvm-data"
   }
 
+  // Forward host-set runtime toggles. `--no-auto-probe` is stripped from argv
+  // on the host and re-expressed as SKVM_AUTO_PROBE=0; without forwarding it,
+  // the container would re-enable auto-probe despite the user opting out.
+  const autoProbe = opts.hostEnv.SKVM_AUTO_PROBE
+  if (autoProbe !== undefined && autoProbe.length > 0) {
+    env.SKVM_AUTO_PROBE = autoProbe
+  }
+
   // Proxy passthrough
   for (const v of PROXY_VARS) {
     const val = opts.hostEnv[v]

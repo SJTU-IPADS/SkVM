@@ -70,4 +70,11 @@ describe("composeEnv", () => {
       hostEnv: {},
     })).not.toThrow()
   })
+
+  test("forwards SKVM_AUTO_PROBE when set on the host (--no-auto-probe opt-out)", () => {
+    const off = composeEnv({ routes: [], hostEnv: { SKVM_AUTO_PROBE: "0" } })
+    expect(off.SKVM_AUTO_PROBE).toBe("0")
+    const unset = composeEnv({ routes: [], hostEnv: {} })
+    expect(unset.SKVM_AUTO_PROBE).toBeUndefined()
+  })
 })
