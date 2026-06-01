@@ -1338,7 +1338,7 @@ Options:
 const PROPOSALS_KNOWN_FLAGS: Record<string, ReadonlySet<string>> = {
   list:   new Set(["harness", "target-model", "model", "skill", "status",
                    "sort", "min-delta", "group-by", "no-color"]),
-  show:   new Set(["full", "no-color"]),
+  show:   new Set(["full", "no-color", "round"]),
   diff:   new Set(["round"]),
   report: new Set(["harness", "target-model", "model", "skill", "status",
                    "sort", "min-delta", "group-by", "out"]),
@@ -1366,6 +1366,7 @@ Usage:
                          [--sort=recent|delta|skill|model] [--min-delta=<n>]
                          [--group-by=skill|model] [--no-color]
   skvm proposals show    <id> [--full] [--no-color]
+                         [--round=<n>]   Show evidence + optimizer record for round N
   skvm proposals diff    <id> [--round=<n>]
   skvm proposals report  [filters as in list] [--out=<path>]
   skvm proposals serve   [--port=<n>] [--host=<h>] [--no-open]
@@ -1429,9 +1430,22 @@ Proposals root: $SKVM_PROPOSALS_DIR or ~/.skvm/proposals by default.`)
 
   if (sub === "show") {
     const id = positional[0]
-    if (!id) { console.error("Usage: skvm proposals show <id>"); process.exit(1) }
+    if (!id) { console.error("Usage: skvm proposals show <id> [--round=N]"); process.exit(1) }
     const p = await loadProposal(id)
     const proposalDir = proposalDirFromId(id)
+
+    // --round=<n> dispatches to the per-round inspector — the durable evidence
+    // record + optimizer step record introduced with schemaVersion=1. Output
+    // is markdown so the same machinery prints cleanly to a terminal or
+    // pipes to a viewer.
+    if (flags.round !== undefined) {
+      const round = parseInt(flags.round, 10)
+      if (Number.isNaN(round)) { console.error(`--round must be an integer`); process.exit(1) }
+      const { renderRoundShow } = await import("./proposals/round-show.ts")
+      const result = await renderRoundShow(proposalDir, round)
+      console.log(result.text)
+      return
+    }
     const { renderShowSummary, formatRunPhaseLine } = await import("./proposals/list-format.ts")
     const { selfHealRunStatus } = await import("./jit-optimize/run-status.ts")
     const color = shouldUseColor({ noColor: flags["no-color"] === "true" })

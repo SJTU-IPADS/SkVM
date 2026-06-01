@@ -116,6 +116,17 @@ const DEFAULT_MAX_CONV_LOG = 400
 const DEFAULT_MAX_FILE_INLINE = 4000
 
 /**
+ * Render-time caps for the optimizer's `.optimize/tasks/*\/run-*-workdir/`
+ * projection. These bound what the OPTIMIZER MODEL sees, independent of how
+ * much the durable record actually holds — the snapshot may be larger if a
+ * caller raised the capture cap (see `SNAPSHOT_CAPTURE_DEFAULTS` in
+ * evidence.ts). Historically a single 512KB/64KB pair did both jobs; the two
+ * are now separated so durable fidelity can scale without bloating context.
+ */
+const RENDER_WORKDIR_MAX_TOTAL = 512 * 1024
+const RENDER_WORKDIR_MAX_FILE = 64 * 1024
+
+/**
  * Grouped view of a single evidence for layout purposes. `globalIndex` is the
  * stable 0..N-1 integer the optimizer still uses in `blockedEvidenceIds` —
  * kept as the canonical audit reference even though the files themselves live
@@ -225,7 +236,15 @@ export async function serializeContext(
         // file — sibling files in the same workdir subdirectory don't
         // need a repeated recursive mkdir call each time.
         const createdDirs = new Set<string>()
+        let renderedBytes = 0
         for (const [filePath, content] of run.evidence.workDirSnapshot.files) {
+          // Render-time projection cap: the durable record may hold more
+          // than the optimizer should see. Skip individual files past the
+          // per-file ceiling, stop entirely once the per-run aggregate
+          // ceiling is reached. Both ceilings independent of the snapshot
+          // capture cap by design (see RENDER_WORKDIR_MAX_* above).
+          if (content.length > RENDER_WORKDIR_MAX_FILE) continue
+          if (renderedBytes + content.length > RENDER_WORKDIR_MAX_TOTAL) break
           const dest = path.join(snapDir, filePath)
           const parent = path.dirname(dest)
           if (!createdDirs.has(parent)) {
@@ -233,6 +252,7 @@ export async function serializeContext(
             createdDirs.add(parent)
           }
           await Bun.write(dest, content)
+          renderedBytes += content.length
         }
       }
     }

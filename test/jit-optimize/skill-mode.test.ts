@@ -62,7 +62,7 @@ describe("runTasksForRound skillMode threading", () => {
       adapterPool,
       adapterConfig: { model: "test", maxSteps: 5, timeoutMs: 5000 },
       evalConfig: {},
-      logDir: path.join(tempRoot, "logs"),
+      evidenceDir: path.join(tempRoot, "logs"),
       setLabel: "train",
       skillMode: "discover",
     })
@@ -95,7 +95,7 @@ describe("runTasksForRound skillMode threading", () => {
       adapterPool,
       adapterConfig: { model: "test", maxSteps: 5, timeoutMs: 5000 },
       evalConfig: {},
-      logDir: path.join(tempRoot, "logs"),
+      evidenceDir: path.join(tempRoot, "logs"),
       setLabel: "train",
     })
 

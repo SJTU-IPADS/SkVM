@@ -73,7 +73,7 @@ async function withSkill(fn: (skill: ResolvedSkill) => Promise<void>) {
 describe("jit-optimize runTasksForRound runStatus gate (sweep G1)", () => {
   test("tainted adapter run produces infra-tainted Evidence, no eval", async () => {
     await withSkill(async (skill) => {
-      const logDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
+      const evidenceDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
       try {
         const task: RunnableTask = {
           id: "task1",
@@ -91,7 +91,7 @@ describe("jit-optimize runTasksForRound runStatus gate (sweep G1)", () => {
           adapterPool: new Pool([createTaintedMockAdapter()]),
           adapterConfig: { model: "test", maxSteps: 30, timeoutMs: 60_000 },
           evalConfig: {},
-          logDir,
+          evidenceDir,
           setLabel: "train",
         })
 
@@ -112,14 +112,14 @@ describe("jit-optimize runTasksForRound runStatus gate (sweep G1)", () => {
         // runMeta still carries the runStatus (round-1 plumbing)
         expect(ev.runMeta?.runStatus).toBe("timeout")
       } finally {
-        await rm(logDir, { recursive: true, force: true })
+        await rm(evidenceDir, { recursive: true, force: true })
       }
     })
   })
 
   test("ok adapter run produces normal Evidence with criteria from evaluateAll", async () => {
     await withSkill(async (skill) => {
-      const logDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
+      const evidenceDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
       try {
         const task: RunnableTask = {
           id: "task1",
@@ -137,7 +137,7 @@ describe("jit-optimize runTasksForRound runStatus gate (sweep G1)", () => {
           adapterPool: new Pool([createOkMockAdapter()]),
           adapterConfig: { model: "test", maxSteps: 30, timeoutMs: 60_000 },
           evalConfig: {},
-          logDir,
+          evidenceDir,
           setLabel: "train",
         })
 
@@ -149,7 +149,7 @@ describe("jit-optimize runTasksForRound runStatus gate (sweep G1)", () => {
         // not a runtime-error stub.
         expect(ev.criteria![0]!.id).not.toBe("runtime-error")
       } finally {
-        await rm(logDir, { recursive: true, force: true })
+        await rm(evidenceDir, { recursive: true, force: true })
       }
     })
   })

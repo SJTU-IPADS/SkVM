@@ -26,6 +26,7 @@ import {
   exists,
 } from "./workspace.ts"
 import { mkdir } from "node:fs/promises"
+import { copySkillDir } from "../core/fs-utils.ts"
 import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
 
 const log = createLogger("jit-optimize-optimizer")
@@ -67,13 +68,18 @@ export async function runOptimizer(
     driver: config.driver,
   })
 
-  // 5. Persist raw agent output if a logDir was given
-  if (config.logDir) {
-    await mkdir(config.logDir, { recursive: true })
-    await Bun.write(path.join(config.logDir, "agent-stdout.log"), run.rawStdout)
+  // 5. Persist the agent's stdout/stderr at the head of the step record.
+  // Prompt, submission.json, diff, and optimize-context/ land here too, but
+  // only after the diff is computed and before .optimize/ is stripped (steps
+  // 9 + 10 below). We log stdout/stderr first so even a crash mid-write of
+  // the other artifacts leaves the raw agent trace intact.
+  if (config.recordDir) {
+    await mkdir(config.recordDir, { recursive: true })
+    await Bun.write(path.join(config.recordDir, "stdout.log"), run.rawStdout)
     if (run.rawStderr) {
-      await Bun.write(path.join(config.logDir, "agent-stderr.log"), run.rawStderr)
+      await Bun.write(path.join(config.recordDir, "stderr.log"), run.rawStderr)
     }
+    await Bun.write(path.join(config.recordDir, "prompt.md"), prompt)
   }
 
   // Non-zero exit / timeout already threw a HeadlessAgentError inside
@@ -133,7 +139,25 @@ export async function runOptimizer(
     }
   }
 
-  // 9. Strip .optimize/ so the workspace becomes a clean snapshot candidate
+  // 9. Persist the rest of the optimizer step record while `.optimize/` is
+  // still intact. submission.json lands as the (already-normalized) parsed
+  // object so consumers don't need to re-validate; diff.json carries the
+  // file-level diff against the original; optimize-context/ is a copy of
+  // exactly what the agent read. Together with stdout/stderr/prompt this is
+  // a complete, durable trace of one optimizer pass.
+  if (config.recordDir) {
+    await Bun.write(
+      path.join(config.recordDir, "submission.json"),
+      JSON.stringify(submission, null, 2),
+    )
+    await Bun.write(
+      path.join(config.recordDir, "diff.json"),
+      JSON.stringify(diff, null, 2),
+    )
+    await copySkillDir(workspace.optimizeDir, path.join(config.recordDir, "optimize-context"))
+  }
+
+  // 10. Strip .optimize/ so the workspace becomes a clean snapshot candidate
   await stripOptimizeDir(absWorkspace)
 
   return {

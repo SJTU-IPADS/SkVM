@@ -23,11 +23,33 @@ const log = createLogger("jit-optimize-evidence")
 // Work directory snapshot
 // ---------------------------------------------------------------------------
 
+/**
+ * Defaults for `snapshotWorkDir`'s capture caps. Historically these matched the
+ * optimizer view's render cap exactly — one constant served both jobs. The
+ * durable record now separates them: capture controls what the persistent
+ * Evidence holds; the optimizer projection applies its own cap when rendering
+ * `.optimize/tasks/*\/run-*-workdir/` (see workspace.ts).
+ */
+export const SNAPSHOT_CAPTURE_DEFAULTS = {
+  maxTotalBytes: 512 * 1024,
+  maxFileBytes: 64 * 1024,
+} as const
+
+export interface SnapshotCaptureOptions {
+  /** Stop adding files once aggregate captured size reaches this. */
+  maxTotalBytes?: number
+  /** Skip individual files larger than this. */
+  maxFileBytes?: number
+}
+
 /** Snapshot a work directory, skipping binary/hidden files and enforcing size limits. */
-export async function snapshotWorkDir(workDir: string): Promise<WorkDirSnapshot> {
+export async function snapshotWorkDir(
+  workDir: string,
+  opts: SnapshotCaptureOptions = {},
+): Promise<WorkDirSnapshot> {
+  const maxTotal = opts.maxTotalBytes ?? SNAPSHOT_CAPTURE_DEFAULTS.maxTotalBytes
+  const maxFile = opts.maxFileBytes ?? SNAPSHOT_CAPTURE_DEFAULTS.maxFileBytes
   const files = new Map<string, string>()
-  const MAX_TOTAL_SIZE = 512 * 1024 // 512KB total
-  const MAX_FILE_SIZE = 64 * 1024   // 64KB per file
 
   try {
     const entries = await readdir(workDir, { withFileTypes: true, recursive: true })
@@ -35,7 +57,7 @@ export async function snapshotWorkDir(workDir: string): Promise<WorkDirSnapshot>
 
     for (const entry of entries) {
       if (!entry.isFile()) continue
-      if (totalSize >= MAX_TOTAL_SIZE) break
+      if (totalSize >= maxTotal) break
 
       const fullPath = path.join(entry.parentPath ?? workDir, entry.name)
       const relPath = path.relative(workDir, fullPath)
@@ -45,7 +67,7 @@ export async function snapshotWorkDir(workDir: string): Promise<WorkDirSnapshot>
 
       try {
         const content = await Bun.file(fullPath).text()
-        if (content.length > MAX_FILE_SIZE) continue
+        if (content.length > maxFile) continue
         files.set(relPath, content)
         totalSize += content.length
       } catch {

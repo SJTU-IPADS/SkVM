@@ -7,7 +7,7 @@
 
 import { z } from "zod"
 import type { AdapterConfig, EvalResult, EvalCriterion, TokenUsage, RunStatus, SkillMode } from "../core/types.ts"
-import { addTokenUsage, TokenUsageSchema } from "../core/types.ts"
+import { addTokenUsage, TokenUsageSchema, RunStatusSchema } from "../core/types.ts"
 import type { LLMProvider } from "../providers/types.ts"
 import type { AgentAdapter } from "../core/types.ts"
 import type { AdapterName } from "../adapters/registry.ts"
@@ -21,6 +21,13 @@ export interface ConversationLogEntry {
   ts: string
   [key: string]: unknown
 }
+
+export const ConversationLogEntrySchema = z
+  .object({
+    type: z.enum(["request", "response", "tool"]),
+    ts: z.string(),
+  })
+  .passthrough()
 
 // ---------------------------------------------------------------------------
 // Work directory snapshot
@@ -140,6 +147,28 @@ export interface RunMeta {
   statusDetail?: string
 }
 
+export const RunMetaSchema = z.object({
+  tokens: TokenUsageSchema,
+  costUsd: z.number(),
+  durationMs: z.number(),
+  adapterError: z
+    .object({
+      exitCode: z.number(),
+      stderr: z.string(),
+      diagnosis: z
+        .object({
+          summary: z.string(),
+          hint: z.string().optional(),
+          source: z.string(),
+        })
+        .optional(),
+    })
+    .optional(),
+  skillLoaded: z.boolean().optional(),
+  runStatus: RunStatusSchema.optional(),
+  statusDetail: z.string().optional(),
+})
+
 // ---------------------------------------------------------------------------
 // Evidence (unified — one task execution's data fed to optimizer)
 // ---------------------------------------------------------------------------
@@ -178,6 +207,22 @@ export interface Evidence {
   /** Agent run metadata (tokens, duration, errors) */
   runMeta?: RunMeta
 }
+
+/**
+ * Schema for the JSON sidecar of a persisted Evidence record. Excludes
+ * `conversationLog` (lives next to it as `conversation.jsonl`) and
+ * `workDirSnapshot` (the `workdir/` subdirectory carries the files
+ * verbatim — Maps don't round-trip through JSON cleanly and inlining
+ * large file contents bloats the sidecar past usefulness).
+ */
+export const EvidenceSidecarSchema = z.object({
+  taskId: z.string(),
+  taskPrompt: z.string(),
+  criteria: z.array(EvidenceCriterionSchema).optional(),
+  runMeta: RunMetaSchema.optional(),
+})
+
+export type EvidenceSidecar = z.infer<typeof EvidenceSidecarSchema>
 
 // ---------------------------------------------------------------------------
 // Optimization change + history
@@ -281,8 +326,15 @@ export interface OptimizeConfig {
   model: string
   /** Timeout for the agent invocation (default: TIMEOUT_DEFAULTS.optimizer) */
   timeoutMs?: number
-  /** Directory to persist the optimizer conversation log */
-  logDir?: string
+  /**
+   * Per-round optimizer step record directory (e.g. `round-N-optimizer/`). When
+   * set, runOptimizer persists prompt.md, the raw submission.json, the computed
+   * diff.json, the pre-strip `.optimize/` bundle (as `optimize-context/`), and
+   * agent stdout/stderr here — the complete trace of one optimizer pass.
+   * Single durable home for everything that used to be scattered between
+   * `*-optimizer-logs/` and the always-deleted `.optimize/` bundle.
+   */
+  recordDir?: string
   /** Headless agent driver to use; defaults to the system default */
   driver?: import("../core/headless-agent/index.ts").HeadlessAgentDriver
 }

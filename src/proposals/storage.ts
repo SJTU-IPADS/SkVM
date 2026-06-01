@@ -11,8 +11,12 @@
  *   history.json      — HistoryEntry[] with bestRound + bestRoundReason
  *   analysis.md       — human-readable summary
  *   meta.json         — ProposalMeta (status, acceptedRound, ...)
- *   round-N-agent-logs/        — conversation logs from agent runs this round
- *   round-N-optimizer-logs/    — opencode NDJSON from the optimizer
+ *   round-N-evidence/<set>/<taskId>-runK/  — durable Evidence record per run
+ *                       (evidence.json + conversation.jsonl + workdir/)
+ *   round-N-optimizer/        — optimizer step record (rounds ≥1):
+ *                                 prompt.md, submission.json (always), diff.json,
+ *                                 optimize-context/ (the .optimize bundle the
+ *                                 agent read), stdout.log, stderr.log
  *
  * The model segment is the **target** model — the model the optimized skill
  * is tuned to run on. The optimizer model (the LLM that did the editing) is
@@ -65,7 +69,20 @@ export const SelectionConfigSchema = z.object({
 })
 export type SelectionConfig = z.infer<typeof SelectionConfigSchema>
 
+/**
+ * Schema version for the proposal on-disk layout. Readers that find a
+ * proposal without `schemaVersion` should treat it as pre-versioned legacy
+ * (v0): no `round-N-evidence/` durable record, no `round-N-optimizer/` step
+ * record — they used the older `round-N-agent-logs/` + `round-N-optimizer-logs/`
+ * + `round-N-blocked/` split. New readers do best-effort fallback; new
+ * writers always stamp the current version. Bumping this version is the
+ * signal that the layout changed in an observable way.
+ */
+export const PROPOSAL_SCHEMA_VERSION = 1
+
 export const ProposalMetaSchema = z.object({
+  /** Layout version; absent on pre-versioned (v0) proposals. See PROPOSAL_SCHEMA_VERSION. */
+  schemaVersion: z.number().optional(),
   skillName: z.string(),
   skillDir: z.string(),
   harness: z.string(),
@@ -196,6 +213,7 @@ export async function createProposal(opts: CreateProposalOptions): Promise<Creat
   await copySkillDir(opts.skillDir, path.join(dir, "original"))
 
   const meta: ProposalMeta = {
+    schemaVersion: PROPOSAL_SCHEMA_VERSION,
     skillName: opts.skillName,
     skillDir: path.resolve(opts.skillDir),
     harness: opts.harness,

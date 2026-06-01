@@ -50,6 +50,7 @@ import {
   buildConversationLogFromSteps,
 } from "./evidence.ts"
 import { removeWorkspace } from "./workspace.ts"
+import { writeEvidenceSidecar, runRecordDir, recordConversationPath } from "./record.ts"
 import { copySkillDir } from "../core/fs-utils.ts"
 import { loadSkill, copySkillBundle, buildSkillBundle, type ResolvedSkill } from "../core/skill-loader.ts"
 import { createProposal, finalizeProposal, type CreateProposalResult } from "../proposals/storage.ts"
@@ -395,7 +396,7 @@ export async function runLoop(
         cliTimeoutMs,
         cliMaxSteps,
         evalConfig: roundEvalConfig,
-        logDir: path.join(proposal.dir, `${roundLabel}-agent-logs`, setLabel),
+        evidenceDir: path.join(proposal.dir, `${roundLabel}-evidence`),
         setLabel,
         skillMode: config.skillMode,
       })
@@ -436,7 +437,7 @@ export async function runLoop(
       cliTimeoutMs,
       cliMaxSteps,
       evalConfig: makeRoundEvalConfig(judgeAcc),
-      logDir: path.join(proposal.dir, `${roundLabel}-agent-logs`, "train"),
+      evidenceDir: path.join(proposal.dir, `${roundLabel}-evidence`),
       setLabel: "train",
       skillMode: config.skillMode,
     })
@@ -565,7 +566,7 @@ export async function runLoop(
 
       const roundOptSp = createSpinner(`Round ${round}/${rounds} — optimizing skill...`)
       const prevTrainEvidences = roundTrainEvidences[round - 1]!
-      const optimizerLogDir = path.join(proposal.dir, `round-${round}-optimizer-logs`)
+      const optimizerRecordDir = path.join(proposal.dir, `round-${round}-optimizer`)
       let optimizeResult: Awaited<ReturnType<typeof runOptimizer>>
       try {
         optimizeResult = await runOptimizer(
@@ -576,7 +577,7 @@ export async function runLoop(
           },
           {
             model: optimizerModel,
-            logDir: optimizerLogDir,
+            recordDir: optimizerRecordDir,
             timeoutMs: resolveOptimizerTimeout({ cli: config.optimizerTimeoutMs }),
           },
         )
@@ -622,26 +623,11 @@ export async function runLoop(
         historyEntry.blockedReason = reason
         history.push(historyEntry)
 
-        // Sidecar directory for audit: submission.json + README.md, but no
-        // round-{N}/ main directory (bestRound stays at 0).
-        const blockedDir = path.join(proposal.dir, `round-${round}-blocked`)
-        await mkdir(blockedDir, { recursive: true })
-        await Promise.all([
-          Bun.write(
-            path.join(blockedDir, "submission.json"),
-            JSON.stringify(optimizeResult.submission, null, 2),
-          ),
-          Bun.write(
-            path.join(blockedDir, "README.md"),
-            `# Round ${round} — optimizer abstained\n\n` +
-            `The optimizer emitted \`infraBlocked: true\` and did not edit the skill.\n\n` +
-            `**Reason:** ${reason}\n\n` +
-            `**Blocked evidence ids:** ${ids.length > 0 ? ids.join(", ") : "(none listed)"}\n\n` +
-            `This proposal's \`meta.json.status\` is set to \`infra-blocked\`; bench's\n` +
-            `\`jit-optimized\` condition will skip this proposal and fall through to the\n` +
-            `next non-blocked one (or skip the skill entirely if none exists).\n`,
-          ),
-        ])
+        // Submission, prompt, optimize-context, stdout/stderr all already
+        // live under round-{round}-optimizer/ courtesy of runOptimizer's
+        // record-writing path. No sidecar needed: the abstain status is in
+        // submission.json's infraBlocked field, history.json's infraBlocked
+        // entry, and meta.json's status (set by finalizeProposal below).
 
         // Preserve the optimizer spend for this abstain round so it shows
         // up in analysis.md and totalCost. No target-agent/judge cost here
@@ -688,7 +674,7 @@ export async function runLoop(
         } else {
           log.info(
             `Round ${round}: optimizer produced no file changes ` +
-            `(check round-${round}-optimizer-logs/ — likely failed)`,
+            `(check round-${round}-optimizer/ — likely failed)`,
           )
         }
 
@@ -1071,14 +1057,14 @@ async function runLogOnly(
   log.info(`Loaded ${preEvidences.length} evidence(s) from execution log(s)`)
 
   const logOptSp = createSpinner("Optimizing skill from execution logs...")
-  const optimizerLogDir = path.join(proposal.dir, "round-1-optimizer-logs")
+  const optimizerRecordDir = path.join(proposal.dir, "round-1-optimizer")
   let optimizeResult: Awaited<ReturnType<typeof runOptimizer>>
   try {
     optimizeResult = await runOptimizer(
       { skillDir, evidences: preEvidences },
       {
         model: config.optimizer.model,
-        logDir: optimizerLogDir,
+        recordDir: optimizerRecordDir,
         timeoutMs: resolveOptimizerTimeout({ cli: config.optimizerTimeoutMs }),
       },
     )
@@ -1193,7 +1179,14 @@ export interface RunTasksParams {
   cliTimeoutMs?: number
   cliMaxSteps?: number
   evalConfig: EvaluatorConfig
-  logDir: string
+  /**
+   * Round-level evidence root (e.g. `${proposal.dir}/round-N-evidence`). Each run
+   * lands at `{evidenceDir}/{setLabel}/{safeTaskId}-run{K}/` (see runRecordDir).
+   * Replaces the legacy `${roundLabel}-agent-logs/<set>` layout: the conversation
+   * log now lives inside the per-run record as `conversation.jsonl` alongside
+   * `evidence.json` and `workdir/`.
+   */
+  evidenceDir: string
   setLabel: "train" | "test"
   /**
    * How the skill is loaded into each per-task adapter run.
@@ -1205,8 +1198,7 @@ export interface RunTasksParams {
 // Exported for unit tests of the runStatus gate (sweep G1) and task
 // concurrency. Production callers go through `runLoop`.
 export async function runTasksForRound(params: RunTasksParams): Promise<Evidence[]> {
-  const { tasks, skill, runsPerTask, adapterPool, adapterConfig, cliTimeoutMs, cliMaxSteps, evalConfig, logDir, setLabel, skillMode } = params
-  await mkdir(logDir, { recursive: true })
+  const { tasks, skill, runsPerTask, adapterPool, adapterConfig, cliTimeoutMs, cliMaxSteps, evalConfig, evidenceDir, setLabel, skillMode } = params
 
   // Stable output index per (task, runIdx) pair lets concurrent jobs fill
   // `evidences` by slot while preserving input order — downstream pass/avg
@@ -1225,8 +1217,14 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
     const { task, runIdx: r, outIdx } = job
     const runWorkDir = await createRunWorkDir(task)
     await copySkillBundle(skill, runWorkDir)
+    // Materialise the per-run record directory up-front so the conversation
+    // log can stream straight to its canonical location inside the record.
+    // Everything else for this run (evidence.json, workdir/) lands here too
+    // via writeEvidenceSidecar at the end.
+    const runRecord = runRecordDir(evidenceDir, setLabel, task.id, r)
+    await mkdir(runRecord, { recursive: true })
     try {
-      const convLogPath = path.join(logDir, `${task.id}-run${r}.jsonl`)
+      const convLogPath = recordConversationPath(runRecord)
       const convLog = new ConversationLog(convLogPath)
 
       const resolved = resolveTaskRuntime(task, {
@@ -1264,7 +1262,7 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
         const conversationLog = (await readConversationLog(convLogPath))
           ?? buildConversationLogFromSteps(result.steps, task.prompt)
         const workDirSnapshot = await snapshotWorkDir(runWorkDir)
-        evidences[outIdx] = {
+        const evidence: Evidence = {
           taskId: task.id,
           taskPrompt: task.prompt,
           conversationLog,
@@ -1281,6 +1279,8 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
           }],
           runMeta: buildRunMeta(result),
         }
+        evidences[outIdx] = evidence
+        await writeEvidenceSidecar(runRecord, evidence)
         return
       }
 
@@ -1295,7 +1295,7 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
       const workDirSnapshot = await snapshotWorkDir(runWorkDir)
 
       const criteria = buildEvidenceCriteria(evalResults)
-      evidences[outIdx] = {
+      const evidence: Evidence = {
         taskId: task.id,
         taskPrompt: task.prompt,
         conversationLog,
@@ -1303,6 +1303,8 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
         criteria: criteria.length > 0 ? criteria : undefined,
         runMeta: buildRunMeta(result),
       }
+      evidences[outIdx] = evidence
+      await writeEvidenceSidecar(runRecord, evidence)
     } catch (err) {
       const infra = isProviderError(err) || isHeadlessAgentError(err)
       const errMsg = err instanceof Error ? err.message : String(err)
@@ -1311,7 +1313,7 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
       } else {
         log.warn(`[${setLabel}] task ${task.id} run ${r} failed: ${err}`)
       }
-      evidences[outIdx] = {
+      const evidence: Evidence = {
         taskId: task.id,
         taskPrompt: task.prompt,
         conversationLog: [],
@@ -1326,6 +1328,15 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
           details: errMsg,
           ...(infra ? { infraError: errMsg } : {}),
         }],
+      }
+      evidences[outIdx] = evidence
+      // Best-effort: a catch-path failure is typically a fatal infra issue,
+      // but persisting the stub still helps post-hoc inspection. Don't let
+      // a write error mask the original problem.
+      try {
+        await writeEvidenceSidecar(runRecord, evidence)
+      } catch (writeErr) {
+        log.warn(`[${setLabel}] task ${task.id} run ${r} record write failed: ${writeErr}`)
       }
     } finally {
       await rm(runWorkDir, { recursive: true, force: true })

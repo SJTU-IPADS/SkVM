@@ -68,7 +68,7 @@ function mkTask(id: string, timeoutMs: number, maxSteps: number): RunnableTask {
 describe("jit-optimize CLI timeoutMs / maxSteps precedence", () => {
   test("task.timeoutMs is honored at adapter.run when CLI override is absent", async () => {
     await withSkill(async (skill) => {
-      const logDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
+      const evidenceDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
       try {
         const { adapter, state } = createRecordingAdapter()
         await runTasksForRound({
@@ -78,19 +78,19 @@ describe("jit-optimize CLI timeoutMs / maxSteps precedence", () => {
           adapterPool: new Pool([adapter]),
           adapterConfig: { model: "test", maxSteps: 30, timeoutMs: 120_000 },
           evalConfig: {},
-          logDir,
+          evidenceDir,
           setLabel: "train",
         })
         expect(state.observedTimeoutMs).toEqual([3_600_000])
       } finally {
-        await rm(logDir, { recursive: true, force: true })
+        await rm(evidenceDir, { recursive: true, force: true })
       }
     })
   })
 
   test("CLI timeoutMs override beats task.timeoutMs", async () => {
     await withSkill(async (skill) => {
-      const logDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
+      const evidenceDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
       try {
         const { adapter, state } = createRecordingAdapter()
         await runTasksForRound({
@@ -101,19 +101,19 @@ describe("jit-optimize CLI timeoutMs / maxSteps precedence", () => {
           adapterConfig: { model: "test", maxSteps: 30, timeoutMs: 120_000 },
           cliTimeoutMs: 5_000,
           evalConfig: {},
-          logDir,
+          evidenceDir,
           setLabel: "train",
         })
         expect(state.observedTimeoutMs).toEqual([5_000])
       } finally {
-        await rm(logDir, { recursive: true, force: true })
+        await rm(evidenceDir, { recursive: true, force: true })
       }
     })
   })
 
   test("task.maxSteps is honored at adapter.setup when CLI override is absent", async () => {
     await withSkill(async (skill) => {
-      const logDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
+      const evidenceDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
       try {
         const { adapter, state } = createRecordingAdapter()
         await runTasksForRound({
@@ -123,19 +123,19 @@ describe("jit-optimize CLI timeoutMs / maxSteps precedence", () => {
           adapterPool: new Pool([adapter]),
           adapterConfig: { model: "test", maxSteps: 30, timeoutMs: 60_000 },
           evalConfig: {},
-          logDir,
+          evidenceDir,
           setLabel: "train",
         })
         expect(state.observedMaxSteps).toEqual([75])
       } finally {
-        await rm(logDir, { recursive: true, force: true })
+        await rm(evidenceDir, { recursive: true, force: true })
       }
     })
   })
 
   test("CLI maxSteps override beats task.maxSteps", async () => {
     await withSkill(async (skill) => {
-      const logDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
+      const evidenceDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
       try {
         const { adapter, state } = createRecordingAdapter()
         await runTasksForRound({
@@ -146,19 +146,19 @@ describe("jit-optimize CLI timeoutMs / maxSteps precedence", () => {
           adapterConfig: { model: "test", maxSteps: 30, timeoutMs: 60_000 },
           cliMaxSteps: 200,
           evalConfig: {},
-          logDir,
+          evidenceDir,
           setLabel: "train",
         })
         expect(state.observedMaxSteps).toEqual([200])
       } finally {
-        await rm(logDir, { recursive: true, force: true })
+        await rm(evidenceDir, { recursive: true, force: true })
       }
     })
   })
 
   test("each task gets its own per-task timeout when CLI override is absent", async () => {
     await withSkill(async (skill) => {
-      const logDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
+      const evidenceDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-log-"))
       try {
         const { adapter, state } = createRecordingAdapter()
         await runTasksForRound({
@@ -171,13 +171,13 @@ describe("jit-optimize CLI timeoutMs / maxSteps precedence", () => {
           adapterPool: new Pool([adapter]),
           adapterConfig: { model: "test", maxSteps: 30, timeoutMs: 120_000 },
           evalConfig: {},
-          logDir,
+          evidenceDir,
           setLabel: "train",
         })
         // Pool size = 1 → sequential, so order is preserved.
         expect(state.observedTimeoutMs).toEqual([30_000, 3_600_000])
       } finally {
-        await rm(logDir, { recursive: true, force: true })
+        await rm(evidenceDir, { recursive: true, force: true })
       }
     })
   })

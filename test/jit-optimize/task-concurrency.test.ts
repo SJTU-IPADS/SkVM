@@ -135,7 +135,7 @@ async function waitUntil(predicate: () => boolean, label: string, timeoutMs = 20
 describe("runTasksForRound adapterPool concurrency bound", () => {
   test("1-instance pool keeps in-flight at 1", async () => {
     await withSkill(async (skill) => {
-      const logDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
+      const evidenceDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
       try {
         const barrier = createBarrierPool(1)
         const adapterPool = new Pool(barrier.adapters)
@@ -148,7 +148,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
           adapterPool,
           adapterConfig: { model: "mock", maxSteps: 30, timeoutMs: 60_000 },
           evalConfig: {},
-          logDir,
+          evidenceDir,
           setLabel: "train",
         })
 
@@ -166,14 +166,14 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
         expect(evidences).toHaveLength(3)
         expect(barrier.maxSeen()).toBe(1)
       } finally {
-        await rm(logDir, { recursive: true, force: true })
+        await rm(evidenceDir, { recursive: true, force: true })
       }
     })
   })
 
   test("3-instance pool with 5 tasks caps in-flight at 3", async () => {
     await withSkill(async (skill) => {
-      const logDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
+      const evidenceDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
       try {
         const barrier = createBarrierPool(3)
         const adapterPool = new Pool(barrier.adapters)
@@ -186,7 +186,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
           adapterPool,
           adapterConfig: { model: "mock", maxSteps: 30, timeoutMs: 60_000 },
           evalConfig: {},
-          logDir,
+          evidenceDir,
           setLabel: "train",
         })
 
@@ -213,14 +213,14 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
           expect(evidences[i]?.taskPrompt).toBe(tasks[i]!.prompt)
         }
       } finally {
-        await rm(logDir, { recursive: true, force: true })
+        await rm(evidenceDir, { recursive: true, force: true })
       }
     })
   })
 
   test("evidence order is preserved under reversed completion", async () => {
     await withSkill(async (skill) => {
-      const logDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
+      const evidenceDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
       try {
         const barrier = createBarrierPool(3)
         const adapterPool = new Pool(barrier.adapters)
@@ -233,7 +233,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
           adapterPool,
           adapterConfig: { model: "mock", maxSteps: 30, timeoutMs: 60_000 },
           evalConfig: {},
-          logDir,
+          evidenceDir,
           setLabel: "train",
         })
 
@@ -245,14 +245,14 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
         const evidences = await runPromise
         expect(evidences.map((e) => e.taskPrompt)).toEqual(["task a", "task b", "task c"])
       } finally {
-        await rm(logDir, { recursive: true, force: true })
+        await rm(evidenceDir, { recursive: true, force: true })
       }
     })
   })
 
   test("two runTasksForRound calls sharing one adapterPool are globally capped", async () => {
     await withSkill(async (skill) => {
-      const logDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
+      const evidenceDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
       try {
         // 2-instance barrier pool mimics runBoth's train+test sharing one pool.
         const barrier = createBarrierPool(2)
@@ -268,7 +268,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
             adapterPool,
             adapterConfig: { model: "mock", maxSteps: 30, timeoutMs: 60_000 },
             evalConfig: {},
-            logDir: path.join(logDir, "train"),
+            evidenceDir: path.join(evidenceDir, "train"),
             setLabel: "train",
           }),
           runTasksForRound({
@@ -278,7 +278,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
             adapterPool,
             adapterConfig: { model: "mock", maxSteps: 30, timeoutMs: 60_000 },
             evalConfig: {},
-            logDir: path.join(logDir, "test"),
+            evidenceDir: path.join(evidenceDir, "test"),
             setLabel: "test",
           }),
         ])
@@ -302,14 +302,14 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
         expect(testEv).toHaveLength(2)
         expect(barrier.maxSeen()).toBe(2)
       } finally {
-        await rm(logDir, { recursive: true, force: true })
+        await rm(evidenceDir, { recursive: true, force: true })
       }
     })
   })
 
   test("1-instance pool + runsPerTask=2 preserves (task × run) order", async () => {
     await withSkill(async (skill) => {
-      const logDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
+      const evidenceDir = await mkdtemp(path.join(tmpdir(), "jit-opt-concurrency-log-"))
       try {
         const order: string[] = []
         const adapter = createRecordingAdapter(order)
@@ -322,7 +322,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
           adapterPool: new Pool([adapter]),
           adapterConfig: { model: "mock", maxSteps: 30, timeoutMs: 60_000 },
           evalConfig: {},
-          logDir,
+          evidenceDir,
           setLabel: "train",
         })
 
@@ -332,7 +332,7 @@ describe("runTasksForRound adapterPool concurrency bound", () => {
         ])
         expect(order).toEqual(["a", "a", "b", "b", "c", "c"])
       } finally {
-        await rm(logDir, { recursive: true, force: true })
+        await rm(evidenceDir, { recursive: true, force: true })
       }
     })
   })
