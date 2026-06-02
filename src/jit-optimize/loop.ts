@@ -50,7 +50,7 @@ import {
   buildConversationLogFromSteps,
 } from "./evidence.ts"
 import { removeWorkspace } from "./workspace.ts"
-import { writeEvidenceSidecar, runRecordDir, recordConversationPath } from "./record.ts"
+import { writeEvidenceSidecar, runRecordDir, recordConversationPath, resolveSafeTaskIds } from "./record.ts"
 import { copySkillDir } from "../core/fs-utils.ts"
 import { loadSkill, copySkillBundle, buildSkillBundle, type ResolvedSkill } from "../core/skill-loader.ts"
 import { createProposal, finalizeProposal, type CreateProposalResult } from "../proposals/storage.ts"
@@ -1213,6 +1213,13 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
   }
   const evidences: Evidence[] = new Array(jobs.length)
 
+  // Pre-resolve collision-free record slugs for every distinct task id BEFORE
+  // launching the concurrent jobs. Slugging alone is not injective (`task:a`
+  // and `task a` both → `task-a`), so without this two distinct tasks could
+  // write to the same record directory and clobber each other. The allocation
+  // is stateful, hence done once up-front rather than inside the racing jobs.
+  const safeTaskIds = resolveSafeTaskIds(tasks.map((t) => t.id))
+
   const runOne = async (job: Job, adapter: AgentAdapter): Promise<void> => {
     const { task, runIdx: r, outIdx } = job
     const runWorkDir = await createRunWorkDir(task)
@@ -1221,7 +1228,7 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
     // log can stream straight to its canonical location inside the record.
     // Everything else for this run (evidence.json, workdir/) lands here too
     // via writeEvidenceSidecar at the end.
-    const runRecord = runRecordDir(evidenceDir, setLabel, task.id, r)
+    const runRecord = runRecordDir(evidenceDir, setLabel, safeTaskIds.get(task.id)!, r)
     await mkdir(runRecord, { recursive: true })
     try {
       const convLogPath = recordConversationPath(runRecord)

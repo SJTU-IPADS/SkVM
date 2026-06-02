@@ -145,8 +145,18 @@ async function readWorkDirSnapshot(workdirRoot: string): Promise<WorkDirSnapshot
  * Resolve the directory for a single run record:
  *   {roundEvidenceRoot}/{set}/{safeTaskId}-run{runIdx}
  *
- * Same task-id sanitisation rules as the optimizer projection: alphanumerics
- * plus `._-`, collapse runs of `-`, never `.` or `..`, never empty.
+ * `taskId` is slugged to a filesystem-safe name (same rules as the optimizer
+ * projection: alphanumerics plus `._-`, collapse runs of `-`, never `.`/`..`,
+ * never empty). The slug is idempotent on already-safe ids, so callers that
+ * pre-resolve collisions with {@link resolveSafeTaskIds} can pass the resolved
+ * id straight through.
+ *
+ * IMPORTANT: slugging alone is NOT injective — distinct ids like `task:a` and
+ * `task a` both collapse to `task-a`. When more than one task id is in play in
+ * the same set, the caller MUST first run them through {@link resolveSafeTaskIds}
+ * and pass the disambiguated id here. Otherwise two distinct tasks would write
+ * to the same record directory and silently clobber each other's
+ * evidence.json / conversation.jsonl / workdir.
  */
 export function runRecordDir(
   roundEvidenceRoot: string,
@@ -157,12 +167,56 @@ export function runRecordDir(
   return path.join(roundEvidenceRoot, setLabel, `${safeTaskSlug(taskId)}-run${runIdx}`)
 }
 
+/**
+ * Map each distinct task id to a collision-free filesystem-safe slug.
+ * Two distinct ids whose raw slugs coincide get disambiguated with a numeric
+ * suffix (`task-a`, `task-a-2`, ...), so every task lands in its own record
+ * directory. Mirrors the optimizer projection's allocateSafeId (workspace.ts).
+ *
+ * Matching is case-insensitive so case-only differences (`Foo` vs `foo`) don't
+ * alias on case-insensitive filesystems (macOS APFS default). The result slugs
+ * are themselves filesystem-safe and idempotent under safeTaskSlug, so they can
+ * be handed directly to {@link runRecordDir}.
+ *
+ * Call this ONCE per set, before launching concurrent per-run jobs — the
+ * allocation is stateful and must not race.
+ */
+export function resolveSafeTaskIds(taskIds: Iterable<string>): Map<string, string> {
+  const claimed = new Set<string>()
+  const resolved = new Map<string, string>()
+  for (const taskId of taskIds) {
+    if (resolved.has(taskId)) continue
+    resolved.set(taskId, allocateSafeId(safeTaskSlug(taskId), claimed))
+  }
+  return resolved
+}
+
 function safeTaskSlug(taskId: string): string {
   const replaced = taskId.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-")
   const trimmed = replaced.replace(/^-+|-+$/g, "")
   if (trimmed.length === 0) return "unnamed-task"
   if (/^\.+$/.test(trimmed)) return "unnamed-task"
   return trimmed
+}
+
+/**
+ * Claim a unique slug, disambiguating with a numeric suffix when the base is
+ * already taken. Case-insensitive so `Foo`/`foo` collide on APFS.
+ */
+function allocateSafeId(base: string, claimed: Set<string>): string {
+  if (!claimed.has(base.toLowerCase())) {
+    claimed.add(base.toLowerCase())
+    return base
+  }
+  for (let suffix = 2; suffix < Number.MAX_SAFE_INTEGER; suffix++) {
+    const candidate = `${base}-${suffix}`
+    if (!claimed.has(candidate.toLowerCase())) {
+      claimed.add(candidate.toLowerCase())
+      return candidate
+    }
+  }
+  // Unreachable — the loop runs until it finds a free slug.
+  throw new Error("allocateSafeId: exhausted suffix range")
 }
 
 /**

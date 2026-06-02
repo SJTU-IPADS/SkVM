@@ -6,6 +6,7 @@ import {
   writeEvidenceRecord,
   readEvidenceRecord,
   runRecordDir,
+  resolveSafeTaskIds,
   listRunDirs,
 } from "../../src/jit-optimize/record.ts"
 import type { Evidence } from "../../src/jit-optimize/types.ts"
@@ -139,5 +140,56 @@ describe("runRecordDir / listRunDirs", () => {
       const dirs = await listRunDirs(path.join(parent, "does-not-exist"))
       expect(dirs).toEqual([])
     })
+  })
+})
+
+describe("resolveSafeTaskIds", () => {
+  test("distinct task ids that slug identically get distinct dirs", async () => {
+    await withTempDir(async (root) => {
+      // `task:a` and `task a` both raw-slug to `task-a` — without
+      // disambiguation they would clobber each other on disk.
+      const ids = ["task:a", "task a", "plain"]
+      const safe = resolveSafeTaskIds(ids)
+      const slugs = ids.map((id) => safe.get(id)!)
+      // All three resolved slugs are unique.
+      expect(new Set(slugs).size).toBe(3)
+
+      // Write a run record for each under the same set and confirm three
+      // separate directories survive (no overwrite).
+      const evidenceRoot = path.join(root, "round-0-evidence")
+      for (const id of ids) {
+        const dir = runRecordDir(evidenceRoot, "train", safe.get(id)!, 0)
+        await writeEvidenceRecord(dir, sampleEvidence({ taskId: id }))
+      }
+      const dirs = await listRunDirs(evidenceRoot)
+      expect(dirs).toHaveLength(3)
+
+      // Each persisted record round-trips to its original (distinct) taskId.
+      const readBack = await Promise.all(
+        dirs.map(async (d) => (await readEvidenceRecord(d.runDir)).taskId),
+      )
+      expect(new Set(readBack)).toEqual(new Set(ids))
+    })
+  })
+
+  test("repeated task id maps to a single slug (runs disambiguated by runIdx, not here)", () => {
+    const safe = resolveSafeTaskIds(["dup", "dup", "dup"])
+    expect(safe.size).toBe(1)
+    expect(safe.get("dup")).toBe("dup")
+  })
+
+  test("case-only differences do not alias", () => {
+    const safe = resolveSafeTaskIds(["Foo", "foo"])
+    expect(safe.get("Foo")).not.toBe(safe.get("foo"))
+  })
+
+  test("resolved slugs are idempotent through runRecordDir", () => {
+    // allocateSafeId emits e.g. `task-a-2`; runRecordDir slugs again and must
+    // not mangle it — otherwise the pre-resolved disambiguation is lost.
+    const safe = resolveSafeTaskIds(["task:a", "task a"])
+    const second = safe.get("task a")!
+    expect(second).toBe("task-a-2")
+    const dir = runRecordDir("/root", "train", second, 0)
+    expect(path.basename(dir)).toBe("task-a-2-run0")
   })
 })
