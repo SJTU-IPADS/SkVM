@@ -116,4 +116,44 @@ describe("renderRoundShow", () => {
       expect(result.text).toContain("blockedEvidenceIds: 0, 1")
     })
   })
+
+  test("orders runs numerically (run10 after run2) and sets train before test", async () => {
+    await withTempDir(async (dir) => {
+      const evidenceRoot = path.join(dir, "round-0-evidence")
+      // Write out of order and with a 2-vs-10 boundary that lexicographic
+      // sorting gets wrong.
+      for (const k of [10, 2, 0, 1]) {
+        await writeEvidenceRecord(runRecordDir(evidenceRoot, "train", "task-A", k), ev("task-A", 0.9))
+      }
+      await writeEvidenceRecord(runRecordDir(evidenceRoot, "test", "task-B", 0), ev("task-B", 1.0))
+
+      const result = await renderRoundShow(dir, 0)
+      // train section appears before test section
+      expect(result.text.indexOf("### Set: train")).toBeLessThan(result.text.indexOf("### Set: test"))
+      // run rows are numerically ordered: run0 < run1 < run2 < run10
+      const idx = (s: string) => result.text.indexOf(s)
+      expect(idx("task-A-run0")).toBeLessThan(idx("task-A-run1"))
+      expect(idx("task-A-run1")).toBeLessThan(idx("task-A-run2"))
+      expect(idx("task-A-run2")).toBeLessThan(idx("task-A-run10"))
+    })
+  })
+
+  test("renders an 'unreadable' row instead of crashing on a missing/corrupt sidecar", async () => {
+    await withTempDir(async (dir) => {
+      const evidenceRoot = path.join(dir, "round-0-evidence")
+      // One good record.
+      await writeEvidenceRecord(runRecordDir(evidenceRoot, "train", "task-A", 0), ev("task-A", 0.9))
+      // One interrupted record: dir exists, evidence.json never written —
+      // exactly the shape runOne leaves after mkdir before the sidecar write.
+      await mkdir(runRecordDir(evidenceRoot, "train", "task-B", 0), { recursive: true })
+
+      const result = await renderRoundShow(dir, 0)
+      // Render completes (does not throw) and surfaces both rows.
+      expect(result.text).toContain("task-A-run0")
+      expect(result.text).toContain("task-B-run0")
+      expect(result.text).toContain("unreadable")
+      // The good row still shows its real score.
+      expect(result.text).toMatch(/task-A-run0.*0\.900/)
+    })
+  })
 })

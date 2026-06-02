@@ -73,9 +73,10 @@ async function renderEvidenceSection(evidenceRoot: string): Promise<string[]> {
   }
 
   // Group by set for a stable, scan-friendly layout. listRunDirs preserves
-  // filesystem order which is dirent order — not deterministic across
-  // platforms — so sort within each set by (taskId, runIdx) derived from
-  // the basename for stable output.
+  // filesystem (dirent) order, which is not deterministic across platforms,
+  // so sort explicitly: sets by a fixed rank (train, test, then any others
+  // alphabetically), runs within a set by (taskId-slug, runIdx) with the run
+  // index compared NUMERICALLY so run10 sorts after run2.
   const bySet = new Map<string, Array<{ runDir: string; basename: string }>>()
   for (const { setLabel, runDir } of runs) {
     const arr = bySet.get(setLabel) ?? []
@@ -83,23 +84,63 @@ async function renderEvidenceSection(evidenceRoot: string): Promise<string[]> {
     bySet.set(setLabel, arr)
   }
   for (const arr of bySet.values()) {
-    arr.sort((a, b) => a.basename.localeCompare(b.basename))
+    arr.sort((a, b) => compareRunBasenames(a.basename, b.basename))
   }
 
   const out: string[] = ["## Evidence"]
-  for (const [setLabel, entries] of [...bySet.entries()].sort()) {
+  const setLabels = [...bySet.keys()].sort(compareSetLabels)
+  for (const setLabel of setLabels) {
+    const entries = bySet.get(setLabel)!
     out.push("")
     out.push(`### Set: ${setLabel} (${entries.length} run${entries.length === 1 ? "" : "s"})`)
     out.push("")
     out.push("| Run | Status | Score | Passed | Failed | Tokens (in/out) | Duration |")
     out.push("|-----|--------|-------|--------|--------|-----------------|----------|")
     for (const { runDir, basename } of entries) {
-      const ev = await readEvidenceRecord(runDir)
+      // The run dir is created before its evidence.json is written, so an
+      // interrupted/crashed session can leave a dir whose sidecar is missing
+      // or corrupt. Inspecting exactly those sessions is a core use case —
+      // surface an "unreadable" row instead of aborting the whole render.
+      let ev: Evidence
+      try {
+        ev = await readEvidenceRecord(runDir)
+      } catch {
+        out.push(`| \`${basename}\` | unreadable | — | — | — | — | — |`)
+        continue
+      }
       out.push(formatEvidenceRow(basename, ev))
     }
   }
   out.push("")
   return out
+}
+
+/** Known sets first in a fixed order, then any others alphabetically. */
+function compareSetLabels(a: string, b: string): number {
+  const rank = (s: string) => (s === "train" ? 0 : s === "test" ? 1 : 2)
+  const ra = rank(a)
+  const rb = rank(b)
+  return ra !== rb ? ra - rb : a.localeCompare(b)
+}
+
+/**
+ * Order run-record basenames `{slug}-run{K}` by slug, then by K numerically
+ * (so `...-run10` follows `...-run2`). Basenames that don't match the pattern
+ * fall back to a plain lexicographic compare.
+ */
+function compareRunBasenames(a: string, b: string): number {
+  const pa = parseRunBasename(a)
+  const pb = parseRunBasename(b)
+  if (pa && pb) {
+    return pa.slug !== pb.slug ? pa.slug.localeCompare(pb.slug) : pa.runIdx - pb.runIdx
+  }
+  return a.localeCompare(b)
+}
+
+function parseRunBasename(basename: string): { slug: string; runIdx: number } | null {
+  const m = /^(.*)-run(\d+)$/.exec(basename)
+  if (!m) return null
+  return { slug: m[1]!, runIdx: Number(m[2]) }
 }
 
 function formatEvidenceRow(basename: string, ev: Evidence): string {
