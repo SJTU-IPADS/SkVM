@@ -187,12 +187,23 @@ The legacy flat `data/` submodule has been retired. All AOT and JIT outputs live
   round-1/ … round-N/    # full optimized skill folder per round
   history.json           # HistoryEntry[] + bestRound + bestRoundReason
   analysis.md            # human-readable summary
-  meta.json              # { status, acceptedRound, bestRound, optimizerModel, … }
-  round-N-agent-logs/    # conversation logs from agent runs
-  round-N-optimizer-logs/# optimizer NDJSON
+  meta.json              # { schemaVersion, status, acceptedRound, bestRound, optimizerModel, … }
+  round-N-evidence/      # durable per-run record (train + test, every round incl. round-0):
+    {set}/{safeTaskId}-run{K}/
+      evidence.json      #   criteria + runMeta sidecar
+      conversation.jsonl #   full agent transcript
+      workdir/           #   files the agent left in its work directory
+  round-N-optimizer/     # optimizer step record (rounds ≥ 1):
+    prompt.md            #   the rendered optimizer prompt
+    submission.json      #   the optimizer's structured output (always — incl. noChanges / infraBlocked)
+    diff.json            #   file-level diff of the round's edit vs the previous skill
+    optimize-context/    #   copy of the .optimize/ bundle the optimizer agent read
+    stdout.log/stderr.log#   optimizer agent's raw output
 ```
 
 Each round directory is a full, usable skill folder (`SKILL.md` + bundle files).
+
+`round-N-evidence/` is the durable source of truth for each task run — the in-memory `Evidence` (conversation, eval criteria, run metadata, work-directory snapshot) serialized at collection time, so a session can be inspected after the fact. `round-N-optimizer/` captures everything about one optimizer pass, including the exact context the agent reasoned over. `skvm proposals show <id> --round=N` renders both from disk. `meta.json.schemaVersion` marks the layout version; proposals written before it is stamped are treated as legacy (no `round-N-evidence/` / `round-N-optimizer/`, the older `round-N-agent-logs/` + `round-N-optimizer-logs/` + `round-N-blocked/` split instead).
 
 The path segment holds the **target** model — what the optimized skill is tuned to run on. The **optimizer** model (the LLM that did the editing) is recorded in `meta.json.optimizerModel` but is intentionally not in the path: bench `jit-optimized` lookups, the file lock, and CLI filters are all naturally target-keyed. `--target-model` is therefore required for every `skvm jit-optimize` invocation, including `--task-source=log` (where it's the storage key, not used for execution).
 
