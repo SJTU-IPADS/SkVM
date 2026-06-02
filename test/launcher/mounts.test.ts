@@ -99,6 +99,66 @@ describe("composeMounts — out-of-root dynamic mounts", () => {
   })
 })
 
+describe("composeMounts — overlapping roots (longest-prefix wins)", () => {
+  // Cache nested under the workspace: --skvm-cache=./.skvm
+  const NESTED: HostRoots = {
+    cwd: "/home/u/proj",
+    skvmCache: "/home/u/proj/.skvm",
+    skvmDataDir: null,
+    sanitizedConfigPath: "/tmp/skvm-launcher-1/skvm.config.json",
+  }
+
+  test("a --skvm-cache under cwd resolves to /skvm-cache, not /workspace/.skvm", () => {
+    const { rewrittenArgs } = composeMounts({
+      args: ["--skvm-cache=/home/u/proj/.skvm"],
+      roots: NESTED,
+    })
+    // The more specific cache root must win, so the in-container flag routes
+    // through the sanitized overlay instead of the raw config in /workspace.
+    expect(rewrittenArgs).toEqual(["--skvm-cache=/skvm-cache"])
+  })
+
+  test("a profiles dir under the nested cache resolves under /skvm-cache", () => {
+    const { rewrittenArgs } = composeMounts({
+      args: ["--profiles-dir=/home/u/proj/.skvm/profiles"],
+      roots: NESTED,
+    })
+    expect(rewrittenArgs).toEqual(["--profiles-dir=/skvm-cache/profiles"])
+  })
+
+  test("a plain path under cwd (not the cache) still resolves to /workspace", () => {
+    const { rewrittenArgs } = composeMounts({
+      args: ["--skill=/home/u/proj/skills/foo"],
+      roots: NESTED,
+    })
+    expect(rewrittenArgs).toEqual(["--skill=/workspace/skills/foo"])
+  })
+})
+
+describe("composeMounts — ensureDirs (pre-create rw sources)", () => {
+  test("reports a missing dynamic rw output dir and the cache, excludes ro + existing", () => {
+    const { ensureDirs } = composeMounts({
+      args: ["--out=/tmp/new-output", "--profile=/tmp/in/prof.json"],
+      roots: ROOTS,
+      // cwd exists; everything else is treated as missing.
+      existsSync: (p) => p === ROOTS.cwd,
+    })
+    expect(ensureDirs).toContain("/tmp/new-output")  // dynamic rw output
+    expect(ensureDirs).toContain(ROOTS.skvmCache)    // cache root
+    expect(ensureDirs).not.toContain(ROOTS.cwd)      // already exists
+    expect(ensureDirs).not.toContain("/tmp/in")      // --profile is ro, not pre-created
+  })
+
+  test("is empty when every managed rw source already exists", () => {
+    const { ensureDirs } = composeMounts({
+      args: ["--out=/tmp/out"],
+      roots: ROOTS,
+      existsSync: () => true,
+    })
+    expect(ensureDirs).toEqual([])
+  })
+})
+
 describe("composeMounts — hard errors", () => {
   test("throws when a required path-flag value does not exist", () => {
     // --skill is required; we point at a non-existent path

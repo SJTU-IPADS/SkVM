@@ -31,6 +31,14 @@ export interface ComposeMountsResult {
   mounts: DockerMount[]
   rewrittenArgs: string[]
   argv: string[]
+  /**
+   * Managed `rw` mount sources (the cache root and dynamic out-of-root output
+   * dirs) that do not yet exist on the host. The launcher must `mkdir -p` these
+   * before `docker run`, otherwise the daemon creates the bind source as root
+   * and the container — running as the host uid — cannot write into it, leaving
+   * a root-owned directory behind. Excludes user-controlled extra mounts.
+   */
+  ensureDirs: string[]
 }
 
 /** Inner paths for the three fixed host roots. */
@@ -57,12 +65,19 @@ function mountToSpec(m: DockerMount): string {
  * Given a host absolute path and the three fixed host roots, return the inner
  * rewritten path if the host path falls under one of those roots, or null if
  * it is outside all of them.
+ *
+ * Longest-prefix wins. The roots can nest — most importantly the cache may sit
+ * under the workspace (`--skvm-cache=./.skvm`). If cwd were matched first, that
+ * value would rewrite to `/workspace/.skvm` and, since the in-container
+ * `--skvm-cache` flag outranks the `SKVM_CACHE=/skvm-cache` env, the container
+ * would read the *raw* config under the workspace mount and bypass the
+ * sanitized `/skvm-cache` overlay (leaking literal API keys). Matching the most
+ * specific root instead sends it to `/skvm-cache`, through the overlay.
  */
 function rewriteUnderFixedRoots(
   hostPath: string,
   roots: HostRoots,
 ): string | null {
-  // Normalise to ensure prefix matching works correctly.
   const fixed: Array<{ hostRoot: string; innerRoot: string }> = [
     { hostRoot: roots.cwd, innerRoot: INNER_WORKSPACE },
     { hostRoot: roots.skvmCache, innerRoot: INNER_CACHE },
@@ -71,18 +86,23 @@ function rewriteUnderFixedRoots(
       : []),
   ]
 
+  let best: { inner: string; rootLen: number } | null = null
   for (const { hostRoot, innerRoot } of fixed) {
+    let inner: string | null = null
     if (hostPath === hostRoot) {
-      return innerRoot
+      inner = innerRoot
+    } else {
+      const prefix = hostRoot.endsWith("/") ? hostRoot : hostRoot + "/"
+      if (hostPath.startsWith(prefix)) {
+        inner = innerRoot + "/" + hostPath.slice(prefix.length)
+      }
     }
-    const prefix = hostRoot.endsWith("/") ? hostRoot : hostRoot + "/"
-    if (hostPath.startsWith(prefix)) {
-      const rel = hostPath.slice(prefix.length)
-      return innerRoot + "/" + rel
+    if (inner !== null && (best === null || hostRoot.length > best.rootLen)) {
+      best = { inner, rootLen: hostRoot.length }
     }
   }
 
-  return null
+  return best?.inner ?? null
 }
 
 /**
@@ -378,9 +398,19 @@ export function composeMounts({
     argv.push("-v", mountToSpec(m))
   }
 
+  // Managed rw mount sources to pre-create. cwd always exists; the cache root
+  // and dynamic out-of-root rw outputs may not. Extra mounts are excluded —
+  // those are a user-controlled escape hatch and may intentionally be files.
+  const ensureDirs = [
+    roots.cwd,
+    roots.skvmCache,
+    ...dynamicMounts.filter(m => m.mode === "rw").map(m => m.host),
+  ].filter((h, i, a) => a.indexOf(h) === i && !existsSync(h))
+
   return {
     mounts: allMounts,
     rewrittenArgs,
     argv,
+    ensureDirs,
   }
 }

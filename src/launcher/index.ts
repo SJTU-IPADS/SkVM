@@ -81,13 +81,6 @@ export async function runLauncher(args: string[]): Promise<never> {
   const providers = getProvidersConfig()
   const hostConfigPath = getConfigPath()
 
-  // Ensure the cache root exists on the host before docker bind-mounts it.
-  // A missing bind source is created by the daemon as root; the container then
-  // runs as the host uid and cannot write /skvm-cache (logs/config/profiles),
-  // and the host is left with a root-owned ~/.skvm. Creating it here keeps it
-  // owned by the invoking user.
-  mkdirSync(SKVM_CACHE, { recursive: true })
-
   // Config-supplied extra mounts are an escape hatch like --mount-extra, and
   // must clear the same denylist (Docker socket, host root). Validate before
   // composing mounts so a malformed config fails loud, not silently inside the
@@ -130,7 +123,7 @@ export async function runLauncher(args: string[]): Promise<never> {
     forwarded.push(a)
   }
 
-  const { argv: mountArgv, rewrittenArgs } = composeMounts({
+  const { argv: mountArgv, rewrittenArgs, ensureDirs } = composeMounts({
     args: forwarded,
     roots: {
       cwd: process.cwd(),
@@ -141,6 +134,13 @@ export async function runLauncher(args: string[]): Promise<never> {
     configExtraMounts: sandboxCfg.docker.extraMounts,
     cliExtraMounts,
   })
+
+  // Pre-create managed rw mount sources (cache root + dynamic out-of-root
+  // output dirs) so the daemon doesn't create them as root and lock the
+  // host-uid container out. See ComposeMountsResult.ensureDirs.
+  for (const dir of ensureDirs) {
+    mkdirSync(dir, { recursive: true })
+  }
 
   const env = composeEnv({
     routes: providers.routes,
