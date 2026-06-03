@@ -22,7 +22,6 @@ import {
   rename,
   stat,
 } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { z } from "zod"
 import type { EvalCriterion } from "../core/types.ts"
 import { EvalCriterionSchema } from "../core/types.ts"
@@ -39,7 +38,7 @@ import {
   runHeadlessAgent,
   isHeadlessAgentError,
 } from "../core/headless-agent/index.ts"
-import { getHeadlessAgentConfig } from "../core/config.ts"
+import { getHeadlessAgentConfig, getTmpDir } from "../core/config.ts"
 import { TIMEOUT_DEFAULTS, resolveTaskGenTimeout, resolveSyntheticTaskTimeout } from "../core/timeouts.ts"
 
 const log = createLogger("jit-optimize-source")
@@ -448,7 +447,7 @@ export function buildTaskGenPrompt(
 async function prepareTaskGenWorkspace(
   skillDir: string,
 ): Promise<{ workspace: string; tasksOutDir: string }> {
-  const workspace = await mkdtemp(path.join(tmpdir(), "jit-optimize-taskgen-"))
+  const workspace = await mkdtemp(path.join(getTmpDir(), "jit-optimize-taskgen-"))
   await copySkillDir(skillDir, path.join(workspace, "skill"))
   const tasksOutDir = path.join(workspace, "tasks-out")
   await mkdir(tasksOutDir, { recursive: true })
@@ -960,7 +959,7 @@ async function resolveRealTasks(taskRefs: string[], label: string): Promise<Runn
       continue
     }
 
-    const workDir = await mkdtemp(path.join(tmpdir(), "jit-optimize-real-"))
+    const workDir = await mkdtemp(path.join(getTmpDir(), "jit-optimize-real-"))
     const fixturesDir = task.taskDir ? path.join(task.taskDir, "fixtures") : undefined
 
     out.push({

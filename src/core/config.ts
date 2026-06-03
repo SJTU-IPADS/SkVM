@@ -1,5 +1,6 @@
 import path from "node:path"
-import { existsSync } from "node:fs"
+import os from "node:os"
+import { existsSync, mkdirSync } from "node:fs"
 import {
   ProvidersConfigSchema,
   HeadlessAgentConfigSchema,
@@ -108,6 +109,49 @@ function resolveDataDir(): string {
 export const SKVM_DATA_DIR = resolveDataDir()
 export const SKVM_SKILLS_DIR = path.join(SKVM_DATA_DIR, "skills")
 export const SKVM_TASKS_DIR = path.join(SKVM_DATA_DIR, "tasks")
+
+// ---------------------------------------------------------------------------
+// Temp-dir root — SKVM_TMP_DIR
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the parent directory under which every transient skvm work tree is
+ * created (jit-optimize agent/optimizer workspaces, adapter sandboxes, bench /
+ * profiler / run / framework workdirs, the pi headless-agent dir). Callers keep
+ * their own `mkdtemp`/random-suffix scheme; this only supplies the base.
+ *
+ * Priority: --tmp-dir=<path> > SKVM_TMP_DIR env > paths.tmpDir config
+ *           > ${TMPDIR:-/tmp} (i.e. os.tmpdir()).
+ *
+ * The CLI-flag-beats-env order matches `resolveCacheRoot` / `resolveDataDir`;
+ * the config layer slots between env and the OS default so a persisted
+ * `paths.tmpDir` is honored while an explicit flag or env still wins. Re-reads
+ * on every call (not a memoized const) so tests and runtime config mutation
+ * — paired with `invalidateConfigCache` — observe the change. Pure: no I/O, so
+ * `config show` / `doctor` can render it without creating directories.
+ */
+export function resolveTmpDir(): string {
+  const flag = findFlag("tmp-dir")
+  if (flag) return resolvePath(flag)
+  const env = process.env.SKVM_TMP_DIR
+  if (env) return resolvePath(env)
+  const cfg = getProjectConfig().paths?.tmpDir
+  if (typeof cfg === "string" && cfg.trim().length > 0) return resolvePath(cfg)
+  return os.tmpdir()
+}
+
+/**
+ * Runtime accessor: `resolveTmpDir()` plus an idempotent `mkdir -p`. The temp
+ * roots are consumed by `mkdtemp`, which requires its parent to already exist —
+ * so a custom `SKVM_TMP_DIR` / `paths.tmpDir` pointing at a not-yet-created path
+ * would otherwise ENOENT on first use. `os.tmpdir()` already exists, making the
+ * mkdir a no-op in the default case.
+ */
+export function getTmpDir(): string {
+  const dir = resolveTmpDir()
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
 
 // ---------------------------------------------------------------------------
 // Model id helpers
@@ -275,6 +319,15 @@ interface SkVMConfig {
   headlessAgent?: unknown
   defaults?: {
     adapterConfigMode?: AdapterConfigMode
+  }
+  /**
+   * Filesystem path overrides. Currently only `tmpDir` — the parent under which
+   * transient work trees are created (see `resolveTmpDir`). Read defensively
+   * (the top-level config is not Zod-validated), so a malformed value falls
+   * through to the env / OS default rather than throwing.
+   */
+  paths?: {
+    tmpDir?: string
   }
 }
 

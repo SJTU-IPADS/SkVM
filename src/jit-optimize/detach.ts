@@ -31,7 +31,7 @@ import { format } from "node:util"
 
 import type { JitOptimizeConfig } from "./types.ts"
 import { createLogger } from "../core/logger.ts"
-import { getHeadlessAgentConfig } from "../core/config.ts"
+import { getHeadlessAgentConfig, resolveTmpDir, SKVM_CACHE, SKVM_DATA_DIR } from "../core/config.ts"
 import {
   createProposal,
   acquireOptimizeLock,
@@ -129,6 +129,26 @@ export async function spawnDetachedJitOptimize(input: SpawnInput): Promise<numbe
   return r.exitCode ?? 1
 }
 
+/**
+ * Build the env for a detached worker by overlaying the parent's *resolved*
+ * path roots onto a base env. The worker argv carries only the subcommand +
+ * JSON payload — never the parent's global path flags (`--tmp-dir` /
+ * `--skvm-cache` / `--skvm-data-dir`) — and the worker re-resolves these roots
+ * globally from env. So a run launched with a flag (rather than the matching
+ * env var) would otherwise write its temp/cache/data trees under the wrong
+ * root. `resolveTmpDir()` (not `getTmpDir`) avoids creating the dir in the
+ * parent; `SKVM_CACHE` / `SKVM_DATA_DIR` are the parent's already-resolved
+ * module constants. Exported for unit testing.
+ */
+export function buildWorkerEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return {
+    ...base,
+    SKVM_TMP_DIR: resolveTmpDir(),
+    SKVM_CACHE,
+    SKVM_DATA_DIR,
+  }
+}
+
 async function spawnOne(input: SpawnInput): Promise<SpawnOutcome> {
   const workerScript = process.argv[1]
   if (!workerScript) {
@@ -136,6 +156,7 @@ async function spawnOne(input: SpawnInput): Promise<SpawnOutcome> {
   }
 
   const cmd = [process.execPath, workerScript, JIT_OPTIMIZE_WORKER_SUBCOMMAND, JSON.stringify(input.workerInput)]
+  const childEnv = buildWorkerEnv()
 
   return new Promise<SpawnOutcome>((resolve) => {
     let settled = false
@@ -155,6 +176,7 @@ async function spawnOne(input: SpawnInput): Promise<SpawnOutcome> {
       // accept as the cost of not keeping a parent pipe alive.
       child = Bun.spawn({
         cmd,
+        env: childEnv,
         stdio: ["ignore", "ignore", "ignore"],
         ipc(message) {
           const msg = message as HandshakeMsg

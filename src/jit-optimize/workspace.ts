@@ -7,8 +7,8 @@
 
 import path from "node:path"
 import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { copySkillDir } from "../core/fs-utils.ts"
+import { getTmpDir } from "../core/config.ts"
 import { scoreFromCriteria } from "./evidence.ts"
 import type { Evidence, EvidenceCriterion, HistoryEntry } from "./types.ts"
 
@@ -92,7 +92,7 @@ export interface Workspace {
 }
 
 export async function createWorkspace(skillDir: string): Promise<Workspace> {
-  const dir = await mkdtemp(path.join(tmpdir(), "jit-optimize-"))
+  const dir = await mkdtemp(path.join(getTmpDir(), "jit-optimize-"))
   await copySkillDir(skillDir, dir)
   const optimizeDir = path.join(dir, ".optimize")
   await mkdir(optimizeDir, { recursive: true })

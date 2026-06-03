@@ -1,6 +1,6 @@
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import path from "node:path"
+import { getTmpDir } from "../core/config.ts"
 import type { Task, RunResult, EvalResult, AgentAdapter, AdapterConfig, SkillBundle } from "../core/types.ts"
 import type { ConversationLog } from "../core/conversation-logger.ts"
 import type { TestResult } from "./types.ts"
@@ -37,7 +37,7 @@ export async function runTask(opts: RunOptions): Promise<TestResult> {
   await adapter.setup(adapterConfig)
 
   // 2. Create temp workspace (or use provided one)
-  const workDir = opts.workDir ?? await mkdtemp(path.join(tmpdir(), `skvm-run-${task.id}-`))
+  const workDir = opts.workDir ?? await mkdtemp(path.join(getTmpDir(), `skvm-run-${task.id}-`))
   if (opts.workDir) {
     await mkdir(workDir, { recursive: true })
   }

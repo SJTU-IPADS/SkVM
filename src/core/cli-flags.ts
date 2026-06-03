@@ -14,6 +14,7 @@ export const GLOBAL_FLAGS: ReadonlySet<string> = new Set([
   "verbose",
   "skvm-cache",
   "skvm-data-dir",
+  "tmp-dir",
 ])
 
 /**

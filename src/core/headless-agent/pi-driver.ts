@@ -10,7 +10,7 @@
 
 import path from "node:path"
 import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { getTmpDir } from "../config.ts"
 import {
   createAgentSession,
   AuthStorage,
@@ -51,7 +51,7 @@ export async function runPiDriver(
 
   // Per-call temp agentDir so SettingsManager / models.json are sandboxed.
   // In a fresh tmpdir none exist so all pi defaults apply.
-  const agentDir = await mkdtemp(path.join(tmpdir(), "skvm-headless-pi-"))
+  const agentDir = await mkdtemp(path.join(getTmpDir(), "skvm-headless-pi-"))
 
   // Hoist mutable handles so the outer finally can clean them up regardless
   // of which step threw (model-not-found, SettingsManager.create,

@@ -31,6 +31,8 @@ import {
   JIT_OPTIMIZE_DIR,
   getConfigPath,
   expandHome,
+  resolveTmpDir,
+  getProjectConfig,
   getProvidersConfig,
   getHeadlessAgentConfig,
   getAdapterRepoDir,
@@ -87,6 +89,12 @@ interface ConfigDraft {
    * a specific `driver` shouldn't lose them to `skvm config init`.
    */
   headlessAgent?: HeadlessAgentDraft
+  /**
+   * Path overrides — also an opaque passthrough on re-init. The wizard doesn't
+   * prompt for these (they're env/flag/hand-edit territory), but a hand-set
+   * `paths.tmpDir` must survive `skvm config init` rather than being dropped.
+   */
+  paths?: { tmpDir?: string }
 }
 
 type ConfigurableAdapter = Exclude<AdapterName, "bare-agent">
@@ -201,6 +209,7 @@ async function runShow(): Promise<void> {
   printRow("Logs", LOGS_DIR, envOrDefaultSource("SKVM_LOGS_DIR", path.join(SKVM_CACHE, "log")))
   printRow("Proposals", PROPOSALS_ROOT, envOrDefaultSource("SKVM_PROPOSALS_DIR", path.join(SKVM_CACHE, "proposals")))
   printRow("Data dir", SKVM_DATA_DIR, sourceFor("--skvm-data-dir", "SKVM_DATA_DIR", "<project>/skvm-data"))
+  printRow("Temp dir", resolveTmpDir(), tmpDirSource())
 
   console.log(c.bold("\nProviders"))
   const providers = getProvidersConfig()
@@ -272,6 +281,18 @@ function printRow(label: string, value: string, source?: string): void {
   const left = `  ${label.padEnd(13)}`
   const right = source ? `  ${c.dim(`(${source})`)}` : ""
   console.log(`${left} ${shortenPath(value)}${right}`)
+}
+
+/**
+ * Source label for the resolved temp dir. Mirrors `resolveTmpDir`'s precedence:
+ * --tmp-dir flag > SKVM_TMP_DIR env > paths.tmpDir config > OS default.
+ */
+function tmpDirSource(): string {
+  for (const arg of process.argv) if (arg.startsWith("--tmp-dir=")) return "from --tmp-dir"
+  if (process.env.SKVM_TMP_DIR) return "from $SKVM_TMP_DIR"
+  const cfg = getProjectConfig().paths?.tmpDir
+  if (typeof cfg === "string" && cfg.trim().length > 0) return "from config paths.tmpDir"
+  return "default ${TMPDIR:-/tmp}"
 }
 
 function sourceFor(flagName: string, envName: string, defaultLabel: string): string {
@@ -503,7 +524,7 @@ const INPUT_THEME = {
   },
 }
 
-function loadExistingDraft(): ConfigDraft {
+export function loadExistingDraft(): ConfigDraft {
   const draft: ConfigDraft = {
     adapters: {},
     providers: { routes: [] },
@@ -560,6 +581,14 @@ function loadExistingDraft(): ConfigDraft {
     if (parsedDriver.success) preserved.driver = parsedDriver.data
     if (typeof ha.opencodePath === "string") preserved.opencodePath = ha.opencodePath
     if (Object.keys(preserved).length > 0) draft.headlessAgent = preserved
+  }
+  // Preserve a hand-set paths.tmpDir round-trip — the wizard never prompts for
+  // it, so without this it would be silently dropped on re-init.
+  if (raw.paths && typeof raw.paths === "object") {
+    const p = raw.paths as Record<string, unknown>
+    if (typeof p.tmpDir === "string" && p.tmpDir.trim().length > 0) {
+      draft.paths = { tmpDir: p.tmpDir }
+    }
   }
   return draft
 }
@@ -1369,6 +1398,10 @@ async function runDoctor(): Promise<void> {
 
   // Cache root writability
   results.push(checkWritable("Cache root", SKVM_CACHE))
+  // Temp-dir writability — resolveTmpDir() is pure (no mkdir), and checkWritable
+  // walks up to the nearest existing parent, so an as-yet-uncreated custom dir
+  // is reported as "will be created" rather than failing.
+  results.push(checkWritable("Temp dir", resolveTmpDir()))
   // Data dir is optional — most commands don't need it
   if (existsSync(SKVM_DATA_DIR)) {
     results.push({ status: "ok", label: "Data dir present", detail: shortenPath(SKVM_DATA_DIR) })
@@ -1463,7 +1496,7 @@ function printHeader(title: string): void {
 export { appendDiscoveredRoute } from "../core/config-write.ts"
 
 
-function serialize(draft: ConfigDraft): string {
+export function serialize(draft: ConfigDraft): string {
   // Drop empty optional fields so the output stays minimal.
   const out: Record<string, unknown> = {}
   if (draft.defaults && draft.defaults.adapterConfigMode !== undefined) {
@@ -1495,6 +1528,9 @@ function serialize(draft: ConfigDraft): string {
   }
   if (draft.headlessAgent && Object.keys(draft.headlessAgent).length > 0) {
     out.headlessAgent = draft.headlessAgent
+  }
+  if (draft.paths?.tmpDir && draft.paths.tmpDir.trim().length > 0) {
+    out.paths = { tmpDir: draft.paths.tmpDir }
   }
   return JSON.stringify(out, null, 2)
 }

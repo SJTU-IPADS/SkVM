@@ -1,6 +1,5 @@
 import path from "node:path"
 import { mkdtemp, mkdir, readdir, copyFile, cp } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { copyDirRecursive } from "../core/fs-utils.ts"
 import type { AgentAdapter, AdapterConfig, TCP, RunResult, SkillMode } from "../core/types.ts"
 import type { LLMProvider } from "../providers/types.ts"
@@ -9,7 +8,7 @@ import type { EvaluatorConfig, EvaluateAllOptions } from "../framework/evaluator
 import { evaluateAll } from "../framework/evaluator.ts"
 import { compileSkill, writeVariant } from "../compiler/index.ts"
 import { ARTIFACT_DIR } from "../compiler/artifacts.ts"
-import { AOT_COMPILE_DIR, toPassTag, safeModelName } from "../core/config.ts"
+import { AOT_COMPILE_DIR, toPassTag, safeModelName, getTmpDir } from "../core/config.ts"
 import type { BenchTask, BenchCondition, ConditionResult, JitRunReport, EvalDetail } from "./types.ts"
 import { contentHash, copySkillBundle, parseSkillMeta, buildSkillBundleFromContent } from "../core/skill-loader.ts"
 import type { ResolvedSkill } from "../core/skill-loader.ts"
@@ -25,7 +24,7 @@ const log = createLogger("bench-conditions")
 
 /** Create workDir and copy fixture files from the task's fixtures/ directory */
 async function prepareWorkDir(task: BenchTask): Promise<string> {
-  const workDir = await mkdtemp(path.join(tmpdir(), `skvm-bench-${task.id}-`))
+  const workDir = await mkdtemp(path.join(getTmpDir(), `skvm-bench-${task.id}-`))
 
   // Copy files and directories from task's fixtures/ directory if it exists
   if (task.taskDir) {

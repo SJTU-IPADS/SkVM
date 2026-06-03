@@ -33,18 +33,26 @@ import {
   statSync,
   lstatSync,
 } from "node:fs"
-import os from "node:os"
 import { createLogger } from "./logger.ts"
 import { isPidAlive } from "./file-lock.ts"
 import type { ProviderRoute } from "./types.ts"
 import { resolveRouteApiKey } from "../providers/registry.ts"
-import { routingPrefix } from "./config.ts"
+import { routingPrefix, getTmpDir } from "./config.ts"
 import { HEADLESS_AGENT_DEFAULTS } from "./ui-defaults.ts"
 
 const log = createLogger("adapter-sandbox")
 
-/** Root under which every per-run sandbox lives. */
-const SANDBOX_PARENT = path.join(os.tmpdir(), "skvm-adapter-homes")
+/**
+ * Root under which every per-run sandbox lives. A function (not a module const)
+ * so it honors the temp-dir resolver at call time — `--tmp-dir` / `SKVM_TMP_DIR`
+ * / `paths.tmpDir` (see `getTmpDir`, which also ensures the temp root exists).
+ * Changing the temp root between runs means stale sandboxes left under the old
+ * root won't be swept by `reapStaleSandboxes` (it only scans the current root) —
+ * an acceptable, minor consequence.
+ */
+function sandboxParent(): string {
+  return path.join(getTmpDir(), "skvm-adapter-homes")
+}
 
 /** Max age for a stale sandbox tree when sweeping at startup. */
 const STALE_SANDBOX_MS = 24 * 60 * 60 * 1000
@@ -65,6 +73,7 @@ function reapStaleSandboxes(): void {
   if (_staleReapRun) return
   _staleReapRun = true
   try {
+    const SANDBOX_PARENT = sandboxParent()
     if (!existsSync(SANDBOX_PARENT)) return
     const now = Date.now()
     const entries = readdirSync(SANDBOX_PARENT, { withFileTypes: true })
@@ -145,6 +154,7 @@ export function createSandbox(adapter: string): Sandbox {
   reapStaleSandboxes()
   installExitHook()
 
+  const SANDBOX_PARENT = sandboxParent()
   mkdirSync(SANDBOX_PARENT, { recursive: true })
   const rand = Math.random().toString(36).slice(2, 10)
   const name = `skvm-adapter-home-${adapter}-${process.pid}-${rand}`

@@ -57,7 +57,7 @@ import { createProposal, finalizeProposal, type CreateProposalResult } from "../
 import { createProviderForModel } from "../providers/registry.ts"
 import { isProviderError } from "../providers/errors.ts"
 import { isHeadlessAgentError } from "../core/headless-agent/index.ts"
-import { getHeadlessAgentConfig } from "../core/config.ts"
+import { getHeadlessAgentConfig, getTmpDir } from "../core/config.ts"
 import { type AdapterName, createAdapter } from "../adapters/registry.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import { resolveOptimizerTimeout } from "../core/timeouts.ts"
@@ -1364,8 +1364,7 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
 
 async function createRunWorkDir(task: RunnableTask): Promise<string> {
   const { mkdtemp } = await import("node:fs/promises")
-  const { tmpdir } = await import("node:os")
-  const dir = await mkdtemp(path.join(tmpdir(), `jit-optimize-run-${task.id}-`))
+  const dir = await mkdtemp(path.join(getTmpDir(), `jit-optimize-run-${task.id}-`))
   await copyFixturesInto(dir, task.fixturesDir)
   return dir
 }

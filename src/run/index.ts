@@ -1,7 +1,7 @@
 import path from "node:path"
 import { copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { z } from "zod"
+import { getTmpDir } from "../core/config.ts"
 import { BenchTaskFileSchema } from "../bench/types.ts"
 import type { BenchTask } from "../bench/types.ts"
 import { EvalCriterionSchema } from "../core/types.ts"
@@ -86,7 +86,7 @@ export async function executeRun(opts: ExecuteRunOptions): Promise<ExecuteRunRes
   const keepWorkDir = opts.keepWorkDir ?? true
   const workDir = opts.workDir
     ? path.resolve(opts.workDir)
-    : await mkdtemp(path.join(tmpdir(), `skvm-run-${task.id}-`))
+    : await mkdtemp(path.join(getTmpDir(), `skvm-run-${task.id}-`))
 
   await mkdir(workDir, { recursive: true })
   await copyTaskFixtures(task, workDir)

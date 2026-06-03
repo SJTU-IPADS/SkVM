@@ -83,6 +83,7 @@ Commands:
 Global Options:
   --skvm-cache=<path>      Override cache root (default: ~/.skvm)
   --skvm-data-dir=<path>   Override dataset root (default: ./skvm-data)
+  --tmp-dir=<path>         Override temp-dir root (default: \$SKVM_TMP_DIR or \${TMPDIR:-/tmp})
   --verbose                Enable debug logging
   --no-auto-probe          Disable auto-probe for this invocation (also via SKVM_AUTO_PROBE=0)
   --version, -v            Print version and exit

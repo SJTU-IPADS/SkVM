@@ -1,7 +1,7 @@
 import path from "node:path"
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import type { AgentAdapter, AdapterConfig, Level, TCP, TokenUsage } from "../core/types.ts"
+import { getTmpDir } from "../core/config.ts"
 import { emptyTokenUsage, addTokenUsage, LEVEL_ORDER } from "../core/types.ts"
 import type { MicrobenchmarkGenerator, MicrobenchmarkInstance, LevelResult, PrimitiveResult, InstanceResult } from "./types.ts"
 import type { FailureReport } from "./failure-diagnostics.ts"
@@ -124,7 +124,7 @@ async function runInstance(
   log: TeeLogger = { ...consoleLog, fileOnly: () => {} },
   convLogDir?: string,
 ): Promise<InstanceResult> {
-  const workDir = await mkdtemp(path.join(tmpdir(), `skvm-profile-${primitiveId}-${level}-`))
+  const workDir = await mkdtemp(path.join(getTmpDir(), `skvm-profile-${primitiveId}-${level}-`))
   const startMs = performance.now()
   let passed = false
 
