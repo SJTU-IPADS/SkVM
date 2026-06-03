@@ -519,6 +519,41 @@ export const ProvidersConfigSchema = z.object({
 export type ProvidersConfig = z.infer<typeof ProvidersConfigSchema>
 
 // ---------------------------------------------------------------------------
+// Sandbox Config (docker sandbox slice)
+// ---------------------------------------------------------------------------
+
+export const SandboxNetworkSchema = z.enum(["none", "bridge", "host"])
+
+export const SandboxExtraMountSchema = z.object({
+  host: z.string().min(1),
+  inner: z.string().min(1),
+  mode: z.enum(["ro", "rw"]),
+})
+
+export const SandboxDockerConfigSchema = z.object({
+  image: z.string().nullable().default(null),
+  network: SandboxNetworkSchema.default("bridge"),
+  // Docker `--memory` form: a number with an optional b/k/m/g unit (e.g.
+  // "2g", "512m", "1073741824"). Validated here so a typo like "banana"
+  // fails at config-load with a clear message instead of as a cryptic
+  // docker-daemon error at container start.
+  memory: z.string().regex(/^\d+(\.\d+)?[bkmg]?$/i, "memory must be a docker size like \"2g\", \"512m\", or a byte count").default("2g"),
+  // Docker `--cpus` form: a positive decimal (e.g. "2", "1.5", "0.5").
+  cpus: z.string().regex(/^\d+(\.\d+)?$/, "cpus must be a positive number like \"2\" or \"1.5\"").default("2"),
+  pidsLimit: z.number().int().positive().default(512),
+  extraMounts: z.array(SandboxExtraMountSchema).default([]),
+})
+
+export const SandboxConfigSchema = z.object({
+  docker: SandboxDockerConfigSchema.default({}),
+})
+
+export type SandboxNetwork = z.infer<typeof SandboxNetworkSchema>
+export type SandboxExtraMount = z.infer<typeof SandboxExtraMountSchema>
+export type SandboxDockerConfig = z.infer<typeof SandboxDockerConfigSchema>
+export type SandboxConfig = z.infer<typeof SandboxConfigSchema>
+
+// ---------------------------------------------------------------------------
 // Headless Agent Config (jit-optimize / jit-boost agent runs)
 // ---------------------------------------------------------------------------
 

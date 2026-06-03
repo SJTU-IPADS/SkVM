@@ -1,6 +1,7 @@
 import type { LLMProvider } from "./types.ts"
 import type { ProviderRoute, ProvidersConfig } from "../core/types.ts"
-import { getProvidersConfig, stripRoutingPrefix } from "../core/config.ts"
+import { getProvidersConfig, stripRoutingPrefix, resolveRouteApiKey } from "../core/config.ts"
+export { resolveRouteApiKey } from "../core/config.ts"
 import { OpenRouterProvider } from "./openrouter.ts"
 import { AnthropicProvider } from "./anthropic.ts"
 import { OpenAICompatibleProvider } from "./openai-compatible.ts"
@@ -160,7 +161,7 @@ export function createProviderForModel(
     if (!altBase) {
       return { verdict: { primary: "polluted", alt: "indeterminate" }, altProvider: null, writeRoute: null }
     }
-    const altApiKey = overrides?.apiKey ?? r.apiKey ?? (r.apiKeyEnv ? process.env[r.apiKeyEnv] : undefined)
+    const altApiKey = overrides?.apiKey ?? resolveRouteApiKey(r)
     const altProvider: LLMProvider = new AnthropicProvider({
       apiKey: altApiKey,
       model: stripRoutingPrefix(mid),
@@ -210,25 +211,6 @@ export function globMatch(pattern: string, value: string): boolean {
 }
 
 /**
- * Resolve a route's API key as a plain string. Used by env-var injection
- * (envForRoute) and the OPENCODE_CONFIG_CONTENT builder. Returns null when
- * neither `apiKey` nor `apiKeyEnv` yields a usable value — callers then
- * decide whether absence is a failure (instantiate) or just "no help"
- * (env injection — let the spawn inherit). `instantiate` keeps its own
- * branchy resolver because it must raise ProviderAuthError on missing keys
- * (the jit-optimize infraError classification depends on that exception
- * shape).
- */
-export function resolveRouteApiKey(route: ProviderRoute): string | null {
-  if (route.apiKey) return route.apiKey
-  if (route.apiKeyEnv) {
-    const val = process.env[route.apiKeyEnv]
-    if (val) return val
-  }
-  return null
-}
-
-/**
  * Standard SDK env vars to inject into adapter / headless subprocesses so
  * they can reach the backend matched by `providers.routes` without the user
  * also having to configure those credentials on the adapter side.
@@ -262,30 +244,29 @@ function instantiate(
   route: ProviderRoute,
   overrides: ProviderOverrides | undefined,
 ): LLMProvider {
-  // Resolve API key. Order: explicit override → route.apiKey (stored in
-  // skvm.config.json by `skvm config init`) → env var named by route.apiKeyEnv.
+  // Resolve API key. Order: explicit override → resolveRouteApiKey (covers
+  // route.apiKey, SKVM_ROUTE_<id>_KEY sandbox injection, and route.apiKeyEnv).
   // A missing key is an infra / config failure, so raise ProviderAuthError —
   // plain Error would bypass the jit-optimize infraError classification and
   // show up as a normal score=0 criterion.
   let apiKey: string
   if (overrides?.apiKey !== undefined) {
     apiKey = overrides.apiKey
-  } else if (route.apiKey) {
-    apiKey = route.apiKey
-  } else if (route.apiKeyEnv) {
-    const val = process.env[route.apiKeyEnv]
-    if (!val) {
+  } else {
+    const resolved = resolveRouteApiKey(route)
+    if (!resolved) {
+      if (route.apiKeyEnv) {
+        throw new ProviderAuthError(
+          `Route "${route.match}" (kind=${route.kind}) requires env var ${route.apiKeyEnv}, which is not set`,
+          route.kind,
+        )
+      }
       throw new ProviderAuthError(
-        `Route "${route.match}" (kind=${route.kind}) requires env var ${route.apiKeyEnv}, which is not set`,
+        `Route "${route.match}" (kind=${route.kind}) has neither apiKey nor apiKeyEnv set`,
         route.kind,
       )
     }
-    apiKey = val
-  } else {
-    throw new ProviderAuthError(
-      `Route "${route.match}" (kind=${route.kind}) has neither apiKey nor apiKeyEnv set`,
-      route.kind,
-    )
+    apiKey = resolved
   }
 
   switch (route.kind) {

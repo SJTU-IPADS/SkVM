@@ -3,8 +3,10 @@ import { existsSync } from "node:fs"
 import {
   ProvidersConfigSchema,
   HeadlessAgentConfigSchema,
+  SandboxConfigSchema,
   type ProvidersConfig,
   type HeadlessAgentConfig,
+  type SandboxConfig,
   type AdapterConfigMode,
 } from "./types.ts"
 
@@ -273,8 +275,10 @@ interface SkVMConfig {
   proposalsDir?: string
   providers?: unknown
   headlessAgent?: unknown
+  sandbox?: unknown
   defaults?: {
     adapterConfigMode?: AdapterConfigMode
+    sandbox?: boolean
   }
 }
 
@@ -387,6 +391,49 @@ export function getProvidersConfig(): ProvidersConfig {
   return _providersConfigCache
 }
 
+/**
+ * Sanitize a route match string for use as the suffix of an env var. The
+ * launcher exports each route's key as `SKVM_ROUTE_<safeRouteId>_KEY`; the
+ * in-container loader reads from the same form when the route's in-config
+ * `apiKey` is absent.
+ */
+export function safeRouteId(match: string): string {
+  return match.replace(/[^a-zA-Z0-9]/g, "_")
+}
+
+/**
+ * Resolve a route's API key. Order:
+ *   1. `route.apiKey` from skvm.config.json
+ *   2. `process.env[SKVM_ROUTE_<safeRouteId>_KEY]` — populated by the launcher
+ *      inside the sandbox so the on-disk config can stay sanitized
+ *   3. `process.env[route.apiKeyEnv]` — the existing user-controlled env hook
+ */
+export function resolveRouteApiKey(route: {
+  match: string
+  apiKey?: string
+  apiKeyEnv?: string
+}): string | undefined {
+  if (route.apiKey) return route.apiKey
+  const envKey = `SKVM_ROUTE_${safeRouteId(route.match)}_KEY`
+  const fromSandboxEnv = process.env[envKey]
+  if (fromSandboxEnv) return fromSandboxEnv
+  if (route.apiKeyEnv) return process.env[route.apiKeyEnv]
+  return undefined
+}
+
+let _sandboxConfigCache: SandboxConfig | undefined
+
+export function getSandboxConfig(): SandboxConfig {
+  if (_sandboxConfigCache) return _sandboxConfigCache
+  const raw = getProjectConfig().sandbox
+  _sandboxConfigCache = SandboxConfigSchema.parse(raw ?? {})
+  return _sandboxConfigCache
+}
+
+export function getDefaultSandboxMode(): boolean {
+  return getProjectConfig().defaults?.sandbox === true
+}
+
 let _headlessAgentConfigCache: HeadlessAgentConfig | undefined
 
 /**
@@ -440,17 +487,35 @@ export function getDefaultAdapterConfigMode(): AdapterConfigMode | undefined {
  *
  * Throws on an invalid flag value so the user sees a clear error instead of
  * the adapter silently reverting to `"managed"`.
+ *
+ * Sandbox guard: this is the single choke point through which every
+ * adapter-running command resolves its mode, so it is also where the
+ * `--sandbox` + native incompatibility is enforced. Inside the container
+ * (`SKVM_IN_SANDBOX=1`) a resolved `native` mode is a hard error — native
+ * imports host credentials that are deliberately not mounted, which defeats
+ * isolation. Commands that never resolve an adapter mode (e.g. `logs`,
+ * `clean-jit`) are unaffected.
  */
 export function resolveAdapterConfigMode(flagValue: string | undefined): AdapterConfigMode {
+  let mode: AdapterConfigMode
   if (flagValue !== undefined) {
     if (flagValue !== "native" && flagValue !== "managed") {
       throw new Error(
         `--adapter-config must be "native" or "managed" (got "${flagValue}")`,
       )
     }
-    return flagValue
+    mode = flagValue
+  } else {
+    mode = getDefaultAdapterConfigMode() ?? "managed"
   }
-  return getDefaultAdapterConfigMode() ?? "managed"
+  if (mode === "native" && process.env.SKVM_IN_SANDBOX === "1") {
+    throw new Error(
+      `--sandbox requires managed adapter mode. Native mode imports host ` +
+      `credentials, which defeats container isolation. Pass ` +
+      `--adapter-config=managed or set defaults.adapterConfigMode = "managed".`,
+    )
+  }
+  return mode
 }
 
 /**
@@ -494,4 +559,5 @@ export function invalidateConfigCache(): void {
   _configCache = undefined
   _providersConfigCache = undefined
   _headlessAgentConfigCache = undefined
+  _sandboxConfigCache = undefined
 }

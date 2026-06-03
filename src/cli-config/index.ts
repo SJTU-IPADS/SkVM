@@ -16,6 +16,9 @@ import { spawnSync } from "node:child_process"
 import path from "node:path"
 import { stdin } from "node:process"
 
+import pkgJson from "../../package.json" with { type: "json" }
+import { resolveImageRef } from "../launcher/image.ts"
+
 import { checkbox, confirm, input, password, select } from "@inquirer/prompts"
 import { createPrompt, isEnterKey, useKeypress, useState } from "@inquirer/core"
 
@@ -36,6 +39,8 @@ import {
   getAdapterRepoDir,
   getAdapterSettings,
   getDefaultAdapterConfigMode,
+  getSandboxConfig,
+  getDefaultSandboxMode,
   detectLegacyHeadlessFields,
   invalidateConfigCache,
   resolveConfigWritePath,
@@ -79,7 +84,7 @@ interface AdapterDraft {
 interface ConfigDraft {
   adapters: Partial<Record<AdapterName, AdapterDraft>>
   providers: { routes: RouteDraft[] }
-  defaults?: { adapterConfigMode?: AdapterConfigMode }
+  defaults?: { adapterConfigMode?: AdapterConfigMode; sandbox?: boolean }
   /**
    * Preserved as an opaque passthrough on re-init — the wizard doesn't
    * configure these fields (credentials and endpoints come from
@@ -229,6 +234,23 @@ async function runShow(): Promise<void> {
   console.log(c.bold("\nDefaults"))
   const defMode = getDefaultAdapterConfigMode() ?? "(unset → managed)"
   printRow("Adapter mode", String(defMode), "defaults.adapterConfigMode")
+
+  console.log(c.bold("\nSandbox (Docker):"))
+  try {
+    const sandboxSlice = getSandboxConfig()
+    const sandboxDefaultsOn = getDefaultSandboxMode()
+    console.log(`  Default for new invocations: ${sandboxDefaultsOn ? c.green("on") : c.dim("off")}`)
+    console.log(`  Image:    ${sandboxSlice.docker.image ?? c.dim("(built-in default)")}`)
+    console.log(`  Network:  ${sandboxSlice.docker.network}`)
+    console.log(`  Resources: memory=${sandboxSlice.docker.memory}  cpus=${sandboxSlice.docker.cpus}  pids=${sandboxSlice.docker.pidsLimit}`)
+    const xm = sandboxSlice.docker.extraMounts
+    if (xm.length > 0) {
+      console.log(`  Extra mounts:`)
+      for (const m of xm) console.log(`    ${m.host} → ${m.inner} (${m.mode})`)
+    }
+  } catch (e) {
+    console.log(`  ${c.red("✗")} could not parse: ${String(e)}`)
+  }
 
   console.log(c.bold("\nAdapters"))
   const labelW = Math.max(...ALL_ADAPTERS.map(a => a.length))
@@ -408,6 +430,7 @@ async function runInit(): Promise<void> {
       if (action.section === "providers") await stepProviders(draft)
       else if (action.section === "mode") await stepDefaultMode(draft)
       else if (action.section === "adapters") await stepAdapters(draft)
+      else if (action.section === "sandbox") await stepSandbox(draft)
     }
 
     tuiClear()
@@ -533,9 +556,14 @@ function loadExistingDraft(): ConfigDraft {
   }
   if (raw.defaults && typeof raw.defaults === "object") {
     const d = raw.defaults as Record<string, unknown>
+    const restored: ConfigDraft["defaults"] = {}
     if (d.adapterConfigMode === "native" || d.adapterConfigMode === "managed") {
-      draft.defaults = { adapterConfigMode: d.adapterConfigMode }
+      restored.adapterConfigMode = d.adapterConfigMode
     }
+    if (typeof d.sandbox === "boolean") {
+      restored.sandbox = d.sandbox
+    }
+    if (Object.keys(restored).length > 0) draft.defaults = restored
   }
   if (raw.providers && typeof raw.providers === "object") {
     const routes = (raw.providers as { routes?: unknown }).routes
@@ -1066,9 +1094,35 @@ async function pickNativeAgent(opts: {
   })).trim() || def
 }
 
+// --- Step 4: sandbox (Docker) ------------------------------------------------
+
+async function stepSandbox(draft: ConfigDraft): Promise<void> {
+  try {
+    console.log(c.bold("Sandbox (Docker)"))
+    console.log(c.dim("  When --sandbox is set on a command, skvm re-execs itself inside an"))
+    console.log(c.dim("  ephemeral Docker container. You can opt in per-invocation or make"))
+    console.log(c.dim("  sandbox the default for every command."))
+
+    const sandboxDefault = await confirm({
+      message: "Make --sandbox the default for every command?",
+      default: draft.defaults?.sandbox ?? false,
+    })
+
+    draft.defaults = draft.defaults ?? {}
+    draft.defaults.sandbox = sandboxDefault
+
+    if (sandboxDefault) {
+      console.log(c.dim("  (You can opt out of any single invocation with --sandbox=false.)"))
+    }
+  } catch (e) {
+    if (isExit(e)) return
+    throw e
+  }
+}
+
 // --- TUI section pager -------------------------------------------------------
 
-type SectionId = "providers" | "mode" | "adapters" | "write"
+type SectionId = "providers" | "mode" | "adapters" | "sandbox" | "write"
 
 interface Section {
   id: SectionId
@@ -1079,6 +1133,7 @@ const SECTIONS: Section[] = [
   { id: "providers", label: "Providers" },
   { id: "mode", label: "Default mode" },
   { id: "adapters", label: "Adapters" },
+  { id: "sandbox", label: "Sandbox" },
   { id: "write", label: "✓ Write & exit" },
 ]
 
@@ -1130,11 +1185,15 @@ function renderSectionBody(draft: ConfigDraft, index: number): string {
     case "adapters":
       return indent(summarizeAdapters(draft).trimStart())
         + "\n\n  " + c.dim("Press Enter to configure adapters.")
+    case "sandbox":
+      return indent(summarizeSandbox(draft).trimStart())
+        + "\n\n  " + c.dim("Press Enter to configure sandbox defaults.")
     case "write": {
       const full = [
         summarizeProviders(draft),
         summarizeDefaultMode(draft),
         summarizeAdapters(draft),
+        summarizeSandbox(draft),
       ].join("\n")
       const target = shortenPath(resolveConfigWritePath())
       return indent(full.trimStart())
@@ -1183,6 +1242,11 @@ function summarizeAdapters(draft: ConfigDraft): string {
     lines.push(`  ${k.padEnd(labelW)}  ${parts.join("  ")}`)
   }
   return lines.join("\n")
+}
+
+function summarizeSandbox(draft: ConfigDraft): string {
+  const on = draft.defaults?.sandbox === true
+  return `\n${c.bold("Sandbox (Docker):")} default --sandbox ${on ? c.green("on") : c.dim("off")}`
 }
 
 // ---------------------------------------------------------------------------
@@ -1391,6 +1455,48 @@ async function runDoctor(): Promise<void> {
     })
   }
 
+  // Sandbox (Docker) checks — rendered as a separate section after the main
+  // results table so the output groups clearly. `sandboxOk` participates in
+  // the overall exit code only when sandbox is the default for all invocations.
+  let sandboxOk = true
+  const sandboxSectionLines: string[] = []
+  let sandboxSlice
+  try {
+    sandboxSlice = getSandboxConfig()
+  } catch (e) {
+    sandboxSectionLines.push(`  ${c.red("✗")} sandbox slice malformed: ${e}`)
+    sandboxOk = false
+  }
+
+  const sandboxDefaultsOn = getDefaultSandboxMode()
+  sandboxSectionLines.push(`  default --sandbox: ${sandboxDefaultsOn ? "on" : "off"}`)
+
+  const dockerCheck = spawnSync("docker", ["--version"], { encoding: "utf-8" })
+  if (dockerCheck.status === 0) {
+    sandboxSectionLines.push(`  ${c.green("✓")} docker available (${dockerCheck.stdout.trim()})`)
+  } else {
+    const sev = sandboxDefaultsOn ? "✗" : "(info)"
+    sandboxSectionLines.push(`  ${sandboxDefaultsOn ? c.red(sev) : c.dim(sev)} docker not on PATH`)
+    if (sandboxDefaultsOn) sandboxOk = false
+  }
+
+  if (sandboxSlice) {
+    const imageRef = resolveImageRef({
+      cliOverride: null,
+      configImage: sandboxSlice.docker.image,
+      skvmVersion: (pkgJson as { version: string }).version,
+    })
+    const inspect = spawnSync("docker", ["image", "inspect", imageRef], { stdio: "ignore" })
+    if (inspect.status === 0) {
+      sandboxSectionLines.push(`  ${c.green("✓")} image present: ${imageRef}`)
+    } else {
+      const sev = sandboxDefaultsOn ? "✗" : "(info)"
+      sandboxSectionLines.push(`  ${sandboxDefaultsOn ? c.red(sev) : c.dim(sev)} image not pulled: ${imageRef}`)
+      sandboxSectionLines.push(`     build with: docker build -f docker/skvm-sandbox.Dockerfile -t ${imageRef} .`)
+      if (sandboxDefaultsOn) sandboxOk = false
+    }
+  }
+
   // Print results
   console.log()
   let fails = 0, warns = 0
@@ -1404,6 +1510,11 @@ async function runDoctor(): Promise<void> {
     const detail = r.detail ? c.dim(`  ${r.status === "info" ? "·" : "—"} ${r.detail}`) : ""
     console.log(`  ${mark}  ${r.label}${detail}`)
   }
+  console.log()
+
+  // Sandbox section output
+  console.log(c.bold("Sandbox (Docker):"))
+  for (const line of sandboxSectionLines) console.log(line)
   console.log()
 
   // Migration note: warn if prior opencode proposals exist but the config
@@ -1421,8 +1532,9 @@ async function runDoctor(): Promise<void> {
     ))
   }
 
-  if (fails > 0) {
-    console.log(c.yellow(`${fails} issue(s) to look at.`) + ` See the items above marked ${c.red("✗")}.`)
+  const totalFails = fails + (sandboxOk ? 0 : 1)
+  if (totalFails > 0) {
+    console.log(c.yellow(`${totalFails} issue(s) to look at.`) + ` See the items above marked ${c.red("✗")}.`)
   } else if (warns > 0) {
     console.log(c.yellow(`${warns} warning(s).`) + " Things should work, but read the notes above.")
   } else {
@@ -1466,8 +1578,11 @@ export { appendDiscoveredRoute } from "../core/config-write.ts"
 function serialize(draft: ConfigDraft): string {
   // Drop empty optional fields so the output stays minimal.
   const out: Record<string, unknown> = {}
-  if (draft.defaults && draft.defaults.adapterConfigMode !== undefined) {
-    out.defaults = { adapterConfigMode: draft.defaults.adapterConfigMode }
+  if (draft.defaults && (draft.defaults.adapterConfigMode !== undefined || draft.defaults.sandbox !== undefined)) {
+    const d: Record<string, unknown> = {}
+    if (draft.defaults.adapterConfigMode !== undefined) d.adapterConfigMode = draft.defaults.adapterConfigMode
+    if (draft.defaults.sandbox !== undefined) d.sandbox = draft.defaults.sandbox
+    out.defaults = d
   }
   const adaptersOut: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(draft.adapters)) {

@@ -43,6 +43,64 @@ function parseFlags(args: string[]): Record<string, string> {
   return flags
 }
 
+export interface SandboxFlagParse {
+  value: boolean
+  present: boolean
+}
+
+export function parseSandboxFlag(args: string[]): SandboxFlagParse {
+  for (const a of args) {
+    if (a === "--sandbox") return { value: true, present: true }
+    if (a.startsWith("--sandbox=")) {
+      const v = a.slice("--sandbox=".length)
+      if (v === "true") return { value: true, present: true }
+      if (v === "false") return { value: false, present: true }
+      // Hard error on any other value. Silently treating `--sandbox=yes` as
+      // "flag absent" would run UNSANDBOXED while the user believes they are
+      // contained — the exact silent-no-containment failure this feature
+      // must never produce.
+      throw new Error(`--sandbox must be "true" or "false" (got "${v}")`)
+    }
+  }
+  return { value: false, present: false }
+}
+
+export interface ShouldEnterLauncherArgs {
+  parsed: SandboxFlagParse
+  defaultsSandbox: boolean
+  inSandboxEnv: boolean
+}
+
+export function shouldEnterLauncher(o: ShouldEnterLauncherArgs): boolean {
+  if (o.inSandboxEnv) return false
+  if (o.parsed.present) return o.parsed.value
+  return o.defaultsSandbox
+}
+
+export interface AssertSandboxCompatibleArgs {
+  sandboxOn: boolean
+  command: string | undefined
+  subcommand: string | undefined
+  adapterMode: "native" | "managed" | undefined
+}
+
+export function assertSandboxCompatible(o: AssertSandboxCompatibleArgs): void {
+  if (!o.sandboxOn) return
+  if (o.command === "config") {
+    throw new Error(
+      `skvm config ${o.subcommand ?? ""} cannot run under --sandbox: ` +
+      `config commands always run on host (they manage host-side state).`,
+    )
+  }
+  if (o.adapterMode === "native") {
+    throw new Error(
+      `--sandbox requires managed adapter mode. ` +
+      `Native mode imports host credentials, which defeats container isolation. ` +
+      `Pass --adapter-config=managed or set defaults.adapterConfigMode = "managed".`,
+    )
+  }
+}
+
 async function main() {
   // Hidden subcommand for `skvm jit-optimize --detach`. Spawned by the
   // parent CLI with stdio: ignore + IPC channel; takes a JSON-stringified
@@ -59,6 +117,38 @@ async function main() {
   const flags = parseFlags(args.slice(1))
 
   if (flags.verbose) setLogLevel("debug")
+
+  // Strategy C — sandbox dispatch. If `--sandbox` is set (or sandbox is the
+  // configured default) and we are not already inside the container, hand off
+  // to the launcher and never return.
+  const sandboxParsed = parseSandboxFlag(args)
+  const inSandboxEnv = process.env.SKVM_IN_SANDBOX === "1"
+  {
+    let defaultsSandbox = false
+    if (!inSandboxEnv && !sandboxParsed.present) {
+      const { getDefaultSandboxMode } = await import("./core/config.ts")
+      defaultsSandbox = getDefaultSandboxMode()
+    }
+    if (shouldEnterLauncher({ parsed: sandboxParsed, defaultsSandbox, inSandboxEnv })) {
+      const forwarded = args.filter(a => a !== "--sandbox" && !a.startsWith("--sandbox="))
+      // Guard: config commands always run on host — reject early before launching
+      // the container. Derive command/subcommand from positional args (not
+      // rawCommand), because parseSandboxFlag scans positionally: `--sandbox`
+      // may precede the subcommand, making rawCommand === "--sandbox".
+      // Note: per-command native-adapter guard (assertSandboxCompatible with
+      // adapterMode resolved) is deferred to each command entry point.
+      const positionals = forwarded.filter(a => !a.startsWith("-"))
+      assertSandboxCompatible({
+        sandboxOn: true,
+        command: positionals[0],
+        subcommand: positionals[1],
+        adapterMode: undefined,
+      })
+      const { runLauncher } = await import("./launcher/index.ts")
+      await runLauncher(forwarded)
+      /* unreachable */ return
+    }
+  }
 
   if (isTopLevelVersion) {
     console.log(pkgJson.version)
@@ -84,6 +174,7 @@ Global Options:
   --skvm-cache=<path>      Override cache root (default: ~/.skvm)
   --skvm-data-dir=<path>   Override dataset root (default: ./skvm-data)
   --verbose                Enable debug logging
+  --sandbox[=false]        Run inside a Docker sandbox (or opt out when defaults.sandbox=true)
   --no-auto-probe          Disable auto-probe for this invocation (also via SKVM_AUTO_PROBE=0)
   --version, -v            Print version and exit
   --help, -h               Print this help and exit
@@ -2062,6 +2153,8 @@ function buildTaskSource(flags: Record<string, string>): import("./jit-optimize/
     return { kind: "real-task", trainTasks, testTasks }
   }
   if (kind === "log" || kind === "execution-log") {
+    // TODO(docker-sandbox): --logs and --failures are comma-separated path lists;
+    // comma-list path flags are not yet handled by PATH_FLAGS in src/launcher/path-flags.ts.
     const raw = flags.logs
     if (!raw) {
       console.error("jit-optimize: --logs is required for --task-source=log")
@@ -2250,7 +2343,17 @@ async function resolveSkillDirs(flags: Record<string, string>): Promise<string[]
   return dirs
 }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+if (import.meta.main) {
+  main().catch((err) => {
+    // Print a clean `error: <message>` for expected user-errors (bad flags,
+    // sandbox guards, config validation) instead of a raw stack trace. Pass
+    // --verbose or set SKVM_DEBUG=1 to see the full stack when debugging.
+    const verbose = process.argv.includes("--verbose") || process.env.SKVM_DEBUG === "1"
+    if (verbose && err instanceof Error && err.stack) {
+      console.error(err.stack)
+    } else {
+      console.error(err instanceof Error ? `error: ${err.message}` : String(err))
+    }
+    process.exit(1)
+  })
+}
