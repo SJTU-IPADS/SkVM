@@ -90,6 +90,27 @@ function fixInlinePython(command: string): string {
   return `${prefix}python3 << 'PYEOF'\n${pyCode}\nPYEOF`
 }
 
+/**
+ * Try to extract an environment-fault signal from the last JSON line of stdout.
+ * A script emits `{"infraError": "..."}` when it cannot meaningfully evaluate
+ * the run (e.g. a required dependency is not installed). This is distinct from a
+ * checkpoint failure — the run should be skipped, not scored zero.
+ */
+function tryParseInfraError(stdout: string): string | null {
+  const lines = stdout.trim().split("\n")
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim()
+    if (!line.startsWith("{")) continue
+    try {
+      const parsed = JSON.parse(line)
+      if (typeof parsed.infraError === "string" && parsed.infraError.length > 0) {
+        return parsed.infraError
+      }
+    } catch { /* not valid JSON, continue */ }
+  }
+  return null
+}
+
 /** Try to extract checkpoint JSON from the last JSON line of stdout */
 function tryParseCheckpoints(stdout: string): EvalCheckpoint[] | null {
   const lines = stdout.trim().split("\n")
@@ -138,6 +159,14 @@ async function evaluateScript(
         details: `Exit code: ${exitCode} (expected ${criterion.expectedExitCode})${stderr ? `, stderr: ${stderr.slice(0, 200)}` : ""}`,
         criterion,
       }
+    }
+
+    // Environment fault: the script could not evaluate the run because of a
+    // missing precondition (e.g. an absent dependency). Surface it via
+    // infraError so downstream aggregators skip rather than score it.
+    const infraError = tryParseInfraError(stdout)
+    if (infraError) {
+      return { pass: false, score: 0.0, details: `infraError: ${infraError}`, criterion, infraError }
     }
 
     // Try structured checkpoint output

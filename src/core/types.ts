@@ -272,6 +272,9 @@ export const PrimitiveProfileDetailSchema = z.object({
     passed: z.boolean(),
     passCount: z.number(),
     totalCount: z.number(),
+    /** Instances skipped for environment reasons (e.g. missing dependency),
+     *  excluded from the pass decision. Defaults to 0 for older profiles. */
+    skipCount: z.number().default(0),
     durationMs: z.number(),
     costUsd: z.number(),
     /** What this profiling level tests (from generator descriptions) */

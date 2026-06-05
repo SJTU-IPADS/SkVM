@@ -16,6 +16,20 @@ const CATEGORIES = ["Electronics", "Clothing", "Food", "Books"]
 const QUARTERS = ["Q1", "Q2", "Q3", "Q4"]
 const AGGS: Record<string, string> = { sum: "sum", mean: "mean", count: "count" }
 
+/**
+ * Python preamble that aborts the eval with an `infraError` (rather than a
+ * score-0 failure) when a required third-party library is not installed. A
+ * missing dependency is an environment fault, not a model capability gap, so
+ * the profiler skips the instance instead of penalising the model for it.
+ * Emits `json` import for the rest of the script too.
+ */
+function requireModule(module: string): string {
+  return `import json, importlib.util
+if importlib.util.find_spec(${JSON.stringify(module)}) is None:
+    print(json.dumps({"infraError": "gen.code.python L3 requires the ${module} library, which is not installed in the eval environment"}))
+    raise SystemExit(0)`
+}
+
 const generator: MicrobenchmarkGenerator = {
   primitiveId: "gen.code.python",
   descriptions: {
@@ -258,7 +272,8 @@ function generateL3Pandas(): MicrobenchmarkInstance {
     eval: {
       method: "script",
       command: `python3 << 'PYEOF'
-import json, subprocess, os, csv
+${requireModule("pandas")}
+import subprocess, os, csv
 cp = []
 
 # Check script was created
@@ -370,7 +385,8 @@ function generateL3Numpy(): MicrobenchmarkInstance {
     eval: {
       method: "script",
       command: `python3 << 'PYEOF'
-import json, subprocess, os
+${requireModule("numpy")}
+import subprocess, os
 cp = []
 
 # Check script was created
@@ -462,7 +478,8 @@ function generateL3Openpyxl(): MicrobenchmarkInstance {
     eval: {
       method: "script",
       command: `python3 << 'PYEOF'
-import json, subprocess, os
+${requireModule("openpyxl")}
+import subprocess, os
 cp = []
 
 # Check script was created

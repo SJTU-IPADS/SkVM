@@ -124,6 +124,7 @@ export async function profile(opts: ProfileOptions): Promise<TCP> {
       passed: lr.passed,
       passCount: lr.passCount,
       totalCount: lr.totalCount,
+      skipCount: lr.skipCount,
       instances: [],
       durationMs: lr.durationMs,
       costUsd: lr.costUsd,
@@ -336,6 +337,7 @@ export async function profileMulti(opts: ProfileMultiOptions): Promise<{
         passed: lr.passed,
         passCount: lr.passCount,
         totalCount: lr.totalCount,
+        skipCount: lr.skipCount,
         instances: [],
         durationMs: lr.durationMs,
         costUsd: lr.costUsd,
@@ -382,11 +384,12 @@ function recordPrimitiveResult(
       passed: lr.passed,
       passCount: lr.passCount,
       totalCount: lr.totalCount,
+      skipCount: lr.skipCount,
       durationMs: lr.durationMs,
       costUsd: lr.costUsd,
       testDescription: gen.descriptions[lr.level],
       failureDetails: lr.instances
-        .filter((i) => !i.passed)
+        .filter((i) => !i.passed && !i.skipped)
         .map((i) => i.details),
     })),
     calibrationNote: result.calibrationNote,

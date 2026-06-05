@@ -22,8 +22,8 @@ function makeTCP(overrides: Partial<TCP> = {}): TCP {
       primitiveId: "reason.arithmetic",
       highestLevel: "L2",
       levelResults: [
-        { level: "L3", passed: false, passCount: 1, totalCount: 3, durationMs: 100, costUsd: 0, testDescription: "L3 test", failureDetails: ["failed"] },
-        { level: "L2", passed: true, passCount: 3, totalCount: 3, durationMs: 90, costUsd: 0, testDescription: "L2 test", failureDetails: [] },
+        { level: "L3", passed: false, passCount: 1, totalCount: 3, skipCount: 0, durationMs: 100, costUsd: 0, testDescription: "L3 test", failureDetails: ["failed"] },
+        { level: "L2", passed: true, passCount: 3, totalCount: 3, skipCount: 0, durationMs: 90, costUsd: 0, testDescription: "L2 test", failureDetails: [] },
       ],
     }],
     cost: {

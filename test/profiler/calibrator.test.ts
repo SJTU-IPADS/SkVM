@@ -8,6 +8,7 @@ function makeLevelResult(level: "L1" | "L2" | "L3", passed: boolean, passCount =
     passed,
     passCount,
     totalCount: 3,
+    skipCount: 0,
     instances: [],
     durationMs: 1000,
     costUsd: 0.01,

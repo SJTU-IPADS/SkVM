@@ -318,8 +318,12 @@ has_lines = len(lines) >= 2
 cp.append({"name": "format_correct", "score": 1.0 if has_lines else 0.0,
   "reason": None if has_lines else f"need 2 lines, got {len(lines)}"})
 if has_lines:
-    file_line = lines[0]
-    line_num_line = lines[1]
+    # The answer is the last two non-empty lines. Models often emit reasoning
+    # before the final answer, so the filename/line number land at the end, not
+    # at lines[0]/lines[1]. The prompt asks for filename then line number, so
+    # the number is last.
+    file_line = lines[-2]
+    line_num_line = lines[-1]
     file_match = re.search(r'[\\w]+\\.py', file_line)
     file_found = file_match is not None
     if file_found:

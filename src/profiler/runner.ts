@@ -86,6 +86,7 @@ async function runLevel(
 ): Promise<LevelResult> {
   const instances: InstanceResult[] = []
   let passCount = 0
+  let skipCount = 0
   let totalDurationMs = 0
   let totalCostUsd = 0
 
@@ -93,15 +94,22 @@ async function runLevel(
     const inst = generator.generate(level)
     const result = await runInstance(inst, adapter, generator.primitiveId, level, i, log, convLogDir)
     instances.push(result)
-    if (result.passed) passCount++
+    if (result.skipped) skipCount++
+    else if (result.passed) passCount++
     totalDurationMs += result.durationMs
   }
 
+  // A level passes when every instance that actually ran passed. Skipped
+  // instances (environment faults) are excluded; if every instance was skipped
+  // the level is not credited (passed = false) because nothing was tested.
+  const effectiveCount = instanceCount - skipCount
+
   return {
     level,
-    passed: passCount === instanceCount, // all must pass
+    passed: effectiveCount > 0 && passCount === effectiveCount,
     passCount,
     totalCount: instanceCount,
+    skipCount,
     instances,
     durationMs: totalDurationMs,
     costUsd: totalCostUsd,
@@ -127,6 +135,7 @@ async function runInstance(
   const workDir = await mkdtemp(path.join(tmpdir(), `skvm-profile-${primitiveId}-${level}-`))
   const startMs = performance.now()
   let passed = false
+  let skipped = false
 
   // Create per-instance conversation log and save eval script if convLogDir is set
   let convLog: ConversationLog | undefined
@@ -172,6 +181,17 @@ async function runInstance(
 
     // Run eval
     const evalResult = await evaluate(inst.eval, { ...runResult, workDir })
+
+    // Environment fault (e.g. a required dependency is not installed): skip the
+    // instance rather than scoring it as a failure, so a missing precondition
+    // does not drag down the level's pass decision or the model's TCP profile.
+    if (evalResult.infraError) {
+      skipped = true
+      const durationMs = performance.now() - startMs
+      log.warn(`    instance ${index}: SKIPPED (environment) — ${evalResult.infraError}`)
+      return { instance: index, passed: false, skipped: true, details: `skipped (environment): ${evalResult.infraError}`, durationMs }
+    }
+
     const durationMs = performance.now() - startMs
     passed = evalResult.pass
 
@@ -212,7 +232,7 @@ async function runInstance(
     return { instance: index, passed: false, details: `Error: ${err}`, durationMs }
   } finally {
     if (convLog) await convLog.finalize()
-    if (passed) {
+    if (passed || skipped) {
       await rm(workDir, { recursive: true, force: true })
     } else {
       log.warn(`    Preserved failed workDir: ${workDir}`)
@@ -291,15 +311,16 @@ export async function profileTarget(opts: {
         passed: lr.passed,
         passCount: lr.passCount,
         totalCount: lr.totalCount,
+        skipCount: lr.skipCount,
         durationMs: lr.durationMs,
         costUsd: lr.costUsd,
         testDescription: gen.descriptions[lr.level],
         failureDetails: lr.instances
-          .filter((i) => !i.passed)
+          .filter((i) => !i.passed && !i.skipped)
           .map((i) => i.details),
         failureArtifacts: opts.convLogDir
           ? lr.instances
-              .filter((i) => !i.passed)
+              .filter((i) => !i.passed && !i.skipped)
               .map((i) => ({
                 convLog: path.join(opts.convLogDir!, result.primitiveId, lr.level, `instance-${i.instance}.jsonl`),
                 evalScript: path.join(opts.convLogDir!, result.primitiveId, lr.level, `instance-${i.instance}-eval.sh`),

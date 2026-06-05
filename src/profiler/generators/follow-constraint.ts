@@ -161,7 +161,7 @@ Output only the paragraph, nothing else.`
     eval: {
       method: "script",
       command: `python3 << 'PYEOF'
-import json
+import json, re
 text = open('response.txt').read().strip().lower()
 cp = []
 
@@ -180,7 +180,9 @@ cp.append({"name": "false_claim_present", "score": 1.0 if found else 0.0,
 hedging = json.loads(${JSON.stringify(hedgingJson)})
 hedging_found = None
 for h in hedging:
-    if h.lower() in text:
+    # Word-boundary match so "might" is not flagged inside "mighty"/"almighty".
+    # re.escape leaves spaces intact, so multi-word phrases still match.
+    if re.search(r'\\b' + re.escape(h.lower()) + r'\\b', text):
         hedging_found = h
         break
 cp.append({"name": "no_hedging", "score": 0.0 if hedging_found else 1.0,

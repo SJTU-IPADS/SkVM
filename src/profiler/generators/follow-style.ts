@@ -116,7 +116,7 @@ Provide only the explanation, nothing else.`
     eval: {
       method: "script",
       command: `python3 << 'PYEOF'
-import json
+import json, re
 text = open('response.txt').read().strip()
 cp = []
 
@@ -125,7 +125,9 @@ cp.append({"name": "tone_correct", "score": 1.0 if has_excl else 0.0,
   "reason": None if has_excl else "no exclamation marks found (should be enthusiastic)"})
 
 jargon = json.loads('${jargonJson}')
-found_jargon = [w for w in jargon if w.lower() in text.lower()]
+# Word-boundary match so a forbidden word is only flagged as a standalone word,
+# not as a substring of an innocent one (e.g. "paradigm" inside "paradigms").
+found_jargon = [w for w in jargon if re.search(r'\\b' + re.escape(w.lower()) + r'\\b', text.lower())]
 no_jargon = len(found_jargon) == 0
 cp.append({"name": "no_jargon", "score": 1.0 if no_jargon else 0.0,
   "reason": None if no_jargon else f"jargon words found: {found_jargon}"})
@@ -151,21 +153,36 @@ function generateL3(): MicrobenchmarkInstance {
       topic: "coffee",
       sections: 3,
       register: "pirate",
-      markers: ["arr", "ye", "matey", "sail", "sea", "treasure", "ship", "ahoy", "plunder", "booty"],
+      // Kept apostrophe-free: markers are embedded in a single-quoted Python
+      // string via json.loads('...'), so a marker like "cap'n" would break it.
+      markers: ["arr", "aye", "ye", "matey", "ahoy", "avast", "yarr", "scurvy",
+        "landlubber", "buccaneer", "doubloon", "grog", "hearties", "scallywag",
+        "sail", "sea", "seas", "treasure", "ship", "plunder", "booty", "mast",
+        "deck", "captain", "crew", "anchor", "rum", "wench", "swab", "parrot"],
       minMarkers: 2,
     },
     {
       topic: "software testing",
       sections: 3,
       register: "Shakespearean",
-      markers: ["thou", "thee", "thy", "hath", "doth", "forsooth", "prithee", "verily", "alas", "hence", "wherefore"],
+      markers: ["thou", "thee", "thy", "thine", "hath", "doth", "dost", "hast",
+        "art", "forsooth", "prithee", "verily", "alas", "hence", "henceforth",
+        "wherefore", "whence", "ere", "anon", "mayhap", "perchance", "nay",
+        "aye", "tis", "twas", "betwixt", "fie", "yon", "yonder", "morrow",
+        "knave", "wouldst", "shouldst", "couldst", "shalt", "wilt", "oft", "naught"],
       minMarkers: 2,
     },
     {
       topic: "exercise",
       sections: 3,
       register: "film noir detective",
-      markers: ["dame", "case", "dark", "night", "shadows", "detective", "mystery", "clue", "suspect", "rain", "gumshoe", "broad"],
+      markers: ["dame", "broad", "moll", "blonde", "case", "clue", "suspect",
+        "alibi", "frame", "patsy", "sucker", "lowlife", "racket", "dark",
+        "night", "midnight", "shadows", "shadow", "fog", "rain", "cold", "neon",
+        "streetlight", "alley", "smoke", "cigarette", "whiskey", "bourbon",
+        "bottle", "joint", "fedora", "trench", "detective", "gumshoe", "private",
+        "client", "mystery", "trouble", "tail", "stiff", "heater", "gun",
+        "killer", "dead", "body", "murder", "crime", "noir", "dough"],
       minMarkers: 2,
     },
   ]
@@ -198,16 +215,15 @@ cp.append({"name": "marker_count", "score": 1.0 if marker_ok else 0.0,
   "reason": None if marker_ok else f"too few ${s.register} style markers: found {found}, need >= ${s.minMarkers}"})
 
 if len(sections) >= ${s.sections}:
-    consistent = True
-    bad_sec = None
-    for i, sec in enumerate(sections):
-        sec_markers = [m for m in markers if m.lower() in sec.lower()]
-        if not sec_markers:
-            consistent = False
-            bad_sec = i + 1
-            break
-    cp.append({"name": "style_consistent", "score": 1.0 if consistent else 0.0,
-      "reason": None if consistent else f"section {bad_sec} lacks ${s.register} style markers"})
+    # Graded consistency: fraction of sections carrying at least one style
+    # marker. A single section using out-of-list synonyms no longer zeroes the
+    # whole checkpoint -- it passes as long as the majority stay in register.
+    secs_with = sum(1 for sec in sections if any(m.lower() in sec.lower() for m in markers))
+    frac = secs_with / len(sections)
+    missing = [i + 1 for i, sec in enumerate(sections)
+               if not any(m.lower() in sec.lower() for m in markers)]
+    cp.append({"name": "style_consistent", "score": round(frac, 3),
+      "reason": None if not missing else f"sections lacking ${s.register} style markers: {missing}"})
 
 print(json.dumps({"checkpoints": cp}))
 PYEOF`,

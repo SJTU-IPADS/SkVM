@@ -22,6 +22,9 @@ export interface InstanceResult {
   passed: boolean
   details: string
   durationMs: number
+  /** True when the instance was skipped for an environment reason (e.g. a
+   *  missing dependency) and must NOT count as a pass or a failure. */
+  skipped?: boolean
   /** Full failure diagnostics (present when instance failed) */
   failureReport?: FailureReport
   /** Per-checkpoint scoring breakdown (present when eval script outputs structured JSON) */
@@ -34,6 +37,9 @@ export interface LevelResult {
   passed: boolean
   passCount: number
   totalCount: number
+  /** Instances skipped for environment reasons; excluded from the pass/total
+   *  pass decision so a missing dependency does not fail the level. */
+  skipCount: number
   instances: InstanceResult[]
   durationMs: number
   costUsd: number

@@ -35,7 +35,9 @@ function generateL1(): MicrobenchmarkInstance {
   for (let i = 0; i < lineCount; i++) {
     lines.push(`item_${randInt(100, 999)}`)
   }
-  const content = lines.join("\n")
+  // Trailing newline so `wc -l` (which counts newline characters) reports the
+  // true line count instead of lineCount-1.
+  const content = lines.join("\n") + "\n"
 
   const commands = [
     {
