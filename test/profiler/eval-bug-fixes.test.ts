@@ -44,16 +44,19 @@ async function evalRaw(criterion: EvalCriterion): Promise<EvalResult> {
 
 const cp = (r: EvalResult, name: string) => r.checkpoints?.find((c) => c.name === name)
 
-/** Run `fn` with Math.random pinned to 0, then restore it. */
-async function withSeed0<T>(fn: () => Promise<T>): Promise<T> {
+/** Run `fn` with Math.random pinned to `value`, then restore it. */
+async function withSeed<T>(value: number, fn: () => Promise<T>): Promise<T> {
   const orig = Math.random
-  Math.random = () => 0
+  Math.random = () => value
   try {
     return await fn()
   } finally {
     Math.random = orig
   }
 }
+
+/** Run `fn` with Math.random pinned to 0 (randChoice -> index 0). */
+const withSeed0 = <T>(fn: () => Promise<T>) => withSeed(0, fn)
 
 /** Whether a python module is importable in the current test environment. */
 async function moduleInstalled(name: string): Promise<boolean> {
@@ -129,6 +132,25 @@ describe("issue #35: follow.style L3 — graded style consistency", () => {
       expect(sc?.score).toBeGreaterThanOrEqual(0.5)
       expect(sc?.score).toBeLessThan(1) // graded, not all-or-nothing
       expect(r.pass).toBe(true)
+    })
+  })
+
+  // Codex review follow-up: short markers like "art"/"oft" must use
+  // word-boundary matching so plain prose ("software" has "oft", "Part" has
+  // "art") is not over-credited as in-register.
+  test("plain prose is not falsely credited via substring markers", async () => {
+    await withSeed(0.4, async () => {
+      const inst = followStyleGen.generate("L3")
+      expect(inst.prompt).toContain("Shakespearean") // confirm the scenario
+      const r = await evalWith(inst, {
+        "response.txt":
+          "## Part 1\nThis software testing guide explains unit tests; software is often tested.\n" +
+          "## Part 2\nIntegration testing checks modules; software quality is part of the craft.\n" +
+          "## Part 3\nEnd to end testing validates the whole software flow.",
+      })
+      expect(cp(r, "marker_count")?.score).toBe(0)
+      expect(cp(r, "style_consistent")?.score).toBe(0)
+      expect(r.pass).toBe(false)
     })
   })
 })

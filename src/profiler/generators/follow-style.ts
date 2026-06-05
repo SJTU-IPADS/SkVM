@@ -209,7 +209,13 @@ cp.append({"name": "section_count", "score": 1.0 if sec_ok else 0.0,
   "reason": None if sec_ok else f"expected ${s.sections} sections, got {len(sections)}"})
 
 markers = json.loads('${markersJson}')
-found = [m for m in markers if m.lower() in text.lower()]
+# Word-boundary match so short markers (e.g. "art", "oft", "ye") are only
+# counted as standalone words, not as substrings of ordinary prose like
+# "software" (contains "oft") or "Part" (contains "art").
+def marker_hits(s):
+    low = s.lower()
+    return [m for m in markers if re.search(r'\\b' + re.escape(m.lower()) + r'\\b', low)]
+found = marker_hits(text)
 marker_ok = len(found) >= ${s.minMarkers}
 cp.append({"name": "marker_count", "score": 1.0 if marker_ok else 0.0,
   "reason": None if marker_ok else f"too few ${s.register} style markers: found {found}, need >= ${s.minMarkers}"})
@@ -218,10 +224,10 @@ if len(sections) >= ${s.sections}:
     # Graded consistency: fraction of sections carrying at least one style
     # marker. A single section using out-of-list synonyms no longer zeroes the
     # whole checkpoint -- it passes as long as the majority stay in register.
-    secs_with = sum(1 for sec in sections if any(m.lower() in sec.lower() for m in markers))
+    secs_with = sum(1 for sec in sections if marker_hits(sec))
     frac = secs_with / len(sections)
     missing = [i + 1 for i, sec in enumerate(sections)
-               if not any(m.lower() in sec.lower() for m in markers)]
+               if not marker_hits(sec)]
     cp.append({"name": "style_consistent", "score": round(frac, 3),
       "reason": None if not missing else f"sections lacking ${s.register} style markers: {missing}"})
 
