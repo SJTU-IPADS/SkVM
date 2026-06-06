@@ -10,7 +10,7 @@ Profile Tool ──TCP──> AOT Compiler ──Variant──> Runtime + Agent
  26 primitives         3 passes               JIT-boost + JIT-optimize
  L1 → L2 → L3        1: capability gaps       - code solidification (boost)
                      2: env binding           - skill content improvement (optimize)
-                     3: concurrency DAG       - opencode-based optimizer loop
+                     3: concurrency DAG       - headless-agent optimizer loop (pi / opencode)
 ```
 
 Three layers, each independently usable:
@@ -25,8 +25,8 @@ Three layers, each independently usable:
 src/
 ├── index.ts            # CLI entry — hand-rolled flag parser
 ├── core/               # Shared types, config, logging, concurrency, headless-agent helpers
-├── providers/          # LLMProvider backends (Anthropic SDK, OpenRouter)
-├── adapters/           # Five agent harness adapters (registry.ts is the single source of truth)
+├── providers/          # LLMProvider backends (Anthropic, OpenAI-compatible, OpenRouter) + auto-probe
+├── adapters/           # Seven agent harness adapters (registry.ts is the single source of truth)
 ├── profiler/           # 26 microbenchmark generators + runner
 ├── compiler/           # 3-pass AOT compiler
 ├── runtime/            # RuntimeHooks interface consumed by adapters
@@ -45,18 +45,18 @@ Shared foundation used by every other subsystem:
 - `types.ts` — TCP, SCR, `AgentAdapter`, run-result types + Zod schemas
 - `config.ts` — settings, env overrides, all cache-path constants
 - `concurrency.ts` — `Pool`, `runScheduled`, `distributeSlots` (hierarchical scheduler used by `profile` and `bench`)
-- `headless-agent.ts` — driver-based one-shot agent invoker used by `jit-boost/candidates.ts` and `jit-optimize/optimizer.ts`. Default driver: `opencode`.
+- `headless-agent/` — driver-based one-shot agent invoker used by `jit-boost/candidates.ts` and `jit-optimize`. Two drivers (`pi-driver.ts`, `opencode-driver.ts`); default is `pi` (in-process), `opencode` is the subprocess peer.
 - `cost.ts`, `logger.ts`, `conversation-logger.ts`
 
 ### Providers (`src/providers/`)
 
-Pluggable `LLMProvider` with two implementations: `anthropic.ts` (Anthropic SDK, tool_use supported) and `openrouter.ts` (OpenAI-compatible). `structured.ts` exposes `extractStructured()` with a two-layer strategy: tool_use when available, prompt + parse fallback otherwise.
+Pluggable `LLMProvider` with three route kinds: `anthropic.ts` (Anthropic SDK, tool_use supported), `openai-compatible.ts` (OpenAI / Azure / vLLM / Ollama / DeepSeek and Anthropic-compatible gateways), and `openrouter.ts`. `registry.ts` is the single chokepoint that routes a model id to a backend via `providers.routes` (first glob match wins). `structured.ts` exposes `extractStructured()` with a two-layer strategy: tool_use when available, prompt + parse fallback otherwise. For `openai-compatible` routes the provider is wrapped in an `AutoProbeProvider` (`auto-probe.ts` / `probe.ts`) that detects tool-argument pollution and can fail over to the gateway's Anthropic-shaped endpoint (disable with `SKVM_AUTO_PROBE=0`).
 
 ### Adapters (`src/adapters/`)
 
 `AgentAdapter` is the interface for agent harnesses. Each adapter runs an agent with tools against a model, optionally with `RuntimeHooks` (`beforeLLM`, `afterLLM`, `afterTool`, `afterRun`) injected for JIT monitoring and solidification.
 
-Five implementations, registered centrally in **`src/adapters/registry.ts`** — the single source of truth for `AdapterName`, `ALL_ADAPTERS`, and `createAdapter()`:
+Seven implementations, registered centrally in **`src/adapters/registry.ts`** — the single source of truth for `AdapterName`, `ALL_ADAPTERS`, and `createAdapter()`:
 
 | Adapter | Source | Notes |
 |---|---|---|
@@ -65,6 +65,8 @@ Five implementations, registered centrally in **`src/adapters/registry.ts`** —
 | `openclaw` | `openclaw.ts` | Wraps OpenClaw CLI, manages temporary agent instances. |
 | `hermes` | `hermes.ts` | Wraps the `hermes` CLI, parses session export JSON. Full token/cost usage. |
 | `jiuwenclaw` | `jiuwenclaw.ts` | Wraps `jiuwenclaw-cli` over JSON-RPC. Token/cost **not** persisted upstream — bench/profile report `$0`. Invoked via `python3 -m jiuwenclaw.app_cli` from `skvm.config.json → adapters.jiuwenclaw`. |
+| `pi` | `pi.ts` | Wraps the `pi` coding-agent CLI (`@mariozechner/pi-coding-agent`) in a per-run sandbox. |
+| `claude-code` | `claude-code.ts` | Drives the `claude -p` CLI in a sandbox; parses token/cost usage. Heavy headless use may hit account rate limits / usage-terms. |
 
 ### Profiler (`src/profiler/`)
 
@@ -113,7 +115,7 @@ The design has three orthogonal axes:
 
 **Evidence** is a unified schema fed to the optimizer regardless of task source. See [docs/skvm/](skvm/) for the full schema and round protocol.
 
-**Optimizer** runs as a **headless agent** (`core/headless-agent.ts`, default driver `opencode`):
+**Optimizer** runs as a **headless agent** (`core/headless-agent/`, default driver `pi`):
 
 1. Engine copies the skill folder to a temp workspace, serializes evidence + history into `.optimize/` as both JSON and markdown.
 2. Agent is spawned with cwd set to the workspace and uses its native tools (read/edit/write/glob/grep/bash) to edit any file — SKILL.md or bundle scripts.
@@ -122,13 +124,13 @@ The design has three orthogonal axes:
 
 `rootCause` is **required**: the optimizer must articulate the *underlying problem* it diagnosed, not just the changes it made. History entries preserve rootCause across rounds so later rounds can avoid repeating diagnoses that didn't improve scores.
 
-Adding a new agent driver (e.g. claude-code) is done by extending `core/headless-agent.ts` and plumbing the driver name through `OptimizeConfig.driver` — jit-optimize has no hard dependency on any particular agent tool.
+Adding a new agent driver is done by dropping a `*-driver.ts` under `core/headless-agent/`, extending `HeadlessAgentDriverSchema`, and plumbing the driver name through `OptimizeConfig.driver` — jit-optimize has no hard dependency on any particular agent tool.
 
 **Public API**: `jitOptimize(config)` → `JitOptimizeResult` (`proposalId`, `bestRound`, per-round stats).
 
 ### Runtime (`src/runtime/`)
 
-`runtime/types.ts` defines the `RuntimeHooks` interface (`beforeLLM`, `afterLLM`, `afterTool`, `afterRun`) consumed by the five adapters. JIT-boost is the primary producer today.
+`runtime/types.ts` defines the `RuntimeHooks` interface (`beforeLLM`, `afterLLM`, `afterTool`, `afterRun`) consumed by the adapters. JIT-boost is the primary producer today.
 
 ### Framework (`src/framework/`)
 

@@ -236,6 +236,7 @@ skvm-data/
 ├── tasks/      # 216 task directories (each contains a task.json)
 └── profiles/   # Pre-built target capability profiles
     ├── bare-agent/
+    ├── hermes/
     └── openclaw/
 ```
 

@@ -443,8 +443,8 @@ export function getProvidersConfig(): ProvidersConfig {
 let _headlessAgentConfigCache: HeadlessAgentConfig | undefined
 
 /**
- * Parsed `headlessAgent` section of skvm.config.json. Defaults
- * `{ driver: "opencode", modelPrefix: "openrouter/" }` for backward compat.
+ * Parsed `headlessAgent` section of skvm.config.json. Defaults to
+ * `{ driver: "pi" }` (see `HEADLESS_AGENT_DEFAULTS`).
  */
 export function getHeadlessAgentConfig(): HeadlessAgentConfig {
   if (_headlessAgentConfigCache) return _headlessAgentConfigCache

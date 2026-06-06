@@ -31,7 +31,7 @@ Top-level commands:
 
 ## Adapters & providers
 
-Six agent harness adapters, all registered in `src/adapters/registry.ts`:
+Seven agent harness adapters, all registered in `src/adapters/registry.ts`:
 
 - `bare-agent` — minimal built-in agent loop. Primary adapter for profiling and testing.
 - `opencode` — wraps the [OpenCode](https://github.com/sst/opencode) CLI.
@@ -39,13 +39,15 @@ Six agent harness adapters, all registered in `src/adapters/registry.ts`:
 - `hermes` — wraps the Hermes CLI. Populates full token/cost usage.
 - `jiuwenclaw` — wraps `jiuwenclaw-cli` over JSON-RPC. Token/cost are **not** persisted upstream, so bench/profile aggregators report `$0` for jiuwenclaw runs.
 - `pi` — wraps the [pi](https://shittycodingagent.ai/) CLI (`@mariozechner/pi-coding-agent`). Populates full token/cost usage via JSON mode.
+- `claude-code` — drives the `claude -p` CLI in a sandbox. Populates token/cost usage. Heavy headless use may hit account rate limits / usage-terms.
 
-All commands (`profile`, `aot-compile`, `run`, `bench`, `jit-optimize`) accept any of these six via `--adapter=<name>`.
+All commands (`profile`, `aot-compile`, `run`, `bench`, `jit-optimize`) accept any of these seven via `--adapter=<name>`.
 
-Two LLM provider backends under `src/providers/`:
+Three LLM provider route kinds under `src/providers/`, selected per model id via `providers.routes` in `skvm.config.json` — the `<provider>/` prefix on every model id picks the matching route (first glob match wins):
 
-- **Anthropic Claude API** — used for the compiler backend. Set `ANTHROPIC_API_KEY`.
-- **OpenRouter API** — used for agent execution, profiling, and most optimizer/target models. Set `OPENROUTER_API_KEY`.
+- **`anthropic`** — Anthropic Claude API, or an Anthropic-compatible gateway via a custom `baseUrl`. Set `ANTHROPIC_API_KEY`.
+- **`openai-compatible`** — OpenAI / Azure / vLLM / Ollama / DeepSeek and similar `/v1/chat/completions` gateways. Requires `baseUrl`; for these routes an auto-probe layer can fail over to an Anthropic-shaped endpoint on the same host when tool-call args are polluted (disable with `SKVM_AUTO_PROBE=0`).
+- **`openrouter`** — OpenRouter API. Set `OPENROUTER_API_KEY`.
 
 ## `profile`
 
