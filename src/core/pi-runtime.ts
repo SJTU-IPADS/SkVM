@@ -12,7 +12,7 @@
 import type { ProviderRoute } from "./types.ts"
 import { RunRecordBuilder } from "./run-record.ts"
 import { createLogger } from "./logger.ts"
-import { stripRoutingPrefix } from "./config.ts"
+import { resolveBackendModel } from "../providers/registry.ts"
 
 const log = createLogger("pi-runtime")
 
@@ -204,7 +204,7 @@ export function piEventsToRunRecord(events: PiEvent[]): RunRecordBuilder {
  */
 export function toPiModel(model: string, route: ProviderRoute): string {
   if (route.kind === "openai-compatible") {
-    return `openai/${stripRoutingPrefix(model)}`
+    return `openai/${resolveBackendModel(model)}`
   }
   return model
 }

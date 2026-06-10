@@ -4,8 +4,7 @@ import {
   eventsToRunRecord,
   resolveHeadlessOpenCodeCmd,
 } from "../../adapters/opencode.ts"
-import { resolveRoute, resolveRouteApiKey } from "../../providers/registry.ts"
-import { stripRoutingPrefix } from "../config.ts"
+import { resolveBackendModel, resolveRoute, resolveRouteApiKey } from "../../providers/registry.ts"
 import { createLogger } from "../logger.ts"
 import { buildOpenCodeConfigContent } from "../adapter-sandbox.ts"
 import {
@@ -53,7 +52,7 @@ export async function runOpenCodeDriver(
   // provider via OPENCODE_CONFIG_CONTENT so opencode knows how to reach it
   // without the user also configuring their global opencode.
   if (route.kind === "openai-compatible") {
-    envOverlay.OPENCODE_CONFIG_CONTENT = buildOpenCodeConfigContent(route, stripRoutingPrefix(opts.model))
+    envOverlay.OPENCODE_CONFIG_CONTENT = buildOpenCodeConfigContent(route, resolveBackendModel(opts.model))
     log.info(`injecting OPENCODE_CONFIG_CONTENT for route "${route.match}" (model=${opts.model})`)
   }
 

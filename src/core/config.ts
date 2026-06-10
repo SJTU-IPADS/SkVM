@@ -157,29 +157,9 @@ export function getTmpDir(): string {
 // Model id helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Drop the first `/`-separated segment of a SkVM model id. SkVM's CLI-facing
- * namespace is `<provider>/<backend-model-id>` (e.g. `openai/gpt-4o`,
- * `openrouter/anthropic/claude-sonnet-4.6`, `self/qwen3-7b`); the backend
- * provider SDKs expect just the trailing part:
- *
- *   openai/gpt-4o             → gpt-4o                      (OpenAI SDK)
- *   openrouter/anthropic/...  → anthropic/claude-sonnet-4.6 (OpenRouter native)
- *   anthropic/claude-sonnet-4 → claude-sonnet-4             (Anthropic SDK)
- *
- * No-op when there's no slash (pre-stripped or malformed id).
- */
-export function stripRoutingPrefix(modelId: string): string {
-  const slash = modelId.indexOf("/")
-  return slash >= 0 ? modelId.slice(slash + 1) : modelId
-}
-
-/** Inverse of `stripRoutingPrefix`: the leading `<provider>` segment, or the
- *  whole id when there's no slash (typo / pre-stripped id). */
-export function routingPrefix(modelIdOrMatch: string): string {
-  const slash = modelIdOrMatch.indexOf("/")
-  return slash >= 0 ? modelIdOrMatch.slice(0, slash) : modelIdOrMatch
-}
+// The `<provider>/<backend-model-id>` routing convention lives in
+// src/providers/registry.ts (`resolveBackendModel` / `routeProviderName`) —
+// no prefix string surgery happens here.
 
 /**
  * Sanitize a model ID for use in filesystem paths. One CLI id = one slug

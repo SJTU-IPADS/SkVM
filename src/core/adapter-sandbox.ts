@@ -36,8 +36,8 @@ import {
 import { createLogger } from "./logger.ts"
 import { isPidAlive } from "./file-lock.ts"
 import type { ProviderRoute } from "./types.ts"
-import { resolveRouteApiKey } from "../providers/registry.ts"
-import { routingPrefix, getTmpDir } from "./config.ts"
+import { resolveRouteApiKey, routeProviderName } from "../providers/registry.ts"
+import { getTmpDir } from "./config.ts"
 import { HEADLESS_AGENT_DEFAULTS } from "./ui-defaults.ts"
 
 const log = createLogger("adapter-sandbox")
@@ -252,7 +252,7 @@ export function buildOpenCodeConfigContent(route: ProviderRoute, bareModelId: st
 
   // Opencode provider id = first `/`-segment of the route's match glob;
   // narrow globs like `openai/gpt-4o-mini` collapse to their prefix `openai`.
-  const providerName = routingPrefix(route.match)
+  const providerName = routeProviderName(route.match)
   if (!providerName) {
     throw new Error(`buildOpenCodeConfigContent: route match "${route.match}" has no leading prefix`)
   }

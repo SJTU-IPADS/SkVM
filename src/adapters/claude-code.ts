@@ -4,8 +4,8 @@ import type { AgentAdapter, AdapterConfig, AdapterConfigMode, ProviderRoute, Run
 import { emptyTokenUsage } from "../core/types.ts"
 import { RunRecordBuilder, type ToolCallSpec } from "../core/run-record.ts"
 import { createLogger } from "../core/logger.ts"
-import { getAdapterRepoDir, getAdapterSettings, getHeadlessAgentConfig, expandHome, stripRoutingPrefix } from "../core/config.ts"
-import { envForRoute, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
+import { getAdapterRepoDir, getAdapterSettings, getHeadlessAgentConfig, expandHome } from "../core/config.ts"
+import { envForRoute, resolveBackendModel, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseClaudeCode } from "./diagnose-failure.ts"
 import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { runSubprocess } from "../core/subprocess.ts"
@@ -503,7 +503,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       symlinkIfExists(path.join(userDir, "hooks"), path.join(root, "hooks"))
       symlinkIfExists(path.join(userDir, "commands"), path.join(root, "commands"))
     } else {
-      const settingsJson = buildClaudeCodeSettingsContent(route!, stripRoutingPrefix(this.model))
+      const settingsJson = buildClaudeCodeSettingsContent(route!, resolveBackendModel(this.model))
       await Bun.write(path.join(root, "settings.json"), settingsJson)
     }
 
@@ -546,7 +546,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // Claude Code wants its model id in dash form ("claude-sonnet-4-6"); SkVM
     // canonicalizes Anthropic ids in dot form. Convert here only — the rest
     // of skvm continues to see the user-facing dot id.
-    const stripped = stripRoutingPrefix(this.model)
+    const stripped = resolveBackendModel(this.model)
     const cliModel = toClaudeCodeModelId(stripped)
 
     // `--bare` forces Anthropic auth strictly through ANTHROPIC_API_KEY (or

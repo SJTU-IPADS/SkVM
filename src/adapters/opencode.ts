@@ -5,8 +5,8 @@ import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, TokenUs
 import { RunRecordBuilder } from "../core/run-record.ts"
 import { runSubprocess } from "../core/subprocess.ts"
 import { createLogger } from "../core/logger.ts"
-import { getAdapterRepoDir, getAdapterSettings, getHeadlessAgentConfig, expandHome, stripRoutingPrefix } from "../core/config.ts"
-import { envForRoute, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
+import { getAdapterRepoDir, getAdapterSettings, getHeadlessAgentConfig, expandHome } from "../core/config.ts"
+import { envForRoute, resolveBackendModel, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseOpencode } from "./diagnose-failure.ts"
 import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
@@ -451,7 +451,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       if (route.kind === "openai-compatible") {
         envOverlay.OPENCODE_CONFIG_CONTENT = buildOpenCodeConfigContent(
           route,
-          stripRoutingPrefix(this.model),
+          resolveBackendModel(this.model),
         )
       }
     }

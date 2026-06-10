@@ -4,6 +4,8 @@ import {
   findMatchingRoute,
   createProviderForModel,
   validateModelIdForRoute,
+  resolveBackendModel,
+  routeProviderName,
 } from "../../src/providers/registry.ts"
 import { ProviderAuthError } from "../../src/providers/errors.ts"
 import type { ProviderRoute, ProvidersConfig } from "../../src/core/types.ts"
@@ -102,7 +104,42 @@ describe("findMatchingRoute", () => {
   })
 })
 
-// stripRoutingPrefix tests live alongside its canonical home in test/core/config.test.ts.
+describe("resolveBackendModel", () => {
+  test("drops the routing prefix — the backend SDK sees the trailing part", () => {
+    expect(resolveBackendModel("openai/gpt-4o")).toBe("gpt-4o")
+    expect(resolveBackendModel("anthropic/claude-sonnet-4.6")).toBe("claude-sonnet-4.6")
+    expect(resolveBackendModel("self/qwen3-7b")).toBe("qwen3-7b")
+  })
+
+  test("leaves the remainder intact for nested ids like OR's vendor/model form", () => {
+    expect(resolveBackendModel("openrouter/qwen/qwen3-30b"))
+      .toBe("qwen/qwen3-30b")
+    expect(resolveBackendModel("openrouter/anthropic/claude-sonnet-4.6"))
+      .toBe("anthropic/claude-sonnet-4.6")
+  })
+
+  test("no-op for bare ids", () => {
+    expect(resolveBackendModel("gpt-4o")).toBe("gpt-4o")
+    expect(resolveBackendModel("")).toBe("")
+  })
+})
+
+describe("routeProviderName", () => {
+  test("returns the leading provider segment of a model id", () => {
+    expect(routeProviderName("openai/gpt-4o")).toBe("openai")
+    expect(routeProviderName("openrouter/qwen/qwen3-30b")).toBe("openrouter")
+  })
+
+  test("accepts a route match glob — narrow globs collapse to their prefix", () => {
+    expect(routeProviderName("anthropic/*")).toBe("anthropic")
+    expect(routeProviderName("openai/gpt-4o-mini")).toBe("openai")
+  })
+
+  test("returns the whole string when there is no slash", () => {
+    expect(routeProviderName("gpt-4o")).toBe("gpt-4o")
+    expect(routeProviderName("")).toBe("")
+  })
+})
 
 describe("createProviderForModel", () => {
   test("falls back to DEFAULT_ROUTE (openrouter/*) when no user routes match", () => {

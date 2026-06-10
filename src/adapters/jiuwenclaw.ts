@@ -6,11 +6,11 @@ import type { AgentAdapter, AdapterConfig, RunResult, SkillBundle } from "../cor
 import { RunRecordBuilder, minimalRecord } from "../core/run-record.ts"
 import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { createLogger } from "../core/logger.ts"
-import { getAdapterRepoDir, stripRoutingPrefix } from "../core/config.ts"
+import { getAdapterRepoDir } from "../core/config.ts"
 import { acquireFileLock, releaseFileLock } from "../core/file-lock.ts"
 import { runSubprocess } from "../core/subprocess.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
-import { resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
+import { resolveBackendModel, resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseJiuwenclaw } from "./diagnose-failure.ts"
 
 const log = createLogger("jiuwenclaw")
@@ -727,7 +727,7 @@ function renderJiuwenEnv(model: string, apiKey: string | undefined): string {
   }
   const resolvedKey = apiKey ?? resolveRouteApiKey(route) ?? ""
   const baseUrl = route.baseUrl ?? "https://openrouter.ai/api/v1"
-  const modelName = stripRoutingPrefix(model)
+  const modelName = resolveBackendModel(model)
   return [
     `API_BASE="${baseUrl}"`,
     `API_KEY="${resolvedKey}"`,

@@ -1,25 +1,8 @@
 import { test, expect, describe } from "bun:test"
-import { safeModelName, stripRoutingPrefix } from "../../src/core/config.ts"
+import { safeModelName } from "../../src/core/config.ts"
 
-describe("stripRoutingPrefix", () => {
-  test("drops the first /-separated segment", () => {
-    expect(stripRoutingPrefix("openai/gpt-4o")).toBe("gpt-4o")
-    expect(stripRoutingPrefix("anthropic/claude-sonnet-4.6")).toBe("claude-sonnet-4.6")
-    expect(stripRoutingPrefix("self/qwen3-7b")).toBe("qwen3-7b")
-  })
-
-  test("leaves the remainder intact for nested ids like OR's vendor/model form", () => {
-    expect(stripRoutingPrefix("openrouter/qwen/qwen3-30b"))
-      .toBe("qwen/qwen3-30b")
-    expect(stripRoutingPrefix("openrouter/anthropic/claude-sonnet-4.6"))
-      .toBe("anthropic/claude-sonnet-4.6")
-  })
-
-  test("no-op for bare ids", () => {
-    expect(stripRoutingPrefix("gpt-4o")).toBe("gpt-4o")
-    expect(stripRoutingPrefix("")).toBe("")
-  })
-})
+// The routing-prefix convention (resolveBackendModel / routeProviderName) is
+// the provider registry's knowledge — tests live in test/providers/registry.test.ts.
 
 describe("safeModelName", () => {
   test("slugifies the full CLI id; distinct providers get distinct slugs", () => {

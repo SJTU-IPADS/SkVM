@@ -5,8 +5,8 @@ import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, SkillBu
 import { RunRecordBuilder, minimalRecord } from "../core/run-record.ts"
 import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { createLogger } from "../core/logger.ts"
-import { getAdapterRepoDir, getAdapterSettings, stripRoutingPrefix } from "../core/config.ts"
-import { envForRoute, resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
+import { getAdapterRepoDir, getAdapterSettings } from "../core/config.ts"
+import { envForRoute, resolveBackendModel, resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseHermes } from "./diagnose-failure.ts"
 import { runSubprocess } from "../core/subprocess.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
@@ -318,7 +318,7 @@ export class HermesAdapter implements AgentAdapter {
       "chat",
       "-Q",
       "-q", prompt,
-      "-m", stripRoutingPrefix(this.model),
+      "-m", resolveBackendModel(this.model),
       "-t", "terminal,file",
       "--max-turns", String(this.maxSteps),
       "--yolo",
@@ -545,7 +545,7 @@ const HERMES_DEFAULT_BASE_URL: Partial<Record<ProviderRoute["kind"], string>> = 
 const HERMES_MANAGED_CUSTOM_NAME = "skvm-managed"
 
 export function renderHermesConfig(route: ProviderRoute, model: string): string {
-  const bareModel = stripRoutingPrefix(model)
+  const bareModel = resolveBackendModel(model)
   const baseUrl = route.baseUrl ?? HERMES_DEFAULT_BASE_URL[route.kind]
 
   if (route.kind === "openai-compatible") {

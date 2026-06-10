@@ -757,7 +757,8 @@ async function configureRoute(
     })).trim() || "https://api.openai.com/v1"
 
     const derivedPrefix = derivePrefixFromUrl(baseUrl)
-    const existingPrefix = existing?.match?.split("/")[0]
+    const { routeProviderName } = await import("../providers/registry.ts")
+    const existingPrefix = existing?.match ? routeProviderName(existing.match) : undefined
     const matchPrefix = (await input({
       message: withHelp(
         "Short name for this route",
@@ -1607,15 +1608,13 @@ async function runProbeEager(modelId: string): Promise<void> {
   try {
     // Dynamic imports to avoid cli-config ↔ providers/registry circular dependency.
     const [
-      { resolveRoute, createProviderForModel },
+      { resolveRoute, createProviderForModel, resolveBackendModel },
       { inferAnthropicBaseUrl, runProbe },
       { AnthropicProvider },
-      { stripRoutingPrefix },
     ] = await Promise.all([
       import("../providers/registry.ts"),
       import("../providers/probe.ts"),
       import("../providers/anthropic.ts"),
-      import("../core/config.ts"),
     ])
 
     const route = resolveRoute(modelId)
@@ -1636,7 +1635,7 @@ async function runProbeEager(modelId: string): Promise<void> {
     const apiKey = route.apiKey ?? (route.apiKeyEnv ? process.env[route.apiKeyEnv] : undefined)
     const alt = new AnthropicProvider({
       apiKey,
-      model: stripRoutingPrefix(modelId),
+      model: resolveBackendModel(modelId),
       baseUrl: altBase,
     })
     const verdict = await runProbe({ primary: delegate, alt: () => alt })

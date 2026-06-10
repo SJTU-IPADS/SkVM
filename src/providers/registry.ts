@@ -1,6 +1,6 @@
 import type { LLMProvider } from "./types.ts"
 import type { ProviderRoute, ProvidersConfig } from "../core/types.ts"
-import { getProvidersConfig, stripRoutingPrefix } from "../core/config.ts"
+import { getProvidersConfig } from "../core/config.ts"
 import { OpenRouterProvider } from "./openrouter.ts"
 import { AnthropicProvider } from "./anthropic.ts"
 import { OpenAICompatibleProvider } from "./openai-compatible.ts"
@@ -46,6 +46,40 @@ export interface ProviderOverrides {
   baseUrl?: string
 }
 
+// ---------------------------------------------------------------------------
+// Model id ↔ routing namespace
+// ---------------------------------------------------------------------------
+
+/**
+ * The model id the backend SDK / harness should see for a given SkVM CLI
+ * model id. SkVM's CLI-facing namespace is `<provider>/<backend-model-id>`
+ * (e.g. `openai/gpt-4o`, `openrouter/anthropic/claude-sonnet-4.6`,
+ * `self/qwen3-7b`); the backend expects just the trailing part:
+ *
+ *   openai/gpt-4o             → gpt-4o                      (OpenAI SDK)
+ *   openrouter/anthropic/...  → anthropic/claude-sonnet-4.6 (OpenRouter native)
+ *   anthropic/claude-sonnet-4 → claude-sonnet-4             (Anthropic SDK)
+ *
+ * No-op when there's no slash (pre-stripped or malformed id). This is the
+ * routing convention's single home — call sites must not re-implement the
+ * string surgery.
+ */
+export function resolveBackendModel(modelId: string): string {
+  const slash = modelId.indexOf("/")
+  return slash >= 0 ? modelId.slice(slash + 1) : modelId
+}
+
+/**
+ * The provider name a model id routes under: the leading `<provider>`
+ * segment of the CLI namespace. Also accepts a route's `match` glob —
+ * narrow globs like `openai/gpt-4o-mini` collapse to their prefix `openai`.
+ * Returns the whole string when there's no slash (typo / pre-stripped id).
+ */
+export function routeProviderName(modelIdOrMatch: string): string {
+  const slash = modelIdOrMatch.indexOf("/")
+  return slash >= 0 ? modelIdOrMatch.slice(0, slash) : modelIdOrMatch
+}
+
 /**
  * Resolve a model id to its matching `ProviderRoute`. Single chokepoint for
  * "given a model id, what route applies?" — used by every subsystem that
@@ -84,7 +118,7 @@ export function resolveRoute(modelId: string): ProviderRoute {
  * setup) should wrap in try/catch to add adapter-specific context.
  */
 export function validateModelIdForRoute(modelId: string, route: ProviderRoute): void {
-  const bare = stripRoutingPrefix(modelId)
+  const bare = resolveBackendModel(modelId)
   if (!bare || /\s/.test(bare)) {
     throw new Error(`Invalid model id "${modelId}" — empty or contains whitespace after stripping routing prefix.`)
   }
@@ -163,7 +197,7 @@ export function createProviderForModel(
     const altApiKey = overrides?.apiKey ?? r.apiKey ?? (r.apiKeyEnv ? process.env[r.apiKeyEnv] : undefined)
     const altProvider: LLMProvider = new AnthropicProvider({
       apiKey: altApiKey,
-      model: stripRoutingPrefix(mid),
+      model: resolveBackendModel(mid),
       baseUrl: altBase,
     })
     const verdict = await runProbe({ primary: delegate, alt: () => altProvider })
@@ -292,7 +326,7 @@ function instantiate(
     case "openrouter":
       // OR's native ids use `<vendor>/<model>` — after stripping SkVM's
       // routing prefix (`openrouter/`) we're left with exactly that shape.
-      return new OpenRouterProvider({ apiKey, model: stripRoutingPrefix(modelId) })
+      return new OpenRouterProvider({ apiKey, model: resolveBackendModel(modelId) })
 
     case "anthropic":
       // Anthropic SDK expects a bare id ("claude-sonnet-4.6"). When the
@@ -301,7 +335,7 @@ function instantiate(
       // `/v1/messages` itself.
       return new AnthropicProvider({
         apiKey,
-        model: stripRoutingPrefix(modelId),
+        model: resolveBackendModel(modelId),
         baseUrl: overrides?.baseUrl ?? route.baseUrl,
       })
 
@@ -319,7 +353,7 @@ function instantiate(
       // with `openai/gpt-4o` passes just `gpt-4o` to the backend.
       return new OpenAICompatibleProvider({
         apiKey,
-        model: stripRoutingPrefix(modelId),
+        model: resolveBackendModel(modelId),
         baseUrl,
       })
     }

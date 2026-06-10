@@ -3,7 +3,7 @@ import { mkdir, rm, copyFile, readdir } from "node:fs/promises"
 import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, SkillBundle, ProviderRoute } from "../core/types.ts"
 import { RunRecordBuilder, type ToolCallSpec } from "../core/run-record.ts"
 import { createLogger } from "../core/logger.ts"
-import { getAdapterRepoDir, getAdapterSettings, getProvidersConfig, routingPrefix, stripRoutingPrefix } from "../core/config.ts"
+import { getAdapterRepoDir, getAdapterSettings, getProvidersConfig } from "../core/config.ts"
 import { HEADLESS_AGENT_DEFAULTS, TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import {
   createSandbox,
@@ -12,7 +12,7 @@ import {
   symlinkIfExists,
   type Sandbox,
 } from "../core/adapter-sandbox.ts"
-import { resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
+import { resolveBackendModel, resolveRoute, resolveRouteApiKey, routeProviderName, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseOpenclaw } from "./diagnose-failure.ts"
 import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { runSubprocess } from "../core/subprocess.ts"
@@ -232,9 +232,9 @@ export function renderOpenclawProviderEntries(
   routes: readonly ProviderRoute[],
   model: string,
 ): Record<string, OpenclawProviderEntry> {
-  const activePrefix = routingPrefix(model)
-  const bareModel = stripRoutingPrefix(model)
-  const route = routes.find((r) => routingPrefix(r.match) === activePrefix)
+  const activePrefix = routeProviderName(model)
+  const bareModel = resolveBackendModel(model)
+  const route = routes.find((r) => routeProviderName(r.match) === activePrefix)
   if (!route) return {}
   const baseUrl = route.baseUrl ?? defaultBaseUrl(route.kind)
   if (!baseUrl) {
@@ -514,7 +514,7 @@ export class OpenClawAdapter implements AgentAdapter {
       try {
         const raw = await Bun.file(modelsJsonPath).text()
         const doc = JSON.parse(raw) as { providers?: Record<string, unknown> }
-        const prefix = routingPrefix(this.model)
+        const prefix = routeProviderName(this.model)
         const provs = Object.keys(doc.providers ?? {})
         if (!prefix || !provs.includes(prefix)) {
           throw new Error(

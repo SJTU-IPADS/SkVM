@@ -1,4 +1,5 @@
 import type { TokenUsage } from "./types.ts"
+import { resolveBackendModel } from "../providers/registry.ts"
 
 /** Cost per million tokens for known models (input/output) */
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
@@ -37,16 +38,6 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
 }
 
 /**
- * Normalize model name by stripping provider prefix.
- * e.g. "anthropic/claude-sonnet-4.6" -> "claude-sonnet-4.6"
- *      "qwen/qwen3.5-9b" -> "qwen3.5-9b"
- */
-function normalizeModelName(model: string): string {
-  const slashIndex = model.indexOf("/")
-  return slashIndex >= 0 ? model.slice(slashIndex + 1) : model
-}
-
-/**
  * Return the cost of a single LLM call in USD.
  *
  * Prefer the authoritative `providedCostUsd` when the provider returned one
@@ -63,8 +54,8 @@ export function estimateCost(
   providedCostUsd?: number,
 ): number {
   if (providedCostUsd !== undefined) return providedCostUsd
-  const normalized = normalizeModelName(model)
-  const pricing = MODEL_PRICING[normalized]
+  // Pricing keys are backend-namespace ids, so routed ids shed their prefix.
+  const pricing = MODEL_PRICING[resolveBackendModel(model)]
   if (!pricing) return 0
   const inputCost = (tokens.input / 1_000_000) * pricing.input
   const outputCost = (tokens.output / 1_000_000) * pricing.output
