@@ -1,18 +1,5 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
-
-function sample<T>(arr: readonly T[], n: number): T[] {
-  const shuffled = [...arr].sort(() => Math.random() - 0.5)
-  return shuffled.slice(0, n)
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, type Rng } from "../generator-toolkit.ts"
 
 const NAMES = ["Alice", "Bob", "Carol", "Dave", "Eve", "Frank", "Grace", "Hank"]
 const CITIES = ["New York", "London", "Tokyo", "Paris", "Berlin", "Sydney", "Toronto", "Mumbai"]
@@ -20,33 +7,25 @@ const COLORS = ["red", "blue", "green", "yellow", "purple", "orange", "black", "
 const SKILLS = ["Python", "JavaScript", "SQL", "Docker", "Kubernetes", "React", "Node.js", "TypeScript"]
 const DEPTS = ["Engineering", "Marketing", "Sales", "HR", "Finance"]
 
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "gen.text.structured",
-  descriptions: {
-    L1: "Generate a valid flat JSON object under 500 bytes with specified field names, types, and exact values",
-    L2: "Generate a valid nested JSON object under 5KB with arrays, booleans, and nested objects matching a schema",
-    L3: "Generate a valid deeply nested JSON object over 5KB representing an organization hierarchy with departments, teams, and members",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1": return generateL1()
-      case "L2": return generateL2()
-      case "L3": return generateL3()
-    }
-  },
-}
+/**
+ * Python fragment shared by all levels: read response.txt and strip a
+ * surrounding markdown code fence if present.
+ */
+const PY_READ_RESPONSE = `text = open('response.txt').read().strip()
+bt = chr(96)
+text = re.sub(r'^' + bt*3 + r'(?:json)?\\s*', '', text)
+text = re.sub(r'\\s*' + bt*3 + r'$', '', text)`
 
 /**
  * L1: Valid JSON <500B, flat
  * The profiler writes LLM response to response.txt before running eval.
  */
-function generateL1(): MicrobenchmarkInstance {
-  const name = randChoice(NAMES)
-  const age = randInt(18, 67)
-  const city = randChoice(CITIES)
-  const active = Math.random() > 0.5
-  const color = randChoice(COLORS)
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const name = rng.randChoice(NAMES)
+  const age = rng.randInt(18, 67)
+  const city = rng.randChoice(CITIES)
+  const active = rng.random() > 0.5
+  const color = rng.randChoice(COLORS)
 
   return {
     prompt: `Respond with a JSON object with exactly these fields and values:
@@ -57,15 +36,9 @@ function generateL1(): MicrobenchmarkInstance {
 - "favorite_color": "${color}"
 
 Provide ONLY the JSON object, nothing else.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, re
-text = open('response.txt').read().strip()
-bt = chr(96)
-text = re.sub(r'^' + bt*3 + r'(?:json)?\\s*', '', text)
-text = re.sub(r'\\s*' + bt*3 + r'$', '', text)
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `${PY_READ_RESPONSE}
 match = re.search(r'\\{.*\\}', text, re.DOTALL)
 cp.append({"name": "json_valid", "score": 1.0 if match else 0.0,
   "reason": None if match else "no JSON found"})
@@ -83,20 +56,17 @@ if match:
             cp.append({"name": cname, "score": 1.0 if ok else 0.0,
               "reason": None if ok else reason})
     except json.JSONDecodeError as e:
-        cp.append({"name": "json_parse", "score": 0.0, "reason": f"invalid JSON: {e}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+        cp.append({"name": "json_parse", "score": 0.0, "reason": f"invalid JSON: {e}"})`,
+    }),
   }
 }
 
 /**
  * L2: Valid JSON <5KB, nested
  */
-function generateL2(): MicrobenchmarkInstance {
-  const N = randInt(3, 5)
-  const company = randChoice(["Acme Corp", "TechFlow", "DataPrime", "CloudNine"])
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const N = rng.randInt(3, 5)
+  const company = rng.randChoice(["Acme Corp", "TechFlow", "DataPrime", "CloudNine"])
 
   const employees: Array<{
     name: string
@@ -109,10 +79,10 @@ function generateL2(): MicrobenchmarkInstance {
   for (let i = 0; i < N; i++) {
     employees.push({
       name: NAMES[i]!,
-      department: randChoice(DEPTS),
-      skills: sample(SKILLS, randInt(2, 4)),
-      salary: randInt(40, 120) * 1000,
-      active: Math.random() > 0.3,
+      department: rng.randChoice(DEPTS),
+      skills: rng.sample(SKILLS, rng.randInt(2, 4)),
+      salary: rng.randInt(40, 120) * 1000,
+      active: rng.random() > 0.3,
     })
   }
 
@@ -130,15 +100,9 @@ ${employeeDescriptions}
 Each employee object must have: name (string), department (string), skills (array of strings), salary (number), active (boolean).
 
 Provide ONLY the JSON object, nothing else.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, re
-text = open('response.txt').read().strip()
-bt = chr(96)
-text = re.sub(r'^' + bt*3 + r'(?:json)?\\s*', '', text)
-text = re.sub(r'\\s*' + bt*3 + r'$', '', text)
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `${PY_READ_RESPONSE}
 try:
     d = json.loads(text)
     cp.append({"name": "json_valid", "score": 1.0, "reason": None})
@@ -173,21 +137,18 @@ try:
         cp.append({"name": "type_correct", "score": 1.0 if types_ok else 0.0,
           "reason": type_reason})
 except json.JSONDecodeError as e:
-    cp.append({"name": "json_valid", "score": 0.0, "reason": f"invalid JSON: {e}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+    cp.append({"name": "json_valid", "score": 0.0, "reason": f"invalid JSON: {e}"})`,
+    }),
   }
 }
 
 /**
  * L3: Valid JSON >5KB, deeply nested
  */
-function generateL3(): MicrobenchmarkInstance {
-  const D = randInt(3, 5)
-  const T = randInt(2, 4)
-  const M = randInt(3, 5)
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  const D = rng.randInt(3, 5)
+  const T = rng.randInt(2, 4)
+  const M = rng.randInt(3, 5)
 
   return {
     prompt: `Respond with a JSON object representing an organization with this structure:
@@ -205,15 +166,9 @@ function generateL3(): MicrobenchmarkInstance {
       - "joined_year": a year between 2018-2024
 
 The total output must be valid JSON and larger than 5KB. Provide ONLY the JSON, nothing else.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, re
-text = open('response.txt').read().strip()
-bt = chr(96)
-text = re.sub(r'^' + bt*3 + r'(?:json)?\\s*', '', text)
-text = re.sub(r'\\s*' + bt*3 + r'$', '', text)
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `${PY_READ_RESPONSE}
 try:
     d = json.loads(text)
     cp.append({"name": "json_valid", "score": 1.0, "reason": None})
@@ -256,12 +211,17 @@ try:
             cp.append({"name": "type_correct", "score": 1.0 if members_ok else 0.0,
               "reason": members_reason})
 except json.JSONDecodeError as e:
-    cp.append({"name": "json_valid", "score": 0.0, "reason": f"invalid JSON: {e}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+    cp.append({"name": "json_valid", "score": 0.0, "reason": f"invalid JSON: {e}"})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "gen.text.structured",
+  descriptions: {
+    L1: "Generate a valid flat JSON object under 500 bytes with specified field names, types, and exact values",
+    L2: "Generate a valid nested JSON object under 5KB with arrays, booleans, and nested objects matching a schema",
+    L3: "Generate a valid deeply nested JSON object over 5KB representing an organization hierarchy with departments, teams, and members",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

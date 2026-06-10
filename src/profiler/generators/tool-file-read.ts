@@ -1,42 +1,17 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, type Rng } from "../generator-toolkit.ts"
 
 const WORDS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]
-
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "tool.file.read",
-  descriptions: {
-    L1: "Read a single file and copy its content exactly to a new file",
-    L2: "Read multiple files (some missing) and write a per-file summary indicating content or NOT_FOUND",
-    L3: "Read a specific line range from a file (by start line and count) and write the extracted lines to a new file",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1": return generateL1()
-      case "L2": return generateL2()
-      case "L3": return generateL3()
-    }
-  },
-}
 
 /**
  * L1: Read data.txt, copy content to result.txt exactly.
  */
-function generateL1(): MicrobenchmarkInstance {
-  const lineCount = randInt(3, 8)
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const lineCount = rng.randInt(3, 8)
   const lines: string[] = []
   for (let i = 0; i < lineCount; i++) {
-    const word = randChoice(WORDS)
-    const num = randInt(100, 999)
+    const word = rng.randChoice(WORDS)
+    const num = rng.randInt(100, 999)
     lines.push(`${word}-${num}`)
   }
   const content = lines.join("\n")
@@ -46,12 +21,9 @@ function generateL1(): MicrobenchmarkInstance {
     setupFiles: {
       "data.txt": content,
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os
-cp = []
-exists = os.path.isfile('result.txt')
+    eval: pyEval({
+      imports: ["os"],
+      body: `exists = os.path.isfile('result.txt')
 cp.append({"name": "file_exists", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.txt not found"})
 if exists:
@@ -59,11 +31,8 @@ if exists:
     actual = open('result.txt').read().strip()
     ok = actual == expected
     cp.append({"name": "content_correct", "score": 1.0 if ok else 0.0,
-      "reason": None if ok else "content mismatch"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if ok else "content mismatch"})`,
+    }),
   }
 }
 
@@ -71,15 +40,15 @@ PYEOF`,
  * L2: Read files F1..FK, write "filename: content" per file, or "filename: NOT_FOUND".
  * Setup: only K-1 files exist.
  */
-function generateL2(): MicrobenchmarkInstance {
-  const K = randInt(3, 5)
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const K = rng.randInt(3, 5)
   const fileNames: string[] = []
   for (let i = 1; i <= K; i++) {
     fileNames.push(`file${i}.txt`)
   }
 
   // One file will be missing
-  const missingIdx = randInt(0, K - 1)
+  const missingIdx = rng.randInt(0, K - 1)
   const setupFiles: Record<string, string> = {}
   const expectedLines: string[] = []
 
@@ -88,7 +57,7 @@ function generateL2(): MicrobenchmarkInstance {
     if (i === missingIdx) {
       expectedLines.push(`${fname}: NOT_FOUND`)
     } else {
-      const content = `${randChoice(WORDS)}_${randInt(10, 99)}`
+      const content = `${rng.randChoice(WORDS)}_${rng.randInt(10, 99)}`
       setupFiles[fname] = content
       expectedLines.push(`${fname}: ${content}`)
     }
@@ -99,12 +68,9 @@ function generateL2(): MicrobenchmarkInstance {
   return {
     prompt: `Read these files: ${fileList}. For each file, write one line to result.txt in the format "filename: content". If a file does not exist, write "filename: NOT_FOUND" instead. One file per line, in the order listed. All files should be in the current directory.`,
     setupFiles,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os
-cp = []
-exists = os.path.isfile('result.txt')
+    eval: pyEval({
+      imports: ["os"],
+      body: `exists = os.path.isfile('result.txt')
 cp.append({"name": "file_exists", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.txt not found"})
 if exists:
@@ -121,26 +87,23 @@ if exists:
                 mismatches.append(f"expected [{exp}], got [{act}]")
         ok = len(mismatches) == 0
         cp.append({"name": "content_correct", "score": 1.0 if ok else 0.0,
-          "reason": None if ok else "; ".join(mismatches[:3])})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+          "reason": None if ok else "; ".join(mismatches[:3])})`,
+    }),
   }
 }
 
 /**
  * L3: Read data.txt starting from line S, return exactly L lines, write to result.txt.
  */
-function generateL3(): MicrobenchmarkInstance {
-  const totalLines = randInt(20, 40)
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  const totalLines = rng.randInt(20, 40)
   const lines: string[] = []
   for (let i = 0; i < totalLines; i++) {
-    lines.push(`line${i + 1}: ${randChoice(WORDS)}_${randInt(100, 999)}`)
+    lines.push(`line${i + 1}: ${rng.randChoice(WORDS)}_${rng.randInt(100, 999)}`)
   }
 
-  const startLine = randInt(5, totalLines - 10)
-  const numLines = randInt(3, Math.min(8, totalLines - startLine + 1))
+  const startLine = rng.randInt(5, totalLines - 10)
+  const numLines = rng.randInt(3, Math.min(8, totalLines - startLine + 1))
 
   const expectedLines = lines.slice(startLine - 1, startLine - 1 + numLines)
   const expectedJson = JSON.stringify(expectedLines)
@@ -150,12 +113,9 @@ function generateL3(): MicrobenchmarkInstance {
     setupFiles: {
       "data.txt": lines.join("\n"),
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os
-cp = []
-exists = os.path.isfile('result.txt')
+    eval: pyEval({
+      imports: ["os"],
+      body: `exists = os.path.isfile('result.txt')
 cp.append({"name": "file_exists", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.txt not found"})
 if exists:
@@ -172,12 +132,17 @@ if exists:
                 mismatches.append(f"line {i+1} mismatch")
         ok = len(mismatches) == 0
         cp.append({"name": "content_correct", "score": 1.0 if ok else 0.0,
-          "reason": None if ok else "; ".join(mismatches[:3])})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+          "reason": None if ok else "; ".join(mismatches[:3])})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "tool.file.read",
+  descriptions: {
+    L1: "Read a single file and copy its content exactly to a new file",
+    L2: "Read multiple files (some missing) and write a per-file summary indicating content or NOT_FOUND",
+    L3: "Read a specific line range from a file (by start line and count) and write the extracted lines to a new file",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

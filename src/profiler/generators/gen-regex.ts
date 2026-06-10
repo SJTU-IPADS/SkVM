@@ -1,13 +1,5 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, PY_EMIT_CHECKPOINTS, type Rng } from "../generator-toolkit.ts"
 
 const WORDS = [
   "error", "warning", "success", "failure", "timeout",
@@ -15,67 +7,12 @@ const WORDS = [
   "debug", "trace", "critical", "pending", "resolved",
 ]
 
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "gen.regex",
-  descriptions: {
-    L1: "Write a regex that matches strings containing a specific word as a substring",
-    L2: "Write a regex that validates a structured pattern such as email addresses, dates, or key=value pairs",
-    L3: "Write a regex using lookahead or lookbehind assertions for password validation, word boundary detection, or negative pattern exclusion",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1":
-        return generateL1()
-      case "L2":
-        return generateL2()
-      case "L3":
-        return generateL3()
-    }
-  },
-}
-
 /**
- * L1: Write regex matching strings containing word W (case-sensitive).
- * Eval: apply to test strings, verify matches.
+ * Python fragment shared by all three levels: read the regex from
+ * response.txt, strip common wrappings, and compile it (early exit with a
+ * failed checkpoint when invalid).
  */
-function generateL1(): MicrobenchmarkInstance {
-  const W = randChoice(WORDS)
-  const N = randInt(8, 15)
-
-  const testStrings: Array<{ text: string; shouldMatch: boolean }> = []
-
-  // Generate strings that should match (contain W exactly)
-  const matchCount = randInt(3, Math.min(6, N - 2))
-  for (let i = 0; i < matchCount; i++) {
-    const prefix = randChoice(["log: ", "msg: ", "event: ", "status: ", ""])
-    const suffix = randChoice([" occurred", " detected", " at line " + randInt(1, 100), "", " here"])
-    testStrings.push({ text: `${prefix}${W}${suffix}`, shouldMatch: true })
-  }
-
-  // Generate strings that should not match
-  const nonMatchWords = WORDS.filter((w) => w !== W && !w.includes(W) && !W.includes(w))
-  for (let i = 0; i < N - matchCount; i++) {
-    const word = randChoice(nonMatchWords)
-    const prefix = randChoice(["log: ", "msg: ", "event: ", "status: ", ""])
-    testStrings.push({ text: `${prefix}${word} happened`, shouldMatch: false })
-  }
-
-  // Shuffle test strings
-  testStrings.sort(() => Math.random() - 0.5)
-
-  const testData = JSON.stringify(testStrings)
-
-  return {
-    prompt: `Respond with a regular expression that matches strings containing the word "${W}" (case-sensitive, as a substring).
-
-Output ONLY the regex pattern (without delimiters or flags), nothing else.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-cp = []
-
+const PY_PARSE_AND_COMPILE = `
 pattern_text = open('response.txt').read().strip()
 # Strip common wrappings
 pattern_text = pattern_text.strip('\`').strip('/')
@@ -91,8 +28,47 @@ try:
     cp.append({"name": "regex_valid", "score": 1.0, "reason": None})
 except re.error as e:
     cp.append({"name": "regex_valid", "score": 0.0, "reason": f"invalid regex: {e}"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
+    ${PY_EMIT_CHECKPOINTS}
+    raise SystemExit(0)`
+
+/**
+ * L1: Write regex matching strings containing word W (case-sensitive).
+ * Eval: apply to test strings, verify matches.
+ */
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const W = rng.randChoice(WORDS)
+  const N = rng.randInt(8, 15)
+
+  let testStrings: Array<{ text: string; shouldMatch: boolean }> = []
+
+  // Generate strings that should match (contain W exactly)
+  const matchCount = rng.randInt(3, Math.min(6, N - 2))
+  for (let i = 0; i < matchCount; i++) {
+    const prefix = rng.randChoice(["log: ", "msg: ", "event: ", "status: ", ""])
+    const suffix = rng.randChoice([" occurred", " detected", " at line " + rng.randInt(1, 100), "", " here"])
+    testStrings.push({ text: `${prefix}${W}${suffix}`, shouldMatch: true })
+  }
+
+  // Generate strings that should not match
+  const nonMatchWords = WORDS.filter((w) => w !== W && !w.includes(W) && !W.includes(w))
+  for (let i = 0; i < N - matchCount; i++) {
+    const word = rng.randChoice(nonMatchWords)
+    const prefix = rng.randChoice(["log: ", "msg: ", "event: ", "status: ", ""])
+    testStrings.push({ text: `${prefix}${word} happened`, shouldMatch: false })
+  }
+
+  // Shuffle test strings
+  testStrings = rng.shuffle(testStrings)
+
+  const testData = JSON.stringify(testStrings)
+
+  return {
+    prompt: `Respond with a regular expression that matches strings containing the word "${W}" (case-sensitive, as a substring).
+
+Output ONLY the regex pattern (without delimiters or flags), nothing else.`,
+    eval: pyEval({
+      imports: ["re"],
+      body: `${PY_PARSE_AND_COMPILE}
 
 tests = json.loads('''${testData}''')
 for i, t in enumerate(tests):
@@ -101,12 +77,8 @@ for i, t in enumerate(tests):
         cp.append({"name": f"case_{i}", "score": 1.0, "reason": None})
     else:
         label = 'false negative' if t['shouldMatch'] else 'false positive'
-        cp.append({"name": f"case_{i}", "score": 0.0, "reason": f"{label}: {t['text']}"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+        cp.append({"name": f"case_{i}", "score": 0.0, "reason": f"{label}: {t['text']}"})`,
+    }),
   }
 }
 
@@ -114,8 +86,8 @@ PYEOF`,
  * L2: Write regex matching valid PATTERN (email, dates, key=value).
  * Eval: apply to test strings.
  */
-function generateL2(): MicrobenchmarkInstance {
-  const patternType = randChoice(["email", "date", "key_value"] as const)
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const patternType = rng.randChoice(["email", "date", "key_value"] as const)
 
   let prompt: string
   let testStrings: Array<{ text: string; shouldMatch: boolean }>
@@ -144,7 +116,7 @@ Output ONLY the regex pattern (without delimiters or flags), nothing else.`
       break
     }
     case "date": {
-      const format = randChoice(["YYYY-MM-DD", "MM/DD/YYYY"] as const)
+      const format = rng.randChoice(["YYYY-MM-DD", "MM/DD/YYYY"] as const)
       prompt =
         format === "YYYY-MM-DD"
           ? `Respond with a regular expression that matches dates in YYYY-MM-DD format where:
@@ -215,28 +187,9 @@ Output ONLY the regex pattern (without delimiters or flags), nothing else.`
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-cp = []
-
-pattern_text = open('response.txt').read().strip()
-pattern_text = pattern_text.strip('\`').strip('/')
-if pattern_text.endswith('/g') or pattern_text.endswith('/i'):
-    pattern_text = pattern_text[:-2]
-if pattern_text.endswith('/'):
-    pattern_text = pattern_text[:-1]
-if pattern_text.startswith('/'):
-    pattern_text = pattern_text[1:]
-
-try:
-    pattern = re.compile(pattern_text)
-    cp.append({"name": "regex_valid", "score": 1.0, "reason": None})
-except re.error as e:
-    cp.append({"name": "regex_valid", "score": 0.0, "reason": f"invalid regex: {e}"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
+    eval: pyEval({
+      imports: ["re"],
+      body: `${PY_PARSE_AND_COMPILE}
 
 tests = json.loads('''${testData}''')
 for i, t in enumerate(tests):
@@ -252,12 +205,8 @@ for i, t in enumerate(tests):
         cp.append({"name": f"case_{i}", "score": 1.0, "reason": None})
     else:
         label = 'false negative' if t['shouldMatch'] else 'false positive'
-        cp.append({"name": f"case_{i}", "score": 0.0, "reason": f"{label}: {t['text']}"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+        cp.append({"name": f"case_{i}", "score": 0.0, "reason": f"{label}: {t['text']}"})`,
+    }),
   }
 }
 
@@ -265,15 +214,15 @@ PYEOF`,
  * L3: Write regex with lookahead/lookbehind assertions.
  * Eval: verify matches and captured groups.
  */
-function generateL3(): MicrobenchmarkInstance {
-  const variant = randChoice(["password", "word_boundary", "negative_lookahead"] as const)
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  const variant = rng.randChoice(["password", "word_boundary", "negative_lookahead"] as const)
 
   let prompt: string
   let testStrings: Array<{ text: string; shouldMatch: boolean }>
 
   switch (variant) {
     case "password": {
-      const minLen = randInt(8, 12)
+      const minLen = rng.randInt(8, 12)
       prompt = `Respond with a regular expression that validates passwords with these requirements:
 - At least ${minLen} characters long
 - Contains at least one uppercase letter (use lookahead)
@@ -296,7 +245,7 @@ The regex must use lookahead assertions. Output ONLY the regex pattern (without 
       break
     }
     case "word_boundary": {
-      const targetWord = randChoice(["log", "set", "get", "run", "put"])
+      const targetWord = rng.randChoice(["log", "set", "get", "run", "put"])
       prompt = `Respond with a regular expression using a lookbehind and lookahead assertion that matches the word "${targetWord}" ONLY when it appears as a standalone word (not part of a larger word). Use lookahead/lookbehind for word boundary detection (e.g., preceded by non-word char or start, followed by non-word char or end).
 
 Output ONLY the regex pattern (without delimiters or flags), nothing else.`
@@ -314,7 +263,7 @@ Output ONLY the regex pattern (without delimiters or flags), nothing else.`
       break
     }
     case "negative_lookahead": {
-      const ext = randChoice([".exe", ".bat", ".sh"])
+      const ext = rng.randChoice([".exe", ".bat", ".sh"])
       prompt = `Respond with a regular expression using a negative lookahead that matches filenames (word characters and dots) that do NOT end with "${ext}". The regex should match the full filename.
 
 A filename consists of one or more word characters, optionally followed by a dot and extension. Use a negative lookahead to exclude files ending with "${ext}".
@@ -338,28 +287,9 @@ Output ONLY the regex pattern (without delimiters or flags), nothing else.`
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-cp = []
-
-pattern_text = open('response.txt').read().strip()
-pattern_text = pattern_text.strip('\`').strip('/')
-if pattern_text.endswith('/g') or pattern_text.endswith('/i'):
-    pattern_text = pattern_text[:-2]
-if pattern_text.endswith('/'):
-    pattern_text = pattern_text[:-1]
-if pattern_text.startswith('/'):
-    pattern_text = pattern_text[1:]
-
-try:
-    pattern = re.compile(pattern_text)
-    cp.append({"name": "regex_valid", "score": 1.0, "reason": None})
-except re.error as e:
-    cp.append({"name": "regex_valid", "score": 0.0, "reason": f"invalid regex: {e}"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
+    eval: pyEval({
+      imports: ["re"],
+      body: `${PY_PARSE_AND_COMPILE}
 
 tests = json.loads('''${testData}''')
 for i, t in enumerate(tests):
@@ -371,13 +301,17 @@ for i, t in enumerate(tests):
         cp.append({"name": f"case_{i}", "score": 1.0, "reason": None})
     else:
         label = 'false negative' if t['shouldMatch'] else 'false positive'
-        cp.append({"name": f"case_{i}", "score": 0.0, "reason": f"{label}: {t['text']}"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+        cp.append({"name": f"case_{i}", "score": 0.0, "reason": f"{label}: {t['text']}"})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "gen.regex",
+  descriptions: {
+    L1: "Write a regex that matches strings containing a specific word as a substring",
+    L2: "Write a regex that validates a structured pattern such as email addresses, dates, or key=value pairs",
+    L3: "Write a regex using lookahead or lookbehind assertions for password validation, word boundary detection, or negative pattern exclusion",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

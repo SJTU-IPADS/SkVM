@@ -1,69 +1,32 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, pyRunSolution, PY_EMIT_CHECKPOINTS, requirePyModule, type Rng } from "../generator-toolkit.ts"
 
 const NAMES = ["Alice", "Bob", "Carol", "Dave", "Eve", "Frank", "Grace", "Hank"]
 const DEPTS = ["Engineering", "Marketing", "Sales", "HR"]
 const REGIONS = ["North", "South", "East", "West"]
 const CATEGORIES = ["Electronics", "Clothing", "Food", "Books"]
 const QUARTERS = ["Q1", "Q2", "Q3", "Q4"]
-const AGGS: Record<string, string> = { sum: "sum", mean: "mean", count: "count" }
 
 /**
- * Python preamble that aborts the eval with an `infraError` (rather than a
- * score-0 failure) when a required third-party library is not installed. A
- * missing dependency is an environment fault, not a model capability gap, so
- * the profiler skips the instance instead of penalising the model for it.
- * Emits `json` import for the rest of the script too.
+ * Python fragment shared by all levels: verify solution.py exists and run it,
+ * early-exiting with a failed checkpoint on either problem.
  */
-function requireModule(module: string): string {
-  return `import json, importlib.util
-if importlib.util.find_spec(${JSON.stringify(module)}) is None:
-    print(json.dumps({"infraError": "gen.code.python L3 requires the ${module} library, which is not installed in the eval environment"}))
-    raise SystemExit(0)`
-}
-
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "gen.code.python",
-  descriptions: {
-    L1: "Write a Python script using basic syntax and file I/O to read a text file, filter lines matching a numeric condition, and write the count",
-    L2: "Write a Python script using standard library modules (csv, json) to read structured CSV data, compute an aggregation, and write JSON output",
-    L3: "Write a Python script using third-party libraries (pandas/numpy/openpyxl) to process data and produce structured output",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1":
-        return generateL1()
-      case "L2":
-        return generateL2()
-      case "L3":
-        return generateL3()
-    }
-  },
-}
+const PY_RUN_SOLUTION = pyRunSolution("solution.py", ["python3", "solution.py"])
 
 /**
  * L1: Basic syntax, file I/O
  * Write a Python script that reads input.txt (lines in "name:number" format),
  * counts lines with number >= T, and prints the count.
  */
-function generateL1(): MicrobenchmarkInstance {
-  const T = randInt(25, 74)
-  const N = randInt(5, 24)
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const T = rng.randInt(25, 74)
+  const N = rng.randInt(5, 24)
 
   const lines: string[] = []
   let expectedCount = 0
   for (let i = 0; i < N; i++) {
-    const name = randChoice(NAMES)
-    const value = randInt(0, 99)
+    const name = rng.randChoice(NAMES)
+    const value = rng.randInt(0, 99)
     lines.push(`${name}:${value}`)
     if (value >= T) expectedCount++
   }
@@ -73,35 +36,16 @@ function generateL1(): MicrobenchmarkInstance {
     setupFiles: {
       "input.txt": lines.join("\n"),
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, subprocess, os
-cp = []
-
-# Check script was created
-if os.path.exists('solution.py'):
-    cp.append({"name": "script_created", "score": 1.0, "reason": None})
-else:
-    cp.append({"name": "script_created", "score": 0.0, "reason": "solution.py not found"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
-
-# Execute the script
-proc = subprocess.run(['python3', 'solution.py'], capture_output=True, text=True)
-if proc.returncode == 0:
-    cp.append({"name": "execution_success", "score": 1.0, "reason": None})
-else:
-    cp.append({"name": "execution_success", "score": 0.0, "reason": f"exit code {proc.returncode}: {proc.stderr[:200]}"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
+    eval: pyEval({
+      imports: ["subprocess", "os"],
+      body: `${PY_RUN_SOLUTION}
 
 # Check result file exists
 if os.path.exists('result.txt'):
     cp.append({"name": "output_format", "score": 1.0, "reason": None})
 else:
     cp.append({"name": "output_format", "score": 0.0, "reason": "result.txt not found"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 # Check value correctness
@@ -113,12 +57,8 @@ try:
     else:
         cp.append({"name": "value_correct", "score": 0.0, "reason": f"expected ${expectedCount}, got {actual}"})
 except ValueError:
-    cp.append({"name": "value_correct", "score": 0.0, "reason": f"not an integer: {text[:100]}"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+    cp.append({"name": "value_correct", "score": 0.0, "reason": f"not an integer: {text[:100]}"})`,
+    }),
   }
 }
 
@@ -127,15 +67,15 @@ PYEOF`,
  * Write a Python script that reads data.csv (name, score, department),
  * computes average score, and writes result.json with average_score and total_employees.
  */
-function generateL2(): MicrobenchmarkInstance {
-  const N = randInt(5, 12)
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const N = rng.randInt(5, 12)
 
   const rows: string[] = ["name,score,department"]
   let totalScore = 0
   for (let i = 0; i < N; i++) {
-    const name = randChoice(NAMES) + i
-    const score = randInt(1, 100)
-    const dept = randChoice(DEPTS)
+    const name = rng.randChoice(NAMES) + i
+    const score = rng.randInt(1, 100)
+    const dept = rng.randChoice(DEPTS)
     rows.push(`${name},${score},${dept}`)
     totalScore += score
   }
@@ -149,33 +89,14 @@ function generateL2(): MicrobenchmarkInstance {
     setupFiles: {
       "data.csv": rows.join("\n"),
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, subprocess, os
-cp = []
-
-# Check script was created
-if os.path.exists('solution.py'):
-    cp.append({"name": "script_created", "score": 1.0, "reason": None})
-else:
-    cp.append({"name": "script_created", "score": 0.0, "reason": "solution.py not found"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
-
-# Execute the script
-proc = subprocess.run(['python3', 'solution.py'], capture_output=True, text=True)
-if proc.returncode == 0:
-    cp.append({"name": "execution_success", "score": 1.0, "reason": None})
-else:
-    cp.append({"name": "execution_success", "score": 0.0, "reason": f"exit code {proc.returncode}: {proc.stderr[:200]}"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
+    eval: pyEval({
+      imports: ["subprocess", "os"],
+      body: `${PY_RUN_SOLUTION}
 
 # Check result file exists and is valid JSON
 if not os.path.exists('result.json'):
     cp.append({"name": "output_format", "score": 0.0, "reason": "result.json not found"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 try:
@@ -183,7 +104,7 @@ try:
     cp.append({"name": "output_format", "score": 1.0, "reason": None})
 except Exception as e:
     cp.append({"name": "output_format", "score": 0.0, "reason": f"invalid JSON: {e}"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 # Check total_employees
@@ -204,29 +125,25 @@ try:
     else:
         cp.append({"name": "value_correct", "score": 0.0, "reason": f"expected ${expectedAvg}, got {avg}"})
 except KeyError:
-    cp.append({"name": "value_correct", "score": 0.0, "reason": "missing average_score field"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+    cp.append({"name": "value_correct", "score": 0.0, "reason": "missing average_score field"})`,
+    }),
   }
 }
 
 /**
  * L3: Third-party libraries — randomly picks one of three variants.
  */
-function generateL3(): MicrobenchmarkInstance {
-  return randChoice([generateL3Pandas, generateL3Numpy, generateL3Openpyxl])()
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  return rng.randChoice([generateL3Pandas, generateL3Numpy, generateL3Openpyxl])(rng)
 }
 
 /**
  * L3a: pandas — group by column, aggregate, write sorted CSV.
  */
-function generateL3Pandas(): MicrobenchmarkInstance {
-  const COL = randChoice(["region", "category", "quarter"] as const)
-  const AGG = randChoice(["sum", "mean", "count"] as const)
-  const N = randInt(50, 200)
+function generateL3Pandas(rng: Rng): MicrobenchmarkInstance {
+  const COL = rng.randChoice(["region", "category", "quarter"] as const)
+  const AGG = rng.randChoice(["sum", "mean", "count"] as const)
+  const N = rng.randInt(50, 200)
 
   const colValues: Record<string, string[]> = {
     region: REGIONS,
@@ -239,8 +156,8 @@ function generateL3Pandas(): MicrobenchmarkInstance {
   const groupTotals: Record<string, number[]> = {}
 
   for (let i = 0; i < N; i++) {
-    const group = randChoice(values)
-    const amount = randInt(10, 1000)
+    const group = rng.randChoice(values)
+    const amount = rng.randInt(10, 1000)
     rows.push(`${group},${amount}`)
     if (!groupTotals[group]) groupTotals[group] = []
     groupTotals[group]!.push(amount)
@@ -269,34 +186,15 @@ function generateL3Pandas(): MicrobenchmarkInstance {
     setupFiles: {
       "sales.csv": rows.join("\n"),
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-${requireModule("pandas")}
-import subprocess, os, csv
-cp = []
-
-# Check script was created
-if os.path.exists('solution.py'):
-    cp.append({"name": "script_created", "score": 1.0, "reason": None})
-else:
-    cp.append({"name": "script_created", "score": 0.0, "reason": "solution.py not found"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
-
-# Execute the script
-proc = subprocess.run(['python3', 'solution.py'], capture_output=True, text=True)
-if proc.returncode == 0:
-    cp.append({"name": "execution_success", "score": 1.0, "reason": None})
-else:
-    cp.append({"name": "execution_success", "score": 0.0, "reason": f"exit code {proc.returncode}: {proc.stderr[:200]}"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
+    eval: pyEval({
+      preamble: requirePyModule("pandas", "gen.code.python L3"),
+      imports: ["subprocess", "os", "csv"],
+      body: `${PY_RUN_SOLUTION}
 
 # Check result file exists
 if not os.path.exists('result.csv'):
     cp.append({"name": "output_format", "score": 0.0, "reason": "result.csv not found"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 try:
@@ -304,7 +202,7 @@ try:
     cp.append({"name": "output_format", "score": 1.0, "reason": None})
 except Exception as e:
     cp.append({"name": "output_format", "score": 0.0, "reason": f"invalid CSV: {e}"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 expected = ${JSON.stringify(expected)}
@@ -314,7 +212,7 @@ if len(rows) == len(expected):
     cp.append({"name": "row_count", "score": 1.0, "reason": None})
 else:
     cp.append({"name": "row_count", "score": 0.0, "reason": f"expected {len(expected)} rows, got {len(rows)}"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 # Check each group value
@@ -333,30 +231,26 @@ for i, (r, e) in enumerate(zip(rows, expected)):
             reasons.append(f"group: expected {e['group']}, got {r[group_key]}")
         if not value_ok:
             reasons.append(f"value: expected {expected_val}, got {actual}")
-        cp.append({"name": f"group_{i}_correct", "score": 0.0, "reason": "; ".join(reasons)})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+        cp.append({"name": f"group_{i}_correct", "score": 0.0, "reason": "; ".join(reasons)})`,
+    }),
   }
 }
 
 /**
  * L3b: numpy — compute per-column statistics on numeric data, write JSON.
  */
-function generateL3Numpy(): MicrobenchmarkInstance {
-  const COLS = randChoice([
+function generateL3Numpy(rng: Rng): MicrobenchmarkInstance {
+  const COLS = rng.randChoice([
     ["temperature", "humidity", "pressure"],
     ["height", "weight", "age"],
     ["latency", "throughput", "error_rate"],
   ] as const)
-  const N = randInt(30, 100)
+  const N = rng.randInt(30, 100)
 
   const header = COLS.join(",")
   const dataRows: number[][] = []
   for (let i = 0; i < N; i++) {
-    const row = COLS.map(() => Math.round((Math.random() * 200 - 50) * 100) / 100)
+    const row = COLS.map(() => Math.round((rng.random() * 200 - 50) * 100) / 100)
     dataRows.push(row)
   }
 
@@ -382,34 +276,15 @@ function generateL3Numpy(): MicrobenchmarkInstance {
     setupFiles: {
       "measurements.csv": csvRows.join("\n"),
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-${requireModule("numpy")}
-import subprocess, os
-cp = []
-
-# Check script was created
-if os.path.exists('solution.py'):
-    cp.append({"name": "script_created", "score": 1.0, "reason": None})
-else:
-    cp.append({"name": "script_created", "score": 0.0, "reason": "solution.py not found"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
-
-# Execute the script
-proc = subprocess.run(['python3', 'solution.py'], capture_output=True, text=True)
-if proc.returncode == 0:
-    cp.append({"name": "execution_success", "score": 1.0, "reason": None})
-else:
-    cp.append({"name": "execution_success", "score": 0.0, "reason": f"exit code {proc.returncode}: {proc.stderr[:200]}"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
+    eval: pyEval({
+      preamble: requirePyModule("numpy", "gen.code.python L3"),
+      imports: ["subprocess", "os"],
+      body: `${PY_RUN_SOLUTION}
 
 # Check result file exists and is valid JSON
 if not os.path.exists('result.json'):
     cp.append({"name": "output_format", "score": 0.0, "reason": "result.json not found"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 try:
@@ -417,7 +292,7 @@ try:
     cp.append({"name": "output_format", "score": 1.0, "reason": None})
 except Exception as e:
     cp.append({"name": "output_format", "score": 0.0, "reason": f"invalid JSON: {e}"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 expected = json.loads('${JSON.stringify(expected)}')
@@ -443,27 +318,23 @@ for col in expected:
     if all_stats_ok:
         cp.append({"name": f"col_{col}_values", "score": 1.0, "reason": None})
     else:
-        cp.append({"name": f"col_{col}_values", "score": 0.0, "reason": "; ".join(stat_errors)})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+        cp.append({"name": f"col_{col}_values", "score": 0.0, "reason": "; ".join(stat_errors)})`,
+    }),
   }
 }
 
 /**
  * L3c: openpyxl — read CSV, write Excel with headers and a summary total row.
  */
-function generateL3Openpyxl(): MicrobenchmarkInstance {
-  const N = randInt(5, 15)
+function generateL3Openpyxl(rng: Rng): MicrobenchmarkInstance {
+  const N = rng.randInt(5, 15)
   const rows: { name: string; department: string; salary: number }[] = []
 
   for (let i = 0; i < N; i++) {
     rows.push({
-      name: randChoice(NAMES) + i,
-      department: randChoice(DEPTS),
-      salary: randInt(3, 12) * 10000,
+      name: rng.randChoice(NAMES) + i,
+      department: rng.randChoice(DEPTS),
+      salary: rng.randInt(3, 12) * 10000,
     })
   }
 
@@ -475,34 +346,15 @@ function generateL3Openpyxl(): MicrobenchmarkInstance {
     setupFiles: {
       "employees.csv": csvRows.join("\n"),
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-${requireModule("openpyxl")}
-import subprocess, os
-cp = []
-
-# Check script was created
-if os.path.exists('solution.py'):
-    cp.append({"name": "script_created", "score": 1.0, "reason": None})
-else:
-    cp.append({"name": "script_created", "score": 0.0, "reason": "solution.py not found"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
-
-# Execute the script
-proc = subprocess.run(['python3', 'solution.py'], capture_output=True, text=True)
-if proc.returncode == 0:
-    cp.append({"name": "execution_success", "score": 1.0, "reason": None})
-else:
-    cp.append({"name": "execution_success", "score": 0.0, "reason": f"exit code {proc.returncode}: {proc.stderr[:200]}"})
-    print(json.dumps({"checkpoints": cp}))
-    raise SystemExit(0)
+    eval: pyEval({
+      preamble: requirePyModule("openpyxl", "gen.code.python L3"),
+      imports: ["subprocess", "os"],
+      body: `${PY_RUN_SOLUTION}
 
 # Check result file exists
 if not os.path.exists('result.xlsx'):
     cp.append({"name": "output_format", "score": 0.0, "reason": "result.xlsx not found"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 try:
@@ -512,7 +364,7 @@ try:
     cp.append({"name": "output_format", "score": 1.0, "reason": None})
 except Exception as e:
     cp.append({"name": "output_format", "score": 0.0, "reason": f"cannot read xlsx: {e}"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 # Check headers
@@ -546,13 +398,17 @@ try:
     else:
         cp.append({"name": "value_correct", "score": 0.0, "reason": f"expected ${totalSalary}, got {total_salary}"})
 except (TypeError, ValueError):
-    cp.append({"name": "value_correct", "score": 0.0, "reason": f"not a number: {total_salary}"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+    cp.append({"name": "value_correct", "score": 0.0, "reason": f"not a number: {total_salary}"})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "gen.code.python",
+  descriptions: {
+    L1: "Write a Python script using basic syntax and file I/O to read a text file, filter lines matching a numeric condition, and write the count",
+    L2: "Write a Python script using standard library modules (csv, json) to read structured CSV data, compute an aggregation, and write JSON output",
+    L3: "Write a Python script using third-party libraries (pandas/numpy/openpyxl) to process data and produce structured output",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})
