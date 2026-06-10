@@ -6,6 +6,7 @@ import { createSpinner, createProgressSpinner, spinnerLog } from "./core/spinner
 import { ALL_ADAPTERS, type AdapterName, createAdapter, isAdapterName } from "./adapters/registry.ts"
 import { resolveAdapterConfigMode } from "./core/config.ts"
 import { assertKnownFlags, parseSkillModeFlag } from "./core/cli-flags.ts"
+import { hasUsageTelemetry } from "./core/run-record.ts"
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "./core/ui-defaults.ts"
 import { TIMEOUT_DEFAULTS } from "./core/timeouts.ts"
 import pkgJson from "../package.json" with { type: "json" }
@@ -558,7 +559,9 @@ Notes:
     console.log(`Adapter: ${harness}`)
     console.log(`WorkDir: ${result.workDir}`)
     console.log(`Duration: ${(result.runResult.durationMs / 1000).toFixed(1)}s`)
-    console.log(`Tokens: in=${result.runResult.tokens.input} out=${result.runResult.tokens.output}`)
+    console.log(hasUsageTelemetry(result.runResult)
+      ? `Tokens: in=${result.runResult.tokens.input} out=${result.runResult.tokens.output}`
+      : `Tokens: n/a (harness reported no usage telemetry)`)
     // Surface non-ok runStatus prominently — otherwise a timed-out single-task
     // run would silently print whatever text the agent emitted before the kill
     // and no warning that the budget was violated. (`skvm run` doesn't go

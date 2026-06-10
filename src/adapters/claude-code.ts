@@ -1,11 +1,13 @@
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import type { AgentAdapter, AdapterConfig, AdapterConfigMode, ProviderRoute, RunResult, AgentStep, ToolCall, TokenUsage, SkillBundle } from "../core/types.ts"
-import { emptyTokenUsage, addTokenUsage } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, AdapterConfigMode, ProviderRoute, RunResult, TokenUsage, SkillBundle } from "../core/types.ts"
+import { emptyTokenUsage } from "../core/types.ts"
+import { RunRecordBuilder, type ToolCallSpec } from "../core/run-record.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, getHeadlessAgentConfig, expandHome, stripRoutingPrefix } from "../core/config.ts"
 import { envForRoute, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseClaudeCode } from "./diagnose-failure.ts"
+import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { runSubprocess } from "../core/subprocess.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import {
@@ -127,23 +129,16 @@ function fromClaudeUsage(u: ClaudeCodeUsage | undefined): TokenUsage {
   }
 }
 
-export function eventsToRunResult(
-  events: ClaudeCodeEvent[],
-  workDir: string,
-  durationMs: number,
-): RunResult {
-  const steps: AgentStep[] = []
-  let summedTokens = emptyTokenUsage()
+export function eventsToRunRecord(events: ClaudeCodeEvent[]): RunRecordBuilder {
+  // Claude Code dialect: text on a tool-call turn claims the final text, and
+  // tool results live only on the originating call (no standalone steps for
+  // paired ids — they arrive as separate user-role events).
+  const builder = new RunRecordBuilder({ toolCallTextIsFinal: true, stepForPairedToolResult: false })
   let resultTokens: TokenUsage | undefined
   let resultCost: number | undefined
-  let finalText = ""
   let resultText = ""
   const errors: string[] = []
   let resultIsError = false
-
-  // Track tool_use ids so user-side tool_result events can enrich the existing
-  // ToolCall in place — Claude Code emits them as separate user-role events.
-  const toolCallIndex = new Map<string, ToolCall>()
 
   for (const event of events) {
     if (event.type === "system" && event.subtype === "init") {
@@ -153,7 +148,7 @@ export function eventsToRunResult(
     if (event.type === "assistant" && event.message) {
       const msg = event.message
       const content = Array.isArray(msg.content) ? msg.content : []
-      const toolCalls: ToolCall[] = []
+      const calls: ToolCallSpec[] = []
       let textBuf = ""
       for (const c of content) {
         if (!c || typeof c !== "object") continue
@@ -161,36 +156,22 @@ export function eventsToRunResult(
           textBuf += (c as ClaudeCodeContentText).text
         } else if (c.type === "tool_use") {
           const tc = c as ClaudeCodeContentToolUse
-          const call: ToolCall = {
+          calls.push({
             id: tc.id,
             name: tc.name,
             input: (tc.input ?? {}) as Record<string, unknown>,
-          }
-          toolCalls.push(call)
-          toolCallIndex.set(call.id, call)
+          })
         }
       }
 
-      const ts = Date.now()
-      if (textBuf) {
-        finalText = textBuf
-      }
-      if (toolCalls.length > 0) {
-        steps.push({
-          role: "assistant",
-          ...(textBuf ? { text: textBuf } : {}),
-          toolCalls,
-          timestamp: ts,
-        })
+      if (calls.length > 0) {
+        builder.assistantToolCalls(calls, { text: textBuf || undefined, timestamp: Date.now() })
       } else if (textBuf) {
-        steps.push({
-          role: "assistant",
-          text: textBuf,
-          toolCalls: [],
-          timestamp: ts,
-        })
+        builder.assistantText(textBuf, Date.now())
       }
-      summedTokens = addTokenUsage(summedTokens, fromClaudeUsage(msg.usage))
+      // Only a present usage object counts as telemetry — an unconditional
+      // usage() call would mark zero-token streams as "available".
+      if (msg.usage) builder.usage(fromClaudeUsage(msg.usage))
       continue
     }
 
@@ -210,23 +191,11 @@ export function eventsToRunResult(
             .filter(Boolean)
             .join("\n")
         }
-        const existing = toolCallIndex.get(tr.tool_use_id)
-        if (existing) {
-          existing.output = outputText
-          if (tr.is_error) existing.exitCode = 1
-        } else {
-          steps.push({
-            role: "tool",
-            toolCalls: [{
-              id: tr.tool_use_id,
-              name: "",
-              input: {},
-              output: outputText,
-              ...(tr.is_error ? { exitCode: 1 } : {}),
-            }],
-            timestamp: Date.now(),
-          })
-        }
+        builder.toolResult(
+          tr.tool_use_id,
+          { name: "", output: outputText, exitCode: tr.is_error ? 1 : undefined },
+          Date.now(),
+        )
       }
       continue
     }
@@ -261,40 +230,26 @@ export function eventsToRunResult(
   // Claude Code's `result` event aggregates the whole run including server-side
   // accounting that individual assistant events sometimes miss; assistant sums
   // are the safer fallback for partial / interrupted runs.
-  const resultTotal = resultTokens
-    ? resultTokens.input + resultTokens.output + resultTokens.cacheRead + resultTokens.cacheWrite
-    : 0
-  const tokens = resultTokens && resultTotal > 0 ? resultTokens : summedTokens
-  const cost = typeof resultCost === "number" ? resultCost : 0
+  if (resultTokens) builder.usageTotalOverride(resultTokens)
+  if (typeof resultCost === "number") builder.cost(resultCost)
+  builder.textFallback(resultText)
 
-  const noOutput = steps.length === 0
-  const text = finalText || resultText
-  const statusDetail = noOutput
-    ? errors.length > 0
-      ? `claude-code emitted ${errors.length} error(s) and no steps — telemetry only`
-      : `claude-code produced no parseable steps — telemetry only, workDir scored as-is`
-    : undefined
+  const noOutput = builder.stepCount === 0
+  builder.parseNote({
+    statusDetail: noOutput
+      ? errors.length > 0
+        ? `claude-code emitted ${errors.length} error(s) and no steps — telemetry only`
+        : `claude-code produced no parseable steps — telemetry only, workDir scored as-is`
+      : undefined,
+    adapterError: errors.length > 0 && noOutput
+      ? {
+          exitCode: resultIsError ? 1 : 0,
+          stderr: errors.join("; ") || "claude-code error (no details)",
+        }
+      : undefined,
+  })
 
-  const result: RunResult = {
-    text,
-    steps,
-    tokens,
-    cost,
-    durationMs,
-    llmDurationMs: 0,
-    workDir,
-    runStatus: "ok",
-    ...(statusDetail ? { statusDetail } : {}),
-  }
-
-  if (errors.length > 0 && noOutput) {
-    result.adapterError = {
-      exitCode: resultIsError ? 1 : 0,
-      stderr: errors.join("; ") || "claude-code error (no details)",
-    }
-  }
-
-  return result
+  return builder
 }
 
 // ---------------------------------------------------------------------------
@@ -650,31 +605,23 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       }
     }
 
-    const result = eventsToRunResult(events, task.workDir, durationMs)
-    if (skillLoaded !== undefined) {
-      result.skillLoaded = skillLoaded
-    }
-    if (timedOut) {
-      result.runStatus = "timeout"
-      result.statusDetail = `claude-code subprocess killed after ${task.timeoutMs ?? this.timeoutMs}ms`
-    } else if (exitCode !== 0) {
-      result.runStatus = "adapter-crashed"
-      result.statusDetail = `claude-code exited with code ${exitCode}`
-    }
-    if (exitCode !== 0) {
-      result.adapterError = { exitCode, stderr: stderr.slice(0, 2000) }
-      const diagnosis = await diagnoseClaudeCode({
+    const builder = eventsToRunRecord(events)
+    const verdict = await subprocessVerdict({
+      label: "claude-code",
+      timedOut,
+      exitCode,
+      timeoutMs: task.timeoutMs ?? this.timeoutMs,
+      stderr,
+      diagnose: () => diagnoseClaudeCode({
         sandboxRoot: this.sandbox?.root ?? "",
         stdout,
         stderr,
         exitCode,
-      })
-      if (diagnosis) {
-        result.adapterError.diagnosis = diagnosis
-        log.warn(`${diagnosis.summary}${diagnosis.hint ? `\n  ${diagnosis.hint}` : ""}`)
-      }
-    }
-    return result
+      }),
+      warn: (msg) => log.warn(msg),
+    })
+
+    return builder.finish({ workDir: task.workDir, durationMs, skillLoaded, ...verdict })
   }
 
   async teardown(): Promise<void> {

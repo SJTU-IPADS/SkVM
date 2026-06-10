@@ -8,6 +8,7 @@ import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, getHeadlessAgentConfig, expandHome, stripRoutingPrefix } from "../core/config.ts"
 import { envForRoute, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseOpencode } from "./diagnose-failure.ts"
+import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import {
   createSandbox,
@@ -48,11 +49,7 @@ export function parseNDJSON(output: string): OpenCodeEvent[] {
   return events
 }
 
-export function eventsToRunResult(
-  events: OpenCodeEvent[],
-  workDir: string,
-  durationMs: number,
-): RunResult {
+export function eventsToRunRecord(events: OpenCodeEvent[]): RunRecordBuilder {
   const builder = new RunRecordBuilder()
   const errors: string[] = []
 
@@ -63,12 +60,12 @@ export function eventsToRunResult(
       builder.assistantText((part.text as string) ?? "", event.timestamp ?? Date.now())
     } else if (event.type === "tool_use") {
       const state = (part.state as Record<string, unknown>) ?? {}
-      builder.toolStep({
+      builder.toolStep([{
         id: (part.callID as string) ?? (part.id as string) ?? `tc-${Date.now()}`,
         name: (part.tool as string) ?? (part.name as string) ?? "",
         input: (state.input as Record<string, unknown>) ?? {},
         output: (state.output as string) ?? (state.error as string) ?? undefined,
-      }, event.timestamp ?? Date.now())
+      }], event.timestamp ?? Date.now())
     } else if (event.type === "step_finish") {
       // OpenCode puts token usage and cost in step_finish events
       const usage = parseStepFinishUsage(part)
@@ -93,21 +90,18 @@ export function eventsToRunResult(
   // opencode's NDJSON serializer was simply broken or off, even though the
   // agent had finished cleanly.
   const noOutput = builder.stepCount === 0
-  const statusDetail = noOutput
-    ? errors.length > 0
-      ? `opencode emitted ${errors.length} error event(s) and no steps — telemetry only`
-      : `opencode produced no parseable events — telemetry only, workDir scored as-is`
-    : undefined
-
-  return builder.finish({
-    workDir,
-    durationMs,
-    statusDetail,
+  builder.parseNote({
+    statusDetail: noOutput
+      ? errors.length > 0
+        ? `opencode emitted ${errors.length} error event(s) and no steps — telemetry only`
+        : `opencode produced no parseable events — telemetry only, workDir scored as-is`
+      : undefined,
     // Surface error events as adapterError when the agent produced no useful output
     adapterError: errors.length > 0 && noOutput
       ? { exitCode: 1, stderr: errors.join("; ") || "opencode error (no details)" }
       : undefined,
   })
+  return builder
 }
 
 /**
@@ -580,32 +574,23 @@ export class OpenCodeAdapter implements AgentAdapter {
       }
     }
 
-    const result = eventsToRunResult(events, task.workDir, durationMs)
-    if (skillLoaded !== undefined) {
-      result.skillLoaded = skillLoaded
-    }
-    // Subprocess-level failure overrides whatever eventsToRunResult decided.
-    if (timedOut) {
-      result.runStatus = "timeout"
-      result.statusDetail = `opencode subprocess killed after ${task.timeoutMs ?? this.timeoutMs}ms`
-    } else if (exitCode !== 0) {
-      result.runStatus = "adapter-crashed"
-      result.statusDetail = `opencode exited with code ${exitCode}`
-    }
-    if (exitCode !== 0) {
-      result.adapterError = { exitCode, stderr: stderr.slice(0, 2000) }
-      const diagnosis = await diagnoseOpencode({
+    const builder = eventsToRunRecord(events)
+    const verdict = await subprocessVerdict({
+      label: "opencode",
+      timedOut,
+      exitCode,
+      timeoutMs: task.timeoutMs ?? this.timeoutMs,
+      stderr,
+      diagnose: () => diagnoseOpencode({
         sandboxRoot: this.sandbox?.root ?? "",
         stdout,
         stderr,
         exitCode,
-      })
-      if (diagnosis) {
-        result.adapterError.diagnosis = diagnosis
-        log.warn(`${diagnosis.summary}${diagnosis.hint ? `\n  ${diagnosis.hint}` : ""}`)
-      }
-    }
-    return result
+      }),
+      warn: (msg) => log.warn(msg),
+    })
+
+    return builder.finish({ workDir: task.workDir, durationMs, skillLoaded, ...verdict })
   }
 
   async teardown(): Promise<void> {

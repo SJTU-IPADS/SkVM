@@ -1,7 +1,7 @@
 import path from "node:path"
 import {
   parseNDJSON,
-  eventsToRunResult,
+  eventsToRunRecord,
   resolveHeadlessOpenCodeCmd,
 } from "../../adapters/opencode.ts"
 import { resolveRoute, resolveRouteApiKey } from "../../providers/registry.ts"
@@ -69,7 +69,7 @@ export async function runOpenCodeDriver(
   // Extract cost + tokens from the structured output. opencode emits NDJSON;
   // other drivers would parse their own format here.
   const events = parseNDJSON(stdout)
-  const runStats = eventsToRunResult(events, cwd, durationMs)
+  const runStats = eventsToRunRecord(events).finish({ workDir: cwd, durationMs })
 
   return {
     exitCode,

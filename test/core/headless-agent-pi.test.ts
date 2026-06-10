@@ -38,7 +38,7 @@ mock.module("@mariozechner/pi-coding-agent", () => {
             if (promptDelayMs > 0) {
               await new Promise(r => setTimeout(r, promptDelayMs))
             }
-            // Emit a synthetic agent_end so piEventsToRunResult has data.
+            // Emit a synthetic agent_end so piEventsToRunRecord has data.
             if (promptShouldError) {
               lastSubscribe?.({
                 type: "agent_end",

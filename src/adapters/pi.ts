@@ -11,6 +11,7 @@ import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings } from "../core/config.ts"
 import { envForRoute, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
 import { runSubprocess } from "../core/subprocess.ts"
+import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import {
   createSandbox,
@@ -21,7 +22,7 @@ import {
 } from "../core/adapter-sandbox.ts"
 import {
   parsePiNDJSON,
-  piEventsToRunResult,
+  piEventsToRunRecord,
   toPiModel,
   renderPiBaseUrlOverride,
 } from "../core/pi-runtime.ts"
@@ -269,15 +270,15 @@ export class PiAdapter implements AgentAdapter {
     }
 
     const events = parsePiNDJSON(stdout)
-    const result = piEventsToRunResult(events, task.workDir, durationMs)
+    const builder = piEventsToRunRecord(events)
 
     if (task.skill && skillLoaded === false) {
       const skillSnippet = task.skill.content.replace(/^#.*\n/m, "").trim().slice(0, 60)
-      if (task.skill.mode === "inject" && result.steps.length > 0) {
+      if (task.skill.mode === "inject" && builder.stepCount > 0) {
         skillLoaded = true
       }
       if (!skillLoaded && skillSnippet.length > 20) {
-        for (const step of result.steps) {
+        for (const step of builder.stepsSoFar) {
           if (step.role === "assistant" && step.text?.includes(skillSnippet)) {
             skillLoaded = true
             break
@@ -286,22 +287,15 @@ export class PiAdapter implements AgentAdapter {
       }
     }
 
-    if (skillLoaded !== undefined) {
-      result.skillLoaded = skillLoaded
-    }
+    const verdict = await subprocessVerdict({
+      label: "pi",
+      timedOut,
+      exitCode,
+      timeoutMs: task.timeoutMs ?? this.timeoutMs,
+      stderr,
+    })
 
-    if (timedOut) {
-      result.runStatus = "timeout"
-      result.statusDetail = `pi subprocess killed after ${task.timeoutMs ?? this.timeoutMs}ms`
-    } else if (exitCode !== 0) {
-      result.runStatus = "adapter-crashed"
-      result.statusDetail = `pi exited with code ${exitCode}`
-    }
-    if (exitCode !== 0) {
-      result.adapterError = { exitCode, stderr: stderr.slice(0, 2000) }
-    }
-
-    return result
+    return builder.finish({ workDir: task.workDir, durationMs, skillLoaded, ...verdict })
   }
 
   async teardown(): Promise<void> {

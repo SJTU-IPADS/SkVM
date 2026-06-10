@@ -1,27 +1,27 @@
 import { test, expect, describe } from "bun:test"
-import { buildMinimalResult, parseHermesSession } from "../../src/adapters/hermes.ts"
+import { buildMinimalRecord, parseHermesSession } from "../../src/adapters/hermes.ts"
 
 // Regression coverage for docs/skvm/bench-adapter-error-false-positive.md.
 // The full `.run()` method orchestrates real subprocesses; these tests
 // exercise the building blocks most likely to regress:
-//   - buildMinimalResult propagates the runStatus passed by the caller
+//   - buildMinimalRecord + finish() propagates the run-level verdict
 //   - parseHermesSession stamps 'ok' on the happy path
 // (subprocess timeout semantics are covered in test/core/subprocess.test.ts)
 
-describe("hermes: buildMinimalResult", () => {
-  test("timeout path — runStatus=timeout, no tokens", () => {
-    const r = buildMinimalResult(
-      "some partial stdout\nsession_id: abc",
-      "/tmp/wd",
-      300004,
-      "timeout",
-      "hermes chat subprocess killed after 300000ms",
-    )
+describe("hermes: buildMinimalRecord", () => {
+  test("timeout path — runStatus=timeout, usage unavailable", () => {
+    const r = buildMinimalRecord("some partial stdout\nsession_id: abc").finish({
+      workDir: "/tmp/wd",
+      durationMs: 300004,
+      runStatus: "timeout",
+      statusDetail: "hermes chat subprocess killed after 300000ms",
+    })
     expect(r.runStatus).toBe("timeout")
     expect(r.statusDetail).toContain("300000ms")
     expect(r.tokens.input).toBe(0)
     expect(r.tokens.output).toBe(0)
     expect(r.cost).toBe(0)
+    expect(r.usageAvailable).toBe(false)
     expect(r.durationMs).toBe(300004)
     expect(r.workDir).toBe("/tmp/wd")
     // The session_id trailer is stripped from the displayable text
@@ -29,26 +29,43 @@ describe("hermes: buildMinimalResult", () => {
   })
 
   test("adapter-crashed path — runStatus=adapter-crashed", () => {
-    const r = buildMinimalResult("", "/tmp/wd", 42, "adapter-crashed", "exited 1")
+    const r = buildMinimalRecord("").finish({
+      workDir: "/tmp/wd",
+      durationMs: 42,
+      runStatus: "adapter-crashed",
+      statusDetail: "exited 1",
+    })
     expect(r.runStatus).toBe("adapter-crashed")
     expect(r.statusDetail).toBe("exited 1")
     expect(r.steps).toHaveLength(0)
   })
 
-  test("clean-exit reduced-telemetry path — runStatus=ok", () => {
+  test("clean-exit reduced-telemetry path — runStatus=ok with parser note", () => {
     // Regression for round-3 Codex P1/P2: when the chat subprocess exits
     // cleanly but auxiliary telemetry (session_id trailer / sessions export)
     // is unavailable, the run should still be 'ok' so the runner gate
     // evaluates the workDir. Marking these as parse-failed (round-2 behavior)
     // forced false negatives on environments where the binary doesn't print
     // the trailer or where `sessions export` is broken.
-    const r = buildMinimalResult("hello from agent", "/tmp/wd", 10, "ok",
+    const r = buildMinimalRecord("hello from agent",
       "hermes sessions export exited 1 — telemetry unavailable")
+      .finish({ workDir: "/tmp/wd", durationMs: 10 })
     expect(r.runStatus).toBe("ok")
     expect(r.statusDetail).toContain("telemetry unavailable")
     expect(r.steps).toHaveLength(1)
     expect(r.steps[0]!.role).toBe("assistant")
     expect(r.text).toBe("hello from agent")
+  })
+
+  test("run-level verdict beats the parser note", () => {
+    const r = buildMinimalRecord("partial", "parser-level note").finish({
+      workDir: "/tmp/wd",
+      durationMs: 1,
+      runStatus: "timeout",
+      statusDetail: "killed",
+    })
+    expect(r.runStatus).toBe("timeout")
+    expect(r.statusDetail).toBe("killed")
   })
 })
 
@@ -84,12 +101,11 @@ describe("hermes: parseHermesSession", () => {
           reasoning: null,
         }],
       },
-      "/tmp/wd",
-      1000,
-    )
+    ).finish({ workDir: "/tmp/wd", durationMs: 1000 })
     expect(r.runStatus).toBe("ok")
     expect(r.tokens.input).toBe(100)
     expect(r.tokens.output).toBe(50)
     expect(r.cost).toBe(0.01)
+    expect(r.usageAvailable).toBe(true)
   })
 })

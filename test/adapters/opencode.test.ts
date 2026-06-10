@@ -2,7 +2,7 @@ import { test, expect, describe, beforeEach, afterEach } from "bun:test"
 import { mkdtemp, rm, mkdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { parseNDJSON, eventsToRunResult, OpenCodeAdapter, type OpenCodeEvent } from "../../src/adapters/opencode.ts"
+import { parseNDJSON, eventsToRunRecord, OpenCodeAdapter, type OpenCodeEvent } from "../../src/adapters/opencode.ts"
 
 describe("parseNDJSON", () => {
   test("parses valid NDJSON lines", () => {
@@ -41,14 +41,14 @@ describe("parseNDJSON", () => {
   })
 })
 
-describe("eventsToRunResult", () => {
+describe("eventsToRunRecord", () => {
   test("extracts text from text events", () => {
     const events: OpenCodeEvent[] = [
       { type: "text", timestamp: 1000, part: { text: "First response" } },
       { type: "text", timestamp: 2000, part: { text: "Final response" } },
     ]
 
-    const result = eventsToRunResult(events, "/tmp/work", 5000)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 5000 })
     expect(result.text).toBe("Final response")
     expect(result.steps.length).toBe(2)
     expect(result.steps[0]!.role).toBe("assistant")
@@ -89,7 +89,7 @@ describe("eventsToRunResult", () => {
       },
     ]
 
-    const result = eventsToRunResult(events, "/tmp/work", 3000)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 3000 })
     expect(result.steps.length).toBe(2)
     expect(result.steps[0]!.role).toBe("tool")
     expect(result.steps[0]!.toolCalls[0]!.id).toBe("call-1")
@@ -128,7 +128,7 @@ describe("eventsToRunResult", () => {
       },
     ]
 
-    const result = eventsToRunResult(events, "/tmp/work", 3000)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 3000 })
     expect(result.text).toBe("Done")
     expect(result.tokens.input).toBe(15910)
     expect(result.tokens.output).toBe(25)
@@ -150,7 +150,7 @@ describe("eventsToRunResult", () => {
       { type: "step_finish", timestamp: 1400 },
     ]
 
-    const result = eventsToRunResult(events, "/tmp/work", 500)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 500 })
     expect(result.text).toBe("Done! The result is ready.")
     // step_start and step_finish produce no steps
     expect(result.steps.length).toBe(3)
@@ -160,7 +160,7 @@ describe("eventsToRunResult", () => {
   })
 
   test("handles empty events", () => {
-    const result = eventsToRunResult([], "/tmp/work", 0)
+    const result = eventsToRunRecord([]).finish({ workDir: "/tmp/work", durationMs: 0 })
     expect(result.text).toBe("")
     expect(result.steps).toEqual([])
     expect(result.tokens.input).toBe(0)
@@ -182,7 +182,7 @@ describe("eventsToRunResult", () => {
       },
     ]
 
-    const result = eventsToRunResult(events, "/tmp/work", 100)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 100 })
     expect(result.steps[0]!.toolCalls[0]!.id).toBe("prt-fallback")
     expect(result.steps[0]!.toolCalls[0]!.name).toBe("glob")
     expect(result.steps[0]!.toolCalls[0]!.input).toEqual({ pattern: "*.ts" })
@@ -195,7 +195,7 @@ describe("eventsToRunResult", () => {
       { type: "text", part: { text: "Recovered" } },
     ]
 
-    const result = eventsToRunResult(events, "/tmp/work", 100)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 100 })
     expect(result.steps.length).toBe(2) // only text events
     expect(result.text).toBe("Recovered")
   })

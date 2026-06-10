@@ -2,8 +2,9 @@ import { mkdir, copyFile, writeFile, unlink } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import net from "node:net"
-import type { AgentAdapter, AdapterConfig, RunResult, AgentStep, ToolCall, SkillBundle } from "../core/types.ts"
-import { emptyTokenUsage } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, RunResult, SkillBundle } from "../core/types.ts"
+import { RunRecordBuilder, minimalRecord } from "../core/run-record.ts"
+import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, stripRoutingPrefix } from "../core/config.ts"
 import { acquireFileLock, releaseFileLock } from "../core/file-lock.ts"
@@ -90,14 +91,11 @@ interface HistoryRecord {
  * totals, proposal meta, profile cost summaries) will therefore under-report
  * spend for jiuwenclaw runs until upstream adds usage persistence.
  */
-export function parseJiuwenClawHistory(
-  records: HistoryRecord[],
-  workDir: string,
-  durationMs: number,
-): RunResult {
-  const steps: AgentStep[] = []
-  let finalText = ""
-  const toolCallMap = new Map<string, ToolCall>()
+export function parseJiuwenClawHistory(records: HistoryRecord[]): RunRecordBuilder {
+  const builder = new RunRecordBuilder()
+  // Note: jiuwenclaw never calls builder.usage()/cost() — the upstream CLI
+  // does not persist token/cost data, so the record finishes with
+  // usageAvailable: false and consumers render "n/a" instead of $0.
 
   for (const rec of records) {
     if (rec.role === "user") continue
@@ -118,71 +116,37 @@ export function parseJiuwenClawHistory(
         input = rawArgs as Record<string, unknown>
       }
 
-      const toolCall: ToolCall = { id, name, input }
-      toolCallMap.set(id, toolCall)
-
-      steps.push({
-        role: "assistant",
-        toolCalls: [toolCall],
-        timestamp: rec.timestamp * 1000,
-      })
+      builder.assistantToolCalls([{ id, name, input }], { timestamp: rec.timestamp * 1000 })
     } else if (et === "chat.tool_result") {
       // Tool result event — payload: {event_type, result, tool_name, tool_call_id}
       const result = (payload.result as string) ?? rec.content ?? ""
       const toolName = (payload.tool_name as string) ?? ""
       const toolCallId = (payload.tool_call_id as string) ?? ""
 
-      // Enrich matching ToolCall
-      if (toolCallId) {
-        const tc = toolCallMap.get(toolCallId)
-        if (tc) tc.output = result
-      }
-
-      steps.push({
-        role: "tool",
-        toolCalls: [{
-          id: toolCallId || `tr-${rec.timestamp}`,
-          name: toolName,
-          input: {},
-          output: result,
-        }],
-        timestamp: rec.timestamp * 1000,
-      })
+      builder.toolResult(
+        toolCallId || `tr-${rec.timestamp}`,
+        { name: toolName, output: result },
+        rec.timestamp * 1000,
+      )
     } else if (et === "chat.final") {
-      finalText = rec.content
-      steps.push({
-        role: "assistant",
-        text: rec.content,
-        toolCalls: [],
-        timestamp: rec.timestamp * 1000,
-      })
+      builder.assistantText(rec.content, rec.timestamp * 1000)
     } else if (et === "chat.error") {
       log.warn(`JiuwenClaw error event: ${rec.content}`)
     }
     // Skip chat.delta, chat.processing_status, etc.
   }
 
-  // Fallback: if no chat.final, use the last assistant content
-  if (!finalText) {
-    for (let i = records.length - 1; i >= 0; i--) {
-      const rec = records[i]!
-      if (rec.role === "assistant" && rec.content && rec.event_type !== "chat.tool_call") {
-        finalText = rec.content
-        break
-      }
+  // Fallback when no chat.final exists: the last assistant content from ANY
+  // record — stream deltas included, which never become steps.
+  for (let i = records.length - 1; i >= 0; i--) {
+    const rec = records[i]!
+    if (rec.role === "assistant" && rec.content && rec.event_type !== "chat.tool_call") {
+      builder.textFallback(rec.content)
+      break
     }
   }
 
-  return {
-    text: finalText,
-    steps,
-    tokens: emptyTokenUsage(),
-    cost: 0,
-    durationMs,
-    llmDurationMs: 0,
-    workDir,
-    runStatus: "ok",
-  }
+  return builder
 }
 
 // ---------------------------------------------------------------------------
@@ -447,21 +411,21 @@ export class JiuwenClawAdapter implements AgentAdapter {
     // upstream CLI does not always persist token/cost data — this branch is
     // jiuwenclaw's normal reduced-telemetry mode, NOT a failure. See round-3
     // Codex review for the regression that drove this fix.
-    let result: RunResult
+    let builder: RunRecordBuilder
     const historyFile = Bun.file(historyPath)
     if (await historyFile.exists()) {
       try {
         const historyData = await historyFile.json() as HistoryRecord[]
-        result = parseJiuwenClawHistory(historyData, task.workDir, durationMs)
+        builder = parseJiuwenClawHistory(historyData)
         log.debug(`Parsed ${historyData.length} history records from ${historyPath}`)
       } catch (err) {
         log.warn(`Failed to parse jiuwenclaw history.json: ${err}`)
-        result = buildMinimalResult(responseText, task.workDir, durationMs, "ok",
+        builder = minimalRecord(responseText,
           `jiuwenclaw history.json invalid: ${String(err).slice(0, 200)} — telemetry unavailable, workDir scored as-is`)
       }
     } else {
       log.debug(`No history.json found at ${historyPath}, using JSON-RPC response only`)
-      result = buildMinimalResult(responseText, task.workDir, durationMs, "ok",
+      builder = minimalRecord(responseText,
         `jiuwenclaw history.json not written at ${historyPath} — telemetry unavailable, workDir scored as-is`)
     }
 
@@ -489,50 +453,39 @@ export class JiuwenClawAdapter implements AgentAdapter {
     // --- Verify skill loaded ---
     if (task.skill && skillLoaded === false) {
       // Inject: if agent produced any steps, skill was loaded (it's in the prompt)
-      if (result.steps.length > 0) {
+      if (builder.stepCount > 0) {
         skillLoaded = true
       }
       // Check if response text references skill content
       if (!skillLoaded) {
         const skillSnippet = task.skill.content.replace(/^#.*\n/m, "").trim().slice(0, 60)
-        if (skillSnippet.length > 20 && result.text.includes(skillSnippet)) {
+        if (skillSnippet.length > 20 && builder.previewText().includes(skillSnippet)) {
           skillLoaded = true
         }
       }
     }
 
-    if (skillLoaded !== undefined) {
-      result.skillLoaded = skillLoaded
-    }
     // jiuwenclaw's app_cli + acp_channel log INFO messages to stderr as a
     // matter of course (e.g. "[CLI] starting ACP stdio gateway"), so we can't
     // treat a non-empty stderr as a failure. Only exitCode != 0 is a real
-    // error — the parsed RunResult is authoritative.
-    //
-    // Subprocess-level failure overrides any earlier 'ok' / 'parse-failed'
-    // status that buildMinimalResult / parseJiuwenClawHistory may have set.
-    if (timedOut) {
-      result.runStatus = "timeout"
-      result.statusDetail = `jiuwenclaw subprocess killed after ${task.timeoutMs ?? this.timeoutMs}ms`
-    } else if (exitCode !== 0) {
-      result.runStatus = "adapter-crashed"
-      result.statusDetail = `jiuwenclaw exited with code ${exitCode}`
-    }
-    if (exitCode !== 0) {
-      result.adapterError = { exitCode, stderr: stderr.slice(0, 2000) }
-      const diagnosis = await diagnoseJiuwenclaw({
+    // error — the parsed record is authoritative.
+    const verdict = await subprocessVerdict({
+      label: "jiuwenclaw",
+      timedOut,
+      exitCode,
+      timeoutMs: task.timeoutMs ?? this.timeoutMs,
+      stderr,
+      diagnose: () => diagnoseJiuwenclaw({
         sandboxRoot: JIUWEN_DIR,
         sessionId: responseSessionId,
         stdout,
         stderr,
         exitCode,
-      })
-      if (diagnosis) {
-        result.adapterError.diagnosis = diagnosis
-        log.warn(`${diagnosis.summary}${diagnosis.hint ? `\n  ${diagnosis.hint}` : ""}`)
-      }
-    }
-    return result
+      }),
+      warn: (msg) => log.warn(msg),
+    })
+
+    return builder.finish({ workDir: task.workDir, durationMs, skillLoaded, ...verdict })
   }
 
   async teardown(): Promise<void> {
@@ -887,22 +840,3 @@ function installProcessExitHook(): void {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildMinimalResult(
-  text: string,
-  workDir: string,
-  durationMs: number,
-  runStatus: RunResult["runStatus"],
-  statusDetail?: string,
-): RunResult {
-  return {
-    text,
-    steps: text ? [{ role: "assistant", text, toolCalls: [], timestamp: Date.now() }] : [],
-    tokens: emptyTokenUsage(),
-    cost: 0,
-    durationMs,
-    llmDurationMs: 0,
-    workDir,
-    runStatus,
-    ...(statusDetail ? { statusDetail } : {}),
-  }
-}

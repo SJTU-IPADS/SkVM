@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test"
 import {
   parseClaudeCodeStreamJSON,
-  eventsToRunResult,
+  eventsToRunRecord,
   ClaudeCodeAdapter,
   toClaudeCodeModelId,
   detectSkillInject,
@@ -55,7 +55,7 @@ describe("parseClaudeCodeStreamJSON", () => {
   })
 })
 
-describe("eventsToRunResult", () => {
+describe("eventsToRunRecord", () => {
   test("extracts text and tokens from assistant event", () => {
     const events: ClaudeCodeEvent[] = [
       {
@@ -69,7 +69,7 @@ describe("eventsToRunResult", () => {
       },
     ]
 
-    const result = eventsToRunResult(events, "/tmp/work", 1000)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 1000 })
     expect(result.text).toBe("Hello world")
     expect(result.steps.length).toBe(1)
     expect(result.steps[0]!.role).toBe("assistant")
@@ -78,9 +78,30 @@ describe("eventsToRunResult", () => {
     expect(result.tokens.output).toBe(5)
     expect(result.tokens.cacheWrite).toBe(100)
     expect(result.tokens.cacheRead).toBe(200)
+    expect(result.usageAvailable).toBe(true)
     expect(result.workDir).toBe("/tmp/work")
     expect(result.durationMs).toBe(1000)
     expect(result.runStatus).toBe("ok")
+  })
+
+  test("assistant events without usage objects leave telemetry unavailable", () => {
+    const events: ClaudeCodeEvent[] = [
+      {
+        type: "assistant",
+        message: {
+          id: "m1",
+          role: "assistant",
+          content: [{ type: "text", text: "no accounting here" }],
+        },
+      },
+    ]
+
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 100 })
+    expect(result.text).toBe("no accounting here")
+    expect(result.tokens.input).toBe(0)
+    // No usage object on any event means the harness reported no telemetry —
+    // usageAvailable must be false, not "available with zero tokens".
+    expect(result.usageAvailable).toBe(false)
   })
 
   test("prefers result-event totals over summed assistant usage", () => {
@@ -114,7 +135,7 @@ describe("eventsToRunResult", () => {
       },
     ]
 
-    const result = eventsToRunResult(events, "/tmp/work", 500)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 500 })
     expect(result.tokens.input).toBe(999)
     expect(result.tokens.output).toBe(42)
     expect(result.tokens.cacheWrite).toBe(7)
@@ -148,7 +169,7 @@ describe("eventsToRunResult", () => {
       },
     ]
 
-    const result = eventsToRunResult(events, "/tmp/work", 500)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 500 })
     expect(result.tokens.input).toBe(12)
     expect(result.tokens.output).toBe(14)
   })
@@ -185,7 +206,7 @@ describe("eventsToRunResult", () => {
       },
     ]
 
-    const result = eventsToRunResult(events, "/tmp/work", 100)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 100 })
     expect(result.steps.length).toBe(1)
     expect(result.steps[0]!.role).toBe("assistant")
     expect(result.steps[0]!.toolCalls.length).toBe(1)
@@ -215,13 +236,13 @@ describe("eventsToRunResult", () => {
       },
     ]
 
-    const result = eventsToRunResult(events, "/tmp/work", 50)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 50 })
     expect(result.steps[0]!.toolCalls[0]!.exitCode).toBe(1)
     expect(result.steps[0]!.toolCalls[0]!.output).toBe("error: command not found")
   })
 
   test("handles empty events", () => {
-    const result = eventsToRunResult([], "/tmp/work", 0)
+    const result = eventsToRunRecord([]).finish({ workDir: "/tmp/work", durationMs: 0 })
     expect(result.text).toBe("")
     expect(result.steps).toEqual([])
     expect(result.tokens.input).toBe(0)
@@ -241,7 +262,7 @@ describe("eventsToRunResult", () => {
       },
       { type: "result", subtype: "success", is_error: false, result: "hi", usage: { input_tokens: 1, output_tokens: 1 } },
     ]
-    const result = eventsToRunResult(events, "/tmp/work", 100)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 100 })
     expect(result.text).toBe("hi")
     expect(result.steps.length).toBe(1)
   })
@@ -255,7 +276,7 @@ describe("eventsToRunResult", () => {
         result: "Not logged in · Please run /login",
       },
     ]
-    const result = eventsToRunResult(events, "/tmp/work", 25)
+    const result = eventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 25 })
     expect(result.steps.length).toBe(0)
     expect(result.text).toBe("Not logged in · Please run /login")
     expect(result.adapterError?.stderr).toContain("Not logged in")

@@ -5,7 +5,7 @@ import path from "node:path"
 import { PiAdapter } from "../../src/adapters/pi.ts"
 import {
   parsePiNDJSON,
-  piEventsToRunResult,
+  piEventsToRunRecord,
   renderPiBaseUrlOverride,
   renderPiModelRegistration,
   type PiEvent,
@@ -50,7 +50,7 @@ describe("parsePiNDJSON", () => {
   })
 })
 
-describe("piEventsToRunResult", () => {
+describe("piEventsToRunRecord", () => {
   test("extracts text from assistant messages", () => {
     const events: PiEvent[] = [
       {
@@ -82,7 +82,7 @@ describe("piEventsToRunResult", () => {
       },
     ]
 
-    const result = piEventsToRunResult(events, "/tmp/work", 5000)
+    const result = piEventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 5000 })
     expect(result.text).toBe("Hello there!")
     expect(result.steps.length).toBe(1)
     expect(result.steps[0]!.role).toBe("assistant")
@@ -152,7 +152,7 @@ describe("piEventsToRunResult", () => {
       },
     ]
 
-    const result = piEventsToRunResult(events, "/tmp/work", 5000)
+    const result = piEventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 5000 })
     expect(result.text).toBe("Done!")
     expect(result.steps.length).toBe(3)
 
@@ -209,14 +209,14 @@ describe("piEventsToRunResult", () => {
       },
     ]
 
-    const result = piEventsToRunResult(events, "/tmp/work", 1000)
+    const result = piEventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 1000 })
     expect(result.runStatus).toBe("ok")
     expect(result.adapterError).toBeDefined()
     expect(result.adapterError!.stderr).toContain("rate limit exceeded")
   })
 
   test("handles empty events", () => {
-    const result = piEventsToRunResult([], "/tmp/work", 0)
+    const result = piEventsToRunRecord([]).finish({ workDir: "/tmp/work", durationMs: 0 })
     expect(result.text).toBe("")
     expect(result.steps).toEqual([])
     expect(result.tokens.input).toBe(0)
@@ -248,7 +248,7 @@ describe("piEventsToRunResult", () => {
       },
     ]
 
-    const result = piEventsToRunResult(events, "/tmp/work", 500)
+    const result = piEventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 500 })
     expect(result.text).toBe("Partial output")
     expect(result.steps.length).toBe(1)
     expect(result.runStatus).toBe("ok")
@@ -305,7 +305,7 @@ describe("piEventsToRunResult", () => {
       },
     ]
 
-    const result = piEventsToRunResult(events, "/tmp/work", 3000)
+    const result = piEventsToRunRecord(events).finish({ workDir: "/tmp/work", durationMs: 3000 })
     expect(result.tokens.input).toBe(30)
     expect(result.tokens.output).toBe(15)
     expect(result.tokens.cacheRead).toBe(6)

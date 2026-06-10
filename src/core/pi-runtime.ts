@@ -9,8 +9,8 @@
  * `AgentSession.subscribe()`. The result mapping is identical.
  */
 
-import type { ProviderRoute, RunResult, AgentStep, ToolCall } from "./types.ts"
-import { emptyTokenUsage } from "./types.ts"
+import type { ProviderRoute } from "./types.ts"
+import { RunRecordBuilder } from "./run-record.ts"
 import { createLogger } from "./logger.ts"
 import { stripRoutingPrefix } from "./config.ts"
 
@@ -111,11 +111,7 @@ export function parsePiNDJSON(output: string): PiEvent[] {
 // events → RunResult (shared by adapter + headless driver)
 // ---------------------------------------------------------------------------
 
-export function piEventsToRunResult(
-  events: PiEvent[],
-  workDir: string,
-  durationMs: number,
-): RunResult {
+export function piEventsToRunRecord(events: PiEvent[]): RunRecordBuilder {
   const agentEndEvents = events.filter(
     (e): e is Extract<PiEvent, { type: "agent_end" }> => e.type === "agent_end",
   )
@@ -134,60 +130,29 @@ export function piEventsToRunResult(
     }
   }
 
-  const steps: AgentStep[] = []
-  let totalTokens = emptyTokenUsage()
-  let totalCost = 0
-  let finalText = ""
+  // Pi dialect: text on a tool-call turn claims the final text; conversation
+  // order pairs outputs back via toolResult(), which also records the
+  // standalone tool step pi transcripts carry.
+  const builder = new RunRecordBuilder({ toolCallTextIsFinal: true })
   const errors: string[] = []
 
-  const toolOutputMap = new Map<string, { output: string; exitCode?: number }>()
   for (const msg of messages) {
-    if (msg.role === "toolResult") {
+    if (msg.role === "assistant") {
       const text = msg.content
         .filter((c): c is PiTextContent => c.type === "text")
         .map((c) => c.text)
         .join("")
-      toolOutputMap.set(msg.toolCallId, { output: text, exitCode: msg.isError ? 1 : 0 })
-    }
-  }
 
-  for (const msg of messages) {
-    if (msg.role === "assistant") {
-      const textParts = msg.content
-        .filter((c): c is PiTextContent => c.type === "text")
-        .map((c) => c.text)
-      const text = textParts.join("")
-      if (text) finalText = text
-
-      const toolCalls: ToolCall[] = msg.content
+      const calls = msg.content
         .filter((c): c is PiToolCallContent => c.type === "toolCall")
-        .map((tc) => {
-          const out = toolOutputMap.get(tc.id)
-          return {
-            id: tc.id,
-            name: tc.name,
-            input: tc.arguments,
-            output: out?.output,
-            exitCode: out?.exitCode,
-          }
-        })
+        .map((tc) => ({ id: tc.id, name: tc.name, input: tc.arguments }))
 
-      steps.push({
-        role: "assistant",
-        text: text || undefined,
-        toolCalls,
-        timestamp: msg.timestamp,
-      })
+      builder.assistantToolCalls(calls, { text: text || undefined, timestamp: msg.timestamp })
 
       const usage = msg.usage
       if (usage) {
-        totalTokens = {
-          input: totalTokens.input + (usage.input ?? 0),
-          output: totalTokens.output + (usage.output ?? 0),
-          cacheRead: totalTokens.cacheRead + (usage.cacheRead ?? 0),
-          cacheWrite: totalTokens.cacheWrite + (usage.cacheWrite ?? 0),
-        }
-        totalCost += usage.cost?.total ?? 0
+        builder.usage(usage)
+        builder.cost(usage.cost?.total ?? 0)
       }
 
       if (msg.stopReason === "error" && msg.errorMessage) {
@@ -198,18 +163,11 @@ export function piEventsToRunResult(
         .filter((c): c is PiTextContent => c.type === "text")
         .map((c) => c.text)
         .join("")
-      const out = toolOutputMap.get(msg.toolCallId)
-      steps.push({
-        role: "tool",
-        toolCalls: [{
-          id: msg.toolCallId,
-          name: msg.toolName,
-          input: {},
-          output: text,
-          exitCode: out?.exitCode,
-        }],
-        timestamp: msg.timestamp,
-      })
+      builder.toolResult(
+        msg.toolCallId,
+        { name: msg.toolName, output: text, exitCode: msg.isError ? 1 : 0 },
+        msg.timestamp,
+      )
     }
   }
 
@@ -217,33 +175,21 @@ export function piEventsToRunResult(
     .filter((m): m is PiAssistantMessage => m.role === "assistant")
     .pop()
 
-  let runStatus: RunResult["runStatus"] = "ok"
-  let statusDetail: string | undefined
+  builder.parseNote({
+    ...(!lastAgentEnd && messages.length === 0
+      ? {
+          runStatus: "parse-failed",
+          statusDetail: "pi produced no parseable events — telemetry only, workDir scored as-is",
+        }
+      : lastAssistant?.stopReason === "error"
+        ? { statusDetail: `pi assistant stopped with error: ${lastAssistant.errorMessage ?? "unknown"}` }
+        : {}),
+    ...(errors.length > 0
+      ? { adapterError: { exitCode: 1, stderr: errors.join("; ").slice(0, 2000) } }
+      : {}),
+  })
 
-  if (!lastAgentEnd && messages.length === 0) {
-    runStatus = "parse-failed"
-    statusDetail = "pi produced no parseable events — telemetry only, workDir scored as-is"
-  } else if (lastAssistant?.stopReason === "error") {
-    statusDetail = `pi assistant stopped with error: ${lastAssistant.errorMessage ?? "unknown"}`
-  }
-
-  const result: RunResult = {
-    text: finalText,
-    steps,
-    tokens: totalTokens,
-    cost: totalCost,
-    durationMs,
-    llmDurationMs: 0,
-    workDir,
-    runStatus,
-    ...(statusDetail ? { statusDetail } : {}),
-  }
-
-  if (errors.length > 0) {
-    result.adapterError = { exitCode: 1, stderr: errors.join("; ").slice(0, 2000) }
-  }
-
-  return result
+  return builder
 }
 
 // ---------------------------------------------------------------------------

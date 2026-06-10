@@ -2,7 +2,8 @@ import { mkdir } from "node:fs/promises"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, SkillBundle, ProviderRoute } from "../core/types.ts"
-import { RunRecordBuilder } from "../core/run-record.ts"
+import { RunRecordBuilder, minimalRecord } from "../core/run-record.ts"
+import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, stripRoutingPrefix } from "../core/config.ts"
 import { envForRoute, resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
@@ -68,11 +69,7 @@ interface HermesSessionExport {
  * The export contains session-level token/cost aggregates and a `messages` array
  * with full conversation history including tool_calls (OpenAI format) and tool results.
  */
-export function parseHermesSession(
-  session: HermesSessionExport,
-  workDir: string,
-  durationMs: number,
-): RunResult {
+export function parseHermesSession(session: HermesSessionExport): RunRecordBuilder {
   const builder = new RunRecordBuilder()
 
   for (const msg of session.messages) {
@@ -122,7 +119,7 @@ export function parseHermesSession(
   })
   builder.cost(session.estimated_cost_usd ?? session.actual_cost_usd ?? 0)
 
-  return builder.finish({ workDir, durationMs })
+  return builder
 }
 
 // ---------------------------------------------------------------------------
@@ -389,38 +386,35 @@ export class HermesAdapter implements AgentAdapter {
       //     The workDir is the agent's natural final state and IS scoreable;
       //     only the per-token accounting is missing. (Pre-fix this was the
       //     reduced-telemetry happy path.) See round-3 Codex review.
-      const earlyStatus: RunResult["runStatus"] = timedOut
-        ? "timeout"
-        : exitCode !== 0
-          ? "adapter-crashed"
-          : "ok"
-      const earlyDetail = timedOut
-        ? `hermes chat subprocess killed after ${task.timeoutMs ?? this.timeoutMs}ms`
-        : exitCode !== 0
-          ? `hermes exited with code ${exitCode}`
-          : "hermes exited cleanly but session_id trailer missing — telemetry unavailable, workDir scored as-is"
       if (timedOut || exitCode !== 0) {
-        log.warn(`Could not extract session_id from hermes output (runStatus=${earlyStatus})`)
+        log.warn(`Could not extract session_id from hermes output (timedOut=${timedOut}, exitCode=${exitCode})`)
       } else {
         log.debug(`Hermes session_id trailer missing — proceeding with reduced telemetry`)
       }
       await saveConvLog(stdout)
-      const result = buildMinimalResult(stdout, task.workDir, durationMs, earlyStatus, earlyDetail)
-      if (exitCode !== 0) {
-        result.adapterError = { exitCode, stderr: stderr.slice(0, 2000) }
-        const diagnosis = await diagnoseHermes({
+      const verdict = await subprocessVerdict({
+        label: "hermes",
+        timeoutLabel: "hermes chat",
+        timedOut,
+        exitCode,
+        timeoutMs: task.timeoutMs ?? this.timeoutMs,
+        stderr,
+        diagnose: () => diagnoseHermes({
           sandboxRoot: this.hermesHome ?? "",
           sessionId,
           stdout,
           stderr,
           exitCode,
-        })
-        if (diagnosis) {
-          result.adapterError.diagnosis = diagnosis
-          log.warn(`${diagnosis.summary}${diagnosis.hint ? `\n  ${diagnosis.hint}` : ""}`)
-        }
-      }
-      return result
+        }),
+        warn: (msg) => log.warn(msg),
+      })
+      return buildMinimalRecord(stdout).finish({
+        workDir: task.workDir,
+        durationMs,
+        ...verdict,
+        statusDetail: verdict.statusDetail
+          ?? "hermes exited cleanly but session_id trailer missing — telemetry unavailable, workDir scored as-is",
+      })
     }
 
     log.debug(`Hermes session_id: ${sessionId}`)
@@ -444,19 +438,19 @@ export class HermesAdapter implements AgentAdapter {
     // stays 'ok' with reduced accounting. The subprocess-level overrides at
     // the bottom of run() still upgrade to 'timeout' / 'adapter-crashed' when
     // the chat itself failed. See round-3 Codex review.
-    let result: RunResult
+    let builder: RunRecordBuilder
     if (exportResult.exitCode === 0 && exportResult.stdout.trim()) {
       try {
         const sessionData = JSON.parse(exportResult.stdout.trim()) as HermesSessionExport
-        result = parseHermesSession(sessionData, task.workDir, durationMs)
+        builder = parseHermesSession(sessionData)
       } catch (err) {
         log.warn(`Failed to parse hermes session export: ${err}`)
-        result = buildMinimalResult(stdout, task.workDir, durationMs, "ok",
+        builder = buildMinimalRecord(stdout,
           `hermes sessions export returned invalid JSON: ${String(err).slice(0, 200)}`)
       }
     } else {
       log.warn(`hermes sessions export failed: ${exportResult.stderr.slice(0, 200)}`)
-      result = buildMinimalResult(stdout, task.workDir, durationMs, "ok",
+      builder = buildMinimalRecord(stdout,
         `hermes sessions export exited ${exportResult.exitCode} — telemetry unavailable`)
     }
 
@@ -469,14 +463,14 @@ export class HermesAdapter implements AgentAdapter {
 
       if (task.skill.mode === "inject") {
         // Inject: if agent produced any tool calls or steps, skill was loaded (it's in the prompt)
-        if (result.steps.length > 0) {
+        if (builder.stepCount > 0) {
           skillLoaded = true
         }
       }
 
       // Check if any assistant text references skill content
       if (!skillLoaded && skillSnippet.length > 20) {
-        for (const step of result.steps) {
+        for (const step of builder.stepsSoFar) {
           if (step.text?.includes(skillSnippet)) {
             skillLoaded = true
             break
@@ -485,34 +479,27 @@ export class HermesAdapter implements AgentAdapter {
       }
     }
 
-    if (skillLoaded !== undefined) {
-      result.skillLoaded = skillLoaded
-    }
-    // Subprocess-level failure overrides whatever the parse path decided.
-    // Rare on this branch (we already got a session_id) but possible if the
-    // chat exits non-zero AFTER printing the trailer line.
-    if (timedOut) {
-      result.runStatus = "timeout"
-      result.statusDetail = `hermes chat subprocess killed after ${task.timeoutMs ?? this.timeoutMs}ms`
-    } else if (exitCode !== 0) {
-      result.runStatus = "adapter-crashed"
-      result.statusDetail = `hermes exited with code ${exitCode}`
-    }
-    if (exitCode !== 0) {
-      result.adapterError = { exitCode, stderr: stderr.slice(0, 2000) }
-      const diagnosis = await diagnoseHermes({
+    // Subprocess-level verdict beats whatever the parse path decided. Rare on
+    // this branch (we already got a session_id) but possible if the chat
+    // exits non-zero AFTER printing the trailer line.
+    const verdict = await subprocessVerdict({
+      label: "hermes",
+      timeoutLabel: "hermes chat",
+      timedOut,
+      exitCode,
+      timeoutMs: task.timeoutMs ?? this.timeoutMs,
+      stderr,
+      diagnose: () => diagnoseHermes({
         sandboxRoot: this.hermesHome ?? "",
         sessionId,
         stdout,
         stderr,
         exitCode,
-      })
-      if (diagnosis) {
-        result.adapterError.diagnosis = diagnosis
-        log.warn(`${diagnosis.summary}${diagnosis.hint ? `\n  ${diagnosis.hint}` : ""}`)
-      }
-    }
-    return result
+      }),
+      warn: (msg) => log.warn(msg),
+    })
+
+    return builder.finish({ workDir: task.workDir, durationMs, skillLoaded, ...verdict })
   }
 
   async teardown(): Promise<void> {
@@ -614,17 +601,10 @@ export function renderHermesEnv(model: string): string | null {
 // Helpers
 // ---------------------------------------------------------------------------
 
-export function buildMinimalResult(
-  stdout: string,
-  workDir: string,
-  durationMs: number,
-  runStatus: RunResult["runStatus"],
-  statusDetail?: string,
-): RunResult {
-  const text = stdout.replace(/\nsession_id:\s*\S+\s*$/, "").trim()
-  const builder = new RunRecordBuilder()
-  if (text) builder.assistantText(text, Date.now())
-  // No usage()/cost() calls: telemetry is genuinely unavailable on this
-  // path, so the result carries usageAvailable: false rather than a fake $0.
-  return builder.finish({ workDir, durationMs, runStatus, statusDetail })
+/**
+ * Reduced-telemetry record: the chat stdout with hermes's session_id
+ * trailer stripped, handed to the shared `minimalRecord` builder.
+ */
+export function buildMinimalRecord(stdout: string, statusDetail?: string): RunRecordBuilder {
+  return minimalRecord(stdout.replace(/\nsession_id:\s*\S+\s*$/, "").trim(), statusDetail)
 }

@@ -1,7 +1,7 @@
 import path from "node:path"
 import { mkdir, rm, copyFile, readdir } from "node:fs/promises"
-import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, SkillBundle, ProviderRoute } from "../core/types.ts"
-import { emptyTokenUsage } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, SkillBundle, ProviderRoute } from "../core/types.ts"
+import { RunRecordBuilder, type ToolCallSpec } from "../core/run-record.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, getProvidersConfig, routingPrefix, stripRoutingPrefix } from "../core/config.ts"
 import { HEADLESS_AGENT_DEFAULTS, TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
@@ -14,6 +14,7 @@ import {
 } from "../core/adapter-sandbox.ts"
 import { resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseOpenclaw } from "./diagnose-failure.ts"
+import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { runSubprocess } from "../core/subprocess.ts"
 
 const log = createLogger("openclaw")
@@ -100,32 +101,22 @@ function parseTranscript(lines: string[]): OpenClawTranscriptEntry[] {
   return entries
 }
 
-function transcriptToRunResult(
-  entries: OpenClawTranscriptEntry[],
-  workDir: string,
-  durationMs: number,
-): RunResult {
-  const steps: AgentStep[] = []
-  let totalTokens = emptyTokenUsage()
-  let totalCost = 0
-  let finalText = ""
+function transcriptToRunRecord(entries: OpenClawTranscriptEntry[]): RunRecordBuilder {
+  // openclaw transcripts never pair tool outputs back to the call, and text
+  // on a tool-call turn claims the final text.
+  const builder = new RunRecordBuilder({ toolCallTextIsFinal: true })
 
   for (const entry of entries) {
     if (entry.type !== "message" || !entry.message) continue
     const msg = entry.message
 
     if (msg.usage) {
-      totalTokens = {
-        input: totalTokens.input + (msg.usage.input ?? 0),
-        output: totalTokens.output + (msg.usage.output ?? 0),
-        cacheRead: totalTokens.cacheRead + (msg.usage.cacheRead ?? 0),
-        cacheWrite: totalTokens.cacheWrite + (msg.usage.cacheWrite ?? 0),
-      }
-      totalCost += msg.usage.cost?.total ?? 0
+      builder.usage(msg.usage)
+      builder.cost(msg.usage.cost?.total ?? 0)
     }
 
     if (msg.role === "assistant") {
-      const toolCalls: ToolCall[] = []
+      const calls: ToolCallSpec[] = []
       let text = ""
 
       const contentItems = Array.isArray(msg.content)
@@ -138,23 +129,15 @@ function transcriptToRunResult(
         if (item.type === "text" && typeof item.text === "string") {
           text += item.text
         } else if (item.type === "toolCall" || item.type === "tool_use") {
-          toolCalls.push({
+          calls.push({
             id: (item.id as string) ?? `tc-${Date.now()}`,
             name: (item.name as string) ?? "",
             input: (item.arguments ?? item.params ?? item.input ?? {}) as Record<string, unknown>,
-            output: undefined,
           })
         }
       }
 
-      steps.push({
-        role: "assistant",
-        text: text || undefined,
-        toolCalls,
-        timestamp: Date.now(),
-      })
-
-      if (text) finalText = text
+      builder.assistantToolCalls(calls, { text: text || undefined, timestamp: Date.now() })
     } else if (msg.role === "toolResult" || msg.role === "tool") {
       const contentItems = Array.isArray(msg.content)
         ? msg.content
@@ -162,40 +145,31 @@ function transcriptToRunResult(
           ? [{ type: "text", text: msg.content }]
           : []
 
-      const toolCalls: ToolCall[] = []
+      const calls: ToolCallSpec[] = []
       for (const item of contentItems as Record<string, unknown>[]) {
         const output = typeof item.text === "string" ? item.text
           : typeof item.output === "string" ? item.output
           : typeof item.content === "string" ? item.content
           : ""
-        toolCalls.push({
+        calls.push({
           id: msg.toolCallId ?? (item.toolCallId as string) ?? (item.id as string) ?? "",
           name: msg.toolName ?? "",
-          input: {},
           output,
         })
       }
 
-      if (toolCalls.length > 0) {
-        steps.push({
-          role: "tool",
-          toolCalls,
-          timestamp: Date.now(),
-        })
-      }
+      if (calls.length > 0) builder.toolStep(calls, Date.now())
     }
   }
 
-  return {
-    text: finalText,
-    steps,
-    tokens: totalTokens,
-    cost: totalCost,
-    durationMs,
-    llmDurationMs: 0,
-    workDir,
-    runStatus: "ok",
+  if (entries.length === 0) {
+    builder.parseNote({
+      statusDetail:
+        "openclaw produced no parseable transcript entries — telemetry unavailable, workDir scored as-is",
+    })
   }
+
+  return builder
 }
 
 // ---------------------------------------------------------------------------
@@ -769,37 +743,25 @@ export class OpenClawAdapter implements AgentAdapter {
       }
     }
 
-    const result = transcriptToRunResult(transcript, task.workDir, durationMs)
-    if (skillLoaded !== undefined) {
-      result.skillLoaded = skillLoaded
-    }
-    if (timedOut) {
-      result.runStatus = "timeout"
-      result.statusDetail = `openclaw subprocess killed after ${task.timeoutMs ?? this.timeoutMs}ms`
-    } else if (exitCode !== 0) {
-      result.runStatus = "adapter-crashed"
-      result.statusDetail = `openclaw exited with code ${exitCode}`
-    } else if (transcript.length === 0) {
-      result.runStatus = "ok"
-      result.statusDetail =
-        "openclaw produced no parseable transcript entries — telemetry unavailable, workDir scored as-is"
-    }
-    if (exitCode !== 0) {
-      result.adapterError = { exitCode, stderr: stderr.slice(0, 2000) }
-      const diagnosis = await diagnoseOpenclaw({
+    const builder = transcriptToRunRecord(transcript)
+    const verdict = await subprocessVerdict({
+      label: "openclaw",
+      timedOut,
+      exitCode,
+      timeoutMs: task.timeoutMs ?? this.timeoutMs,
+      stderr,
+      diagnose: () => diagnoseOpenclaw({
         sandboxRoot: pool.sandboxRoot,
         sessionId,
         agentId: agent.agentId,
         stdout: "",
         stderr,
         exitCode,
-      })
-      if (diagnosis) {
-        result.adapterError.diagnosis = diagnosis
-        log.warn(`${diagnosis.summary}${diagnosis.hint ? `\n  ${diagnosis.hint}` : ""}`)
-      }
-    }
-    return result
+      }),
+      warn: (msg) => log.warn(msg),
+    })
+
+    return builder.finish({ workDir: task.workDir, durationMs, skillLoaded, ...verdict })
   }
 
   private async loadTranscript(

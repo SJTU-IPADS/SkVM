@@ -74,12 +74,17 @@ describe("RunRecordBuilder: tool-call pairing", () => {
     expect(r.steps[1]!.toolCalls[0]!.name).toBe("write_file")
   })
 
-  test("toolStep records a complete call in one shot", () => {
+  test("toolStep records complete calls in one shot (multiple per step allowed)", () => {
     const r = new RunRecordBuilder()
-      .toolStep({ id: "t1", name: "bash", input: { cmd: "ls" }, output: "files", exitCode: 0 }, 1)
+      .toolStep([
+        { id: "t1", name: "bash", input: { cmd: "ls" }, output: "files", exitCode: 0 },
+        { id: "t2", name: "read", output: "data" },
+      ], 1)
       .finish({ workDir: "/wd", durationMs: 10 })
+    expect(r.steps).toHaveLength(1)
     expect(r.steps[0]!.role).toBe("tool")
     expect(r.steps[0]!.toolCalls[0]!).toMatchObject({ id: "t1", name: "bash", output: "files" })
+    expect(r.steps[0]!.toolCalls[1]!).toMatchObject({ id: "t2", name: "read" })
   })
 })
 
@@ -161,5 +166,77 @@ describe("hasUsageTelemetry", () => {
     expect(hasUsageTelemetry({ usageAvailable: false })).toBe(false)
     expect(hasUsageTelemetry({ usageAvailable: true })).toBe(true)
     expect(hasUsageTelemetry({})).toBe(true)
+  })
+})
+
+describe("RunRecordBuilder: per-harness variance knobs", () => {
+  test("toolCallTextIsFinal dialect: tool-call turn text claims the final text", () => {
+    const r = new RunRecordBuilder({ toolCallTextIsFinal: true })
+      .assistantText("early plain text", 1)
+      .assistantToolCalls([{ id: "c1", name: "bash" }], { text: "later tool text", timestamp: 2 })
+      .finish({ workDir: "/wd", durationMs: 1 })
+    expect(r.text).toBe("later tool text")
+  })
+
+  test("stepForPairedToolResult=false dialect: paired result enriches without a standalone step", () => {
+    const b = new RunRecordBuilder({ stepForPairedToolResult: false })
+      .assistantToolCalls([{ id: "c1", name: "read" }], { timestamp: 1 })
+      .toolResult("c1", { output: "out" }, 2)
+    expect(b.stepCount).toBe(1)
+    const r = b.toolResult("orphan", { name: "x", output: "o" }, 3)
+      .finish({ workDir: "/wd", durationMs: 1 })
+    // Unpaired ids still get a standalone step.
+    expect(r.steps).toHaveLength(2)
+    expect(r.steps[0]!.toolCalls[0]!.output).toBe("out")
+  })
+
+  test("usageTotalOverride beats accumulated sums; zero totals are ignored", () => {
+    const r = new RunRecordBuilder()
+      .usage({ input: 10, output: 1 })
+      .usageTotalOverride({ input: 100, output: 20, cacheRead: 5, cacheWrite: 0 })
+      .finish({ workDir: "/wd", durationMs: 1 })
+    expect(r.tokens.input).toBe(100)
+    const zero = new RunRecordBuilder()
+      .usage({ input: 10, output: 1 })
+      .usageTotalOverride({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
+      .finish({ workDir: "/wd", durationMs: 1 })
+    expect(zero.tokens.input).toBe(10)
+    expect(zero.usageAvailable).toBe(true)
+  })
+
+  test("parseNote survives an ok finish; finish() fields beat it one by one", () => {
+    const note = {
+      runStatus: "parse-failed" as const,
+      statusDetail: "no events",
+      adapterError: { exitCode: 1, stderr: "parser error" },
+    }
+    const ok = new RunRecordBuilder().parseNote(note).finish({ workDir: "/wd", durationMs: 1 })
+    expect(ok.runStatus).toBe("parse-failed")
+    expect(ok.statusDetail).toBe("no events")
+    expect(ok.adapterError?.stderr).toBe("parser error")
+
+    const verdict = new RunRecordBuilder().parseNote(note).finish({
+      workDir: "/wd",
+      durationMs: 1,
+      runStatus: "timeout",
+      statusDetail: "killed",
+      adapterError: { exitCode: 1, stderr: "subprocess stderr" },
+    })
+    expect(verdict.runStatus).toBe("timeout")
+    expect(verdict.statusDetail).toBe("killed")
+    expect(verdict.adapterError?.stderr).toBe("subprocess stderr")
+  })
+
+  test("textFallback is last resort after explicit text and the step scan", () => {
+    const onlyFallback = new RunRecordBuilder()
+      .textFallback("from result event")
+      .finish({ workDir: "/wd", durationMs: 1 })
+    expect(onlyFallback.text).toBe("from result event")
+
+    const stepWins = new RunRecordBuilder()
+      .assistantToolCalls([{ id: "c", name: "t" }], { text: "step text", timestamp: 1 })
+      .textFallback("from result event")
+      .finish({ workDir: "/wd", durationMs: 1 })
+    expect(stepWins.text).toBe("step text")
   })
 })

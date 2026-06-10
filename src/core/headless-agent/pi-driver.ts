@@ -23,7 +23,7 @@ import {
   type AgentSessionEvent,
 } from "@mariozechner/pi-coding-agent"
 import {
-  piEventsToRunResult,
+  piEventsToRunRecord,
   toPiModel,
   splitPiModel,
   renderPiBaseUrlOverride,
@@ -155,8 +155,8 @@ export async function runPiDriver(
 
     // AgentSessionEvent is a superset of our NDJSON PiEvent; the extra
     // event types (queue_update, compaction_*, auto_retry_*) are not
-    // matched by piEventsToRunResult and get filtered out for free.
-    const runStats = piEventsToRunResult(events as unknown as PiEvent[], cwd, durationMs)
+    // matched by piEventsToRunRecord and get filtered out for free.
+    const runStats = piEventsToRunRecord(events as unknown as PiEvent[]).finish({ workDir: cwd, durationMs })
 
     // Translate pi-reported agent errors (auth, rate limit, provider 5xx, etc.)
     // into HeadlessAgentError so callers can distinguish "infra failed" from
