@@ -635,7 +635,7 @@ export async function getLatestBestRoundDir(
 
 /**
  * Classify what `getLatestBestRoundDir` would return for a given tuple. Lets
- * bench's `runJitOptimized` distinguish "no proposals at all" (operator bug,
+ * bench's jit-optimized condition runner distinguish "no proposals at all" (operator bug,
  * should throw) from "only infra-blocked proposals" (graceful skip with a
  * visible note in report.md).
  */

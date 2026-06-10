@@ -9,13 +9,13 @@ import type {
   TaskReport, ConditionResult, BenchProgress, ProgressEntry, BenchConfigFile,
   MultiModelReport, MultiAdapterReport, EvalDetail,
 } from "./types.ts"
-import { BenchConfigFileSchema, parseAotPasses, isAotCondition } from "./types.ts"
+import { BenchConfigFileSchema, isAotCondition } from "./types.ts"
 import { loadTasks } from "./loader.ts"
 import { resolveTaskSkills } from "./skill-resolver.ts"
 import type { ResolvedSkill } from "../core/skill-loader.ts"
 // Side-effect import: ensures every custom evaluator registers at module load.
 import "./evaluators/index.ts"
-import { runNoSkill, runOriginal, runJitOptimized, runAOTVariant, runJITBoost } from "./conditions.ts"
+import { CONDITION_RUNNERS, resolveConditionKind } from "./conditions/index.ts"
 import { generateReport, printSummary, printMultiModelSummary, generateMultiModelMarkdown, printMultiAdapterSummary, generateMultiAdapterMarkdown } from "./reporter.ts"
 import { type AdapterName, createAdapter } from "../adapters/registry.ts"
 import { getBenchLogDir, safeModelName } from "../core/config.ts"
@@ -338,8 +338,8 @@ async function executeBenchItem(
   { task, condition, skills }: BenchWorkPayload,
   ctx: BenchSessionContext,
 ): Promise<ConditionResult> {
-  // jit-boost never defers — it needs synchronous eval for its feedback loop
-  const eo = condition === "jit-boost" ? undefined : ctx.buildEvalOptions(task.id, condition)
+  const kind = resolveConditionKind(condition)
+  if (!kind) throw new Error(`Unknown condition: ${condition}`)
 
   // Resolve per-task timeoutMs (CLI absolute > task.timeoutMs * --timeout-mult).
   // maxSteps stays uniform: bench has no per-task setup boundary that could
@@ -354,75 +354,21 @@ async function executeBenchItem(
     timeoutMs: resolved.timeoutMs,
   }
 
-  switch (condition) {
-    case "no-skill":
-      return await runNoSkill(task, adapter, taskAdapterConfig, ctx.evaluatorConfig,
-        await ctx.createConvLog(task.id, "no-skill"), eo)
-
-    case "original": {
-      return await runOriginal(
-        task, adapter, taskAdapterConfig,
-        skills,
-        ctx.config.skillMode,
-        ctx.evaluatorConfig,
-        await ctx.createConvLog(task.id, "original"),
-        eo,
-      )
-    }
-
-    case "jit-optimized": {
-      return await runJitOptimized(
-        task, adapter, taskAdapterConfig,
-        skills,
-        ctx.config.adapter, ctx.config.model,
-        ctx.config.skillMode,
-        ctx.evaluatorConfig,
-        await ctx.createConvLog(task.id, "jit-optimized"),
-        eo,
-      )
-    }
-
-    case "jit-boost": {
-      const allContent = skills.map(s => s.skillContent).join("\n\n---\n\n")
-      const combinedId = skills.map(s => s.skillId).join("+")
-      const firstSkill = skills[0]!
-      return await runJITBoost(
-        task, adapter, taskAdapterConfig,
-        allContent,
-        combinedId,
-        firstSkill.skillDir,
-        ctx.config.jitRuns,
-        ctx.config.skillMode,
-        ctx.evaluatorConfig,
-        ctx.benchLogDir,
-        ctx.config.cliTimeoutMs,
-      )
-    }
-
-    default: {
-      const passes = parseAotPasses(condition)
-      if (passes) {
-        const allContent = skills.map(s => s.skillContent).join("\n\n---\n\n")
-        const combinedId = skills.map(s => s.skillId).join("+")
-        const firstSkill = skills[0]!
-        return await runAOTVariant(
-          task, adapter, taskAdapterConfig,
-          allContent,
-          combinedId,
-          firstSkill.skillPath,
-          ctx.tcp!,
-          ctx.compilerProvider!,
-          condition,
-          passes,
-          ctx.config.skillMode,
-          ctx.evaluatorConfig,
-          await ctx.createConvLog(task.id, condition),
-          eo,
-        )
-      }
-      throw new Error(`Unknown condition: ${condition}`)
-    }
-  }
+  return await CONDITION_RUNNERS[kind].run({
+    condition,
+    task,
+    adapter,
+    adapterConfig: taskAdapterConfig,
+    skills,
+    skillMode: ctx.config.skillMode,
+    evaluatorConfig: ctx.evaluatorConfig,
+    createConvLog: (label) => ctx.createConvLog(task.id, label),
+    evalOptions: ctx.buildEvalOptions(task.id, condition),
+    tcp: ctx.tcp,
+    compilerProvider: ctx.compilerProvider,
+    jitRuns: ctx.config.jitRuns,
+    cliTimeoutMs: ctx.config.cliTimeoutMs,
+  })
 }
 
 /**

@@ -9,7 +9,7 @@ import { isHeadlessAgentError } from "../core/headless-agent/index.ts"
 import { createSlotPool } from "../core/concurrency.ts"
 import { createLogger } from "../core/logger.ts"
 import type { EvalDetail } from "../bench/types.ts"
-import { computeWeightedScore } from "../bench/conditions.ts"
+import { computeWeightedScore } from "../bench/conditions/scoring.ts"
 
 const log = createLogger("deferred-eval")
 

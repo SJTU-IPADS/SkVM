@@ -40,7 +40,7 @@ export interface PassRunMeta {
 /**
  * Subdirectory of `workDir` that holds intermediate compiler artifacts. File
  * walkers (pass1's `readWorkDirFiles`, pass2's `readBundleFiles`, bench's
- * compiled-dir copier in `runAOTVariant`) must skip this directory — its
+ * compiled-dir copier in the `aot-variant` condition runner) must skip this directory — its
  * contents are compiler internals, not skill bundle files.
  */
 export const ARTIFACT_DIR = "_artifacts"

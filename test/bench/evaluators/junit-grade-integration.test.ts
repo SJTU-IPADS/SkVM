@@ -68,7 +68,7 @@ describe.if(hasSubmodule)(
       expect(junit!.method).toBe("custom")
 
       // 2. Prepare a workDir with the task's fixtures copied in, matching
-      //    what bench/conditions.ts::prepareWorkDir does at bench time. We
+      //    what bench/conditions/run-condition.ts::prepareWorkDir does at bench time. We
       //    intentionally do NOT satisfy any of the test expectations — we
       //    want every test to fail so the pipeline exercises the
       //    score-zero-with-reason path.

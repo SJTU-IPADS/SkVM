@@ -9,7 +9,7 @@ import type { EvaluatorConfig } from "../framework/evaluator.ts"
 import type {
   BenchTask, BenchCondition, BenchRunConfig, BenchReport, TaskReport, ConditionResult,
 } from "./types.ts"
-import { runCustomSkill, runNoSkill } from "./conditions.ts"
+import { runCustomSkill, runCondition } from "./conditions/index.ts"
 import { averageConditionResults } from "./orchestrator.ts"
 import { hydrateEvalPayloads } from "./evaluators/index.ts"
 import { generateReport, printSummary, generateMarkdown } from "./reporter.ts"
@@ -444,12 +444,16 @@ export async function executeCustomPlan(
             skillMode, evaluatorConfig, convLog,
           )
         } else {
-          result = await runNoSkill(
-            task, runner.adapter, adapterConfig,
-            evaluatorConfig, convLog,
-          )
-          // Override condition name to use the plan label
-          result = { ...result, condition: item.label }
+          // Bare item: the no-skill scaffold under the plan item's own label.
+          log.info(`[${item.label}] ${task.id}`)
+          result = await runCondition({
+            condition: item.label,
+            task,
+            adapter: runner.adapter,
+            adapterConfig,
+            evaluatorConfig,
+            convLog,
+          })
         }
 
         await withProgressLock(async () => {
