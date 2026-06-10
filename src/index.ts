@@ -1,13 +1,11 @@
 #!/usr/bin/env bun
 
 import "./core/env-bootstrap.ts"
-import { setLogLevel, createLogger, c, shouldUseColor } from "./core/logger.ts"
+import { setLogLevel, createLogger, c, noColor, shouldUseColor } from "./core/logger.ts"
 import { createSpinner, createProgressSpinner, spinnerLog } from "./core/spinner.ts"
 import { ALL_ADAPTERS, type AdapterName, createAdapter, isAdapterName } from "./adapters/registry.ts"
 import { resolveAdapterConfigMode } from "./core/config.ts"
 import { assertKnownFlags, parseSkillModeFlag } from "./core/cli-flags.ts"
-
-const noColor = (s: string) => s
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "./core/ui-defaults.ts"
 import { TIMEOUT_DEFAULTS } from "./core/timeouts.ts"
 import pkgJson from "../package.json" with { type: "json" }
@@ -121,9 +119,12 @@ Use --help with any command for details.`)
     case "clean-jit":
       await runCleanJIT(flags)
       break
-    case "logs":
-      await runLogs(flags)
+    case "logs": {
+      const { parseOrExit } = await import("./cli/flags.ts")
+      const { LOGS_FLAGS, runLogs } = await import("./cli/logs.ts")
+      await runLogs(parseOrExit(LOGS_FLAGS, args.slice(1)))
       break
+    }
     case "config": {
       const { runConfig } = await import("./cli-config/index.ts")
       await runConfig(args.slice(1))
@@ -1268,67 +1269,6 @@ Notes:
       console.error(`  ${err}`)
     }
     process.exit(1)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Command: logs
-// ---------------------------------------------------------------------------
-
-const LOGS_KNOWN_FLAGS: ReadonlySet<string> = new Set([
-  "type",
-  "limit",
-  "all",
-])
-
-async function runLogs(flags: Record<string, string>) {
-  assertKnownFlags("logs", flags, LOGS_KNOWN_FLAGS)
-  if (flags.help === "true") {
-    console.log(`skvm logs - List recent runs across all subsystems
-
-Options:
-  --type=<type>    Filter by type (profile, aot-compile, bench, run, pipeline)
-  --limit=<n>      Show last N entries (default: ${CLI_DEFAULTS.listLimit})
-  --all            Show all entries (no limit)`)
-    process.exit(0)
-  }
-
-  const { readSessions } = await import("./core/run-session.ts")
-
-  const limit = flags.all === "true" ? undefined : (flags.limit ? parseInt(flags.limit) : CLI_DEFAULTS.listLimit)
-  const entries = await readSessions({ type: flags.type, limit })
-
-  if (entries.length === 0) {
-    console.log("No sessions found.")
-    return
-  }
-
-  console.log(`\nRecent runs${flags.type ? ` (type: ${flags.type})` : ""}:\n`)
-
-  const statusColor: Record<string, (s: string) => string> = {
-    COMPLETED: c.green, FAILED: c.red, RUNNING: c.yellow,
-  }
-  for (const e of entries) {
-    const label = e.status.toUpperCase().padEnd(10)
-    const colorFn = statusColor[label.trim()] ?? noColor
-    console.log(`  ${colorFn(label)} ${e.id}`)
-
-    const details: string[] = []
-    details.push(`Type: ${e.type}`)
-    if (e.models && e.models.length > 1) {
-      details.push(`Models: ${e.models.length}`)
-    } else if (e.models && e.models.length === 1) {
-      details.push(`Model: ${e.models[0]}`)
-    }
-    if (e.harness) details.push(`Harness: ${e.harness}`)
-    if (e.skill) details.push(`Skill: ${e.skill}`)
-    if (e.conditions) details.push(`Conditions: ${e.conditions.join(", ")}`)
-    if (e.summary) details.push(e.summary)
-    if (e.error) details.push(`Error: ${e.error}`)
-    console.log(`             ${details.join(" | ")}`)
-
-    console.log(`             Log: ${e.logDir}`)
-    console.log()
   }
 }
 

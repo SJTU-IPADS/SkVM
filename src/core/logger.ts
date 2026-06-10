@@ -31,6 +31,9 @@ export const c = {
   gray:   wrap(ANSI.gray),
 }
 
+/** Identity passthrough for "no color" slots in `c`-keyed lookup tables. */
+export const noColor = (s: string): string => s
+
 /** Check color support, with an optional --no-color flag override. */
 export function shouldUseColor(flag?: { noColor?: boolean }): boolean {
   if (flag?.noColor) return false

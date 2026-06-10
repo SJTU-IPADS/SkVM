@@ -36,30 +36,48 @@ export function suggestFlag(typo: string, known: Iterable<string>): string | nul
   return bestDist <= 2 ? best : null
 }
 
+/**
+ * Build the unknown-flag error lines for `flagKeys` against
+ * `knownFlags ∪ GLOBAL_FLAGS`. Returns `[]` when every key is known.
+ * Single source of truth for the wording — used by both `assertKnownFlags`
+ * (legacy exit-on-error path) and `src/cli/flags.ts` (UsageError path).
+ */
+export function formatUnknownFlagErrors(
+  commandLabel: string,
+  flagKeys: Iterable<string>,
+  knownFlags: ReadonlySet<string>,
+): string[] {
+  const unknown: string[] = []
+  for (const key of flagKeys) {
+    if (GLOBAL_FLAGS.has(key) || knownFlags.has(key)) continue
+    unknown.push(key)
+  }
+  if (unknown.length === 0) return []
+
+  // Suggestions are drawn from the union (global + per-command) so
+  // `--vrbose` finds `--verbose` even though it's a global flag.
+  const universe: string[] = [...knownFlags, ...GLOBAL_FLAGS]
+  const lines: string[] = []
+  for (const key of unknown) {
+    const hint = suggestFlag(key, universe)
+    if (hint !== null) {
+      lines.push(`${commandLabel}: Unknown flag --${key}. Did you mean --${hint}?`)
+    } else {
+      lines.push(`${commandLabel}: Unknown flag --${key}.`)
+    }
+  }
+  lines.push(`Run 'skvm ${commandLabel} --help' for the list of supported flags.`)
+  return lines
+}
+
 export function assertKnownFlags(
   commandLabel: string,
   flags: Record<string, string>,
   knownFlags: ReadonlySet<string>,
 ): void {
-  const unknown: string[] = []
-  for (const key of Object.keys(flags)) {
-    if (GLOBAL_FLAGS.has(key) || knownFlags.has(key)) continue
-    unknown.push(key)
-  }
-  if (unknown.length === 0) return
-
-  // Suggestions are drawn from the union (global + per-command) so
-  // `--vrbose` finds `--verbose` even though it's a global flag.
-  const universe: string[] = [...knownFlags, ...GLOBAL_FLAGS]
-  for (const key of unknown) {
-    const hint = suggestFlag(key, universe)
-    if (hint !== null) {
-      console.error(`${commandLabel}: Unknown flag --${key}. Did you mean --${hint}?`)
-    } else {
-      console.error(`${commandLabel}: Unknown flag --${key}.`)
-    }
-  }
-  console.error(`Run 'skvm ${commandLabel} --help' for the list of supported flags.`)
+  const lines = formatUnknownFlagErrors(commandLabel, Object.keys(flags), knownFlags)
+  if (lines.length === 0) return
+  for (const line of lines) console.error(line)
   process.exit(1)
 }
 
