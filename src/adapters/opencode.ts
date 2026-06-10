@@ -1,8 +1,8 @@
 import { mkdir } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, TokenUsage, SkillBundle } from "../core/types.ts"
-import { emptyTokenUsage } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, TokenUsage, SkillBundle } from "../core/types.ts"
+import { RunRecordBuilder } from "../core/run-record.ts"
 import { runSubprocess } from "../core/subprocess.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, getHeadlessAgentConfig, expandHome, stripRoutingPrefix } from "../core/config.ts"
@@ -53,42 +53,27 @@ export function eventsToRunResult(
   workDir: string,
   durationMs: number,
 ): RunResult {
-  const steps: AgentStep[] = []
-  let totalTokens = emptyTokenUsage()
-  let totalCost = 0
-  let finalText = ""
+  const builder = new RunRecordBuilder()
   const errors: string[] = []
 
   for (const event of events) {
     const part = event.part ?? {}
 
     if (event.type === "text") {
-      const text = (part.text as string) ?? ""
-      if (text) {
-        finalText = text
-        steps.push({
-          role: "assistant",
-          text,
-          toolCalls: [],
-          timestamp: event.timestamp ?? Date.now(),
-        })
-      }
+      builder.assistantText((part.text as string) ?? "", event.timestamp ?? Date.now())
     } else if (event.type === "tool_use") {
       const state = (part.state as Record<string, unknown>) ?? {}
-      const toolCall: ToolCall = {
+      builder.toolStep({
         id: (part.callID as string) ?? (part.id as string) ?? `tc-${Date.now()}`,
         name: (part.tool as string) ?? (part.name as string) ?? "",
         input: (state.input as Record<string, unknown>) ?? {},
         output: (state.output as string) ?? (state.error as string) ?? undefined,
-      }
-      steps.push({
-        role: "tool",
-        toolCalls: [toolCall],
-        timestamp: event.timestamp ?? Date.now(),
-      })
+      }, event.timestamp ?? Date.now())
     } else if (event.type === "step_finish") {
       // OpenCode puts token usage and cost in step_finish events
-      extractStepFinishTokens(part, totalTokens, (t) => { totalTokens = t }, (c) => { totalCost += c })
+      const usage = parseStepFinishUsage(part)
+      if (usage.tokens) builder.usage(usage.tokens)
+      if (usage.cost !== undefined) builder.cost(usage.cost)
     } else if (event.type === "error") {
       const errMsg = (part.error as Record<string, unknown>)?.data
         ?? (part.message as string)
@@ -107,31 +92,22 @@ export function eventsToRunResult(
   // round-3 Codex review): it forced bench rows to 0 in environments where
   // opencode's NDJSON serializer was simply broken or off, even though the
   // agent had finished cleanly.
-  const noOutput = steps.length === 0
+  const noOutput = builder.stepCount === 0
   const statusDetail = noOutput
     ? errors.length > 0
       ? `opencode emitted ${errors.length} error event(s) and no steps — telemetry only`
       : `opencode produced no parseable events — telemetry only, workDir scored as-is`
     : undefined
 
-  const result: RunResult = {
-    text: finalText,
-    steps,
-    tokens: totalTokens,
-    cost: totalCost,
-    durationMs,
-    llmDurationMs: 0,
+  return builder.finish({
     workDir,
-    runStatus: "ok",
-    ...(statusDetail ? { statusDetail } : {}),
-  }
-
-  // Surface error events as adapterError when the agent produced no useful output
-  if (errors.length > 0 && noOutput) {
-    result.adapterError = { exitCode: 1, stderr: errors.join("; ") || "opencode error (no details)" }
-  }
-
-  return result
+    durationMs,
+    statusDetail,
+    // Surface error events as adapterError when the agent produced no useful output
+    adapterError: errors.length > 0 && noOutput
+      ? { exitCode: 1, stderr: errors.join("; ") || "opencode error (no details)" }
+      : undefined,
+  })
 }
 
 /**
@@ -143,26 +119,21 @@ export function eventsToRunResult(
  *   "reasoning": 0, "cache": { "write": 0, "read": 0 } }, "cost": 0.015455 }
  * ```
  */
-export function extractStepFinishTokens(
+export function parseStepFinishUsage(
   part: Record<string, unknown>,
-  current: TokenUsage,
-  setTokens: (t: TokenUsage) => void,
-  addCost: (c: number) => void,
-) {
-  const tokens = part.tokens as Record<string, unknown> | undefined
-  if (tokens && typeof tokens === "object") {
-    const cache = (tokens.cache as Record<string, unknown>) ?? {}
-    setTokens({
-      input: current.input + ((tokens.input as number) ?? 0),
-      output: current.output + ((tokens.output as number) ?? 0),
-      cacheRead: current.cacheRead + ((cache.read as number) ?? 0),
-      cacheWrite: current.cacheWrite + ((cache.write as number) ?? 0),
-    })
+): { tokens?: TokenUsage; cost?: number } {
+  const raw = part.tokens as Record<string, unknown> | undefined
+  let tokens: TokenUsage | undefined
+  if (raw && typeof raw === "object") {
+    const cache = (raw.cache as Record<string, unknown>) ?? {}
+    tokens = {
+      input: (raw.input as number) ?? 0,
+      output: (raw.output as number) ?? 0,
+      cacheRead: (cache.read as number) ?? 0,
+      cacheWrite: (cache.write as number) ?? 0,
+    }
   }
-
-  if (typeof part.cost === "number") {
-    addCost(part.cost)
-  }
+  return { tokens, cost: typeof part.cost === "number" ? part.cost : undefined }
 }
 
 // ---------------------------------------------------------------------------

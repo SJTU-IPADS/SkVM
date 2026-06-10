@@ -206,6 +206,14 @@ export const RunResultSchema = z.object({
   skillLoaded: z.boolean().optional(),
   runStatus: RunStatusSchema,
   statusDetail: z.string().optional(),
+  /**
+   * Whether `tokens`/`cost` came from real harness telemetry. `false` means
+   * the harness never reported usage (e.g. an upstream that doesn't persist
+   * it, or a telemetry-less timeout path) — consumers should render "n/a",
+   * not $0. Read via `hasUsageTelemetry()` in `run-record.ts`, which owns
+   * the absent-means-available rule for unmigrated adapters.
+   */
+  usageAvailable: z.boolean().optional(),
   /** Display-only: human-debug stderr snippet. NOT a status signal — check runStatus instead. */
   adapterError: z.object({
     exitCode: z.number(),

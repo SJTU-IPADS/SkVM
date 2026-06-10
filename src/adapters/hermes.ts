@@ -1,8 +1,8 @@
 import { mkdir } from "node:fs/promises"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
-import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, SkillBundle, ProviderRoute } from "../core/types.ts"
-import { emptyTokenUsage } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, SkillBundle, ProviderRoute } from "../core/types.ts"
+import { RunRecordBuilder } from "../core/run-record.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, stripRoutingPrefix } from "../core/config.ts"
 import { envForRoute, resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
@@ -73,50 +73,25 @@ export function parseHermesSession(
   workDir: string,
   durationMs: number,
 ): RunResult {
-  const steps: AgentStep[] = []
-  let finalText = ""
-
-  // Build a map of tool_call_id → ToolCall so we can enrich them with outputs
-  const toolCallMap = new Map<string, ToolCall>()
+  const builder = new RunRecordBuilder()
 
   for (const msg of session.messages) {
     if (msg.role === "assistant") {
       if (msg.tool_calls && msg.tool_calls.length > 0) {
-        // Assistant message with tool calls
-        const toolCalls: ToolCall[] = msg.tool_calls.map((tc) => {
-          let input: Record<string, unknown> = {}
-          try {
-            input = JSON.parse(tc.function.arguments)
-          } catch { /* keep empty */ }
-          const toolCall: ToolCall = {
-            id: tc.id,
-            name: tc.function.name,
-            input,
-          }
-          toolCallMap.set(tc.id, toolCall)
-          return toolCall
-        })
-        steps.push({
-          role: "assistant",
-          text: msg.content ?? undefined,
-          toolCalls,
-          timestamp: msg.timestamp * 1000, // seconds → ms
-        })
-      } else {
-        // Plain assistant text
-        if (msg.content) {
-          finalText = msg.content
-          steps.push({
-            role: "assistant",
-            text: msg.content,
-            toolCalls: [],
-            timestamp: msg.timestamp * 1000,
-          })
-        }
+        builder.assistantToolCalls(
+          msg.tool_calls.map((tc) => {
+            let input: Record<string, unknown> = {}
+            try {
+              input = JSON.parse(tc.function.arguments)
+            } catch { /* keep empty */ }
+            return { id: tc.id, name: tc.function.name, input }
+          }),
+          { text: msg.content ?? undefined, timestamp: msg.timestamp * 1000 }, // seconds → ms
+        )
+      } else if (msg.content) {
+        builder.assistantText(msg.content, msg.timestamp * 1000)
       }
     } else if (msg.role === "tool") {
-      // Enrich the matching ToolCall with output/exitCode
-      const tc = msg.tool_call_id ? toolCallMap.get(msg.tool_call_id) : undefined
       let output = msg.content ?? ""
       let exitCode: number | undefined
 
@@ -131,52 +106,23 @@ export function parseHermesSession(
         } catch { /* content is plain text */ }
       }
 
-      if (tc) {
-        tc.output = output
-        if (exitCode !== undefined) tc.exitCode = exitCode
-      }
-
-      steps.push({
-        role: "tool",
-        toolCalls: [{
-          id: msg.tool_call_id ?? `tool-${msg.id}`,
-          name: msg.tool_name ?? "unknown",
-          input: {},
-          output,
-          exitCode,
-        }],
-        timestamp: msg.timestamp * 1000,
-      })
+      builder.toolResult(
+        msg.tool_call_id ?? `tool-${msg.id}`,
+        { name: msg.tool_name ?? "unknown", output, exitCode },
+        msg.timestamp * 1000,
+      )
     }
   }
 
-  // If we didn't capture finalText from a non-tool-call assistant message,
-  // use the last assistant message's content
-  if (!finalText) {
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      const msg = session.messages[i]!
-      if (msg.role === "assistant" && msg.content) {
-        finalText = msg.content
-        break
-      }
-    }
-  }
+  builder.usage({
+    input: session.input_tokens,
+    output: session.output_tokens,
+    cacheRead: session.cache_read_tokens,
+    cacheWrite: session.cache_write_tokens,
+  })
+  builder.cost(session.estimated_cost_usd ?? session.actual_cost_usd ?? 0)
 
-  return {
-    text: finalText,
-    steps,
-    tokens: {
-      input: session.input_tokens ?? 0,
-      output: session.output_tokens ?? 0,
-      cacheRead: session.cache_read_tokens ?? 0,
-      cacheWrite: session.cache_write_tokens ?? 0,
-    },
-    cost: session.estimated_cost_usd ?? session.actual_cost_usd ?? 0,
-    durationMs,
-    llmDurationMs: 0,
-    workDir,
-    runStatus: "ok",
-  }
+  return builder.finish({ workDir, durationMs })
 }
 
 // ---------------------------------------------------------------------------
@@ -459,18 +405,7 @@ export class HermesAdapter implements AgentAdapter {
         log.debug(`Hermes session_id trailer missing — proceeding with reduced telemetry`)
       }
       await saveConvLog(stdout)
-      const text = stdout.replace(/\nsession_id:\s*\S+\s*$/, "").trim()
-      const result: RunResult = {
-        text,
-        steps: text ? [{ role: "assistant", text, toolCalls: [], timestamp: Date.now() }] : [],
-        tokens: emptyTokenUsage(),
-        cost: 0,
-        durationMs,
-        llmDurationMs: 0,
-        workDir: task.workDir,
-        runStatus: earlyStatus,
-        statusDetail: earlyDetail,
-      }
+      const result = buildMinimalResult(stdout, task.workDir, durationMs, earlyStatus, earlyDetail)
       if (exitCode !== 0) {
         result.adapterError = { exitCode, stderr: stderr.slice(0, 2000) }
         const diagnosis = await diagnoseHermes({
@@ -687,15 +622,9 @@ export function buildMinimalResult(
   statusDetail?: string,
 ): RunResult {
   const text = stdout.replace(/\nsession_id:\s*\S+\s*$/, "").trim()
-  return {
-    text,
-    steps: text ? [{ role: "assistant", text, toolCalls: [], timestamp: Date.now() }] : [],
-    tokens: emptyTokenUsage(),
-    cost: 0,
-    durationMs,
-    llmDurationMs: 0,
-    workDir,
-    runStatus,
-    ...(statusDetail ? { statusDetail } : {}),
-  }
+  const builder = new RunRecordBuilder()
+  if (text) builder.assistantText(text, Date.now())
+  // No usage()/cost() calls: telemetry is genuinely unavailable on this
+  // path, so the result carries usageAvailable: false rather than a fake $0.
+  return builder.finish({ workDir, durationMs, runStatus, statusDetail })
 }
