@@ -8,6 +8,7 @@
 import path from "node:path"
 import { stat } from "node:fs/promises"
 import { listRunDirs, readEvidenceRecord } from "../jit-optimize/record.ts"
+import { roundEvidenceDir, roundOptimizerDir } from "./storage.ts"
 import type { Evidence } from "../jit-optimize/types.ts"
 
 export interface RoundShowResult {
@@ -22,8 +23,8 @@ export async function renderRoundShow(
   proposalDir: string,
   round: number,
 ): Promise<RoundShowResult> {
-  const evidenceRoot = path.join(proposalDir, `round-${round}-evidence`)
-  const optimizerDir = path.join(proposalDir, `round-${round}-optimizer`)
+  const evidenceRoot = roundEvidenceDir(proposalDir, round)
+  const optimizerDir = roundOptimizerDir(proposalDir, round)
 
   const evidencePresent = await dirExists(evidenceRoot)
   const optimizerPresent = await dirExists(optimizerDir)

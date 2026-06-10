@@ -9,6 +9,7 @@
  */
 
 import { spawn } from "node:child_process"
+import { ORIGINAL_DIR_NAME, roundDirName } from "./storage.ts"
 
 export interface DiffResult {
   ok: true
@@ -80,5 +81,5 @@ export async function diffProposalRound(
       reason: "git not found on PATH — install git to view proposal diffs",
     }
   }
-  return runGitDiff(proposalDir, "original", `round-${round}`)
+  return runGitDiff(proposalDir, ORIGINAL_DIR_NAME, roundDirName(round))
 }

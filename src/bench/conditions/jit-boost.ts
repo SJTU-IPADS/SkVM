@@ -35,8 +35,8 @@ export const jitBoostRunner: ConditionRunner = {
     const skillId = combinedSkillId(skills)
     const skillDir = skills[0]!.skillDir
 
-    const { createBoostHooks, generateCandidatesFromConvLogs, generateBoostCandidates, saveSolidificationState } = await import("../../jit-boost/index.ts")
-    const { getJitBoostDir } = await import("../../core/config.ts")
+    const { createBoostHooks, generateCandidatesFromConvLogs, generateBoostCandidates, saveSolidificationState, solidificationStatePath } = await import("../../jit-boost/index.ts")
+    const { getJitBoostDir } = await import("../../proposals/storage.ts")
 
     log.info(`[jit-boost] ${task.id} with skill ${skillId} (${jitRuns} runs)`)
 
@@ -145,8 +145,7 @@ export const jitBoostRunner: ConditionRunner = {
     }
 
     // Delete stale solidification state so hooks start fresh with new candidates
-    const stateFile = path.join(getJitBoostDir(skillId), "solidification-state.json")
-    try { await (await import("node:fs/promises")).unlink(stateFile) } catch { /* not found is fine */ }
+    try { await (await import("node:fs/promises")).unlink(solidificationStatePath(skillId)) } catch { /* not found is fine */ }
 
     // -----------------------------------------------------------------------
     // Step 3: Create boost hooks and run remaining iterations

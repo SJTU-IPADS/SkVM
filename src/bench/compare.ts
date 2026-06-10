@@ -4,7 +4,8 @@ import type { TokenUsage } from "../core/types.ts"
 import type { LLMProvider } from "../providers/types.ts"
 import type { BenchCondition, BenchReport, ConditionResult, EvalDetail } from "./types.ts"
 import { isAotCondition, isValidCondition, parseAotPasses } from "./types.ts"
-import { LOGS_DIR, getVariantDir, toPassTag } from "../core/config.ts"
+import { LOGS_DIR, toPassTag } from "../core/config.ts"
+import { getVariantDir } from "../proposals/storage.ts"
 
 interface BenchSessionMetadata {
   sessionId: string

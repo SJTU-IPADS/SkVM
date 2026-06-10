@@ -135,6 +135,6 @@ function buildStats(solidifier: Solidifier): BoostStats {
 // Re-export key components
 export { Solidifier } from "./solidifier.ts"
 export { generateBoostCandidates, generateCandidatesFromConvLogs, generateTemplates } from "./candidates.ts"
-export { loadBoostCandidates, saveBoostCandidates, loadSolidificationState, saveSolidificationState } from "./persistence.ts"
+export { loadBoostCandidates, saveBoostCandidates, loadSolidificationState, saveSolidificationState, solidificationStatePath } from "./persistence.ts"
 export type { BoostCandidate, SolidificationState, SolidificationEntry, BoostStats } from "./types.ts"
 export { BoostCandidateSchema, SolidificationStateSchema } from "./types.ts"

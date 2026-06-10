@@ -30,6 +30,46 @@ async function makeFakeSkill(name: string): Promise<string> {
   return dir
 }
 
+describe("proposals storage — layout accessors own the tree shapes", () => {
+  test("round dir name/path round-trip", () => {
+    expect(storage.roundDirName(3)).toBe("round-3")
+    expect(storage.roundDirPath("/p/dir", 3)).toBe(path.join("/p/dir", "round-3"))
+    expect(storage.roundEvidenceDir("/p/dir", 2)).toBe(path.join("/p/dir", "round-2-evidence"))
+    expect(storage.roundOptimizerDir("/p/dir", 2)).toBe(path.join("/p/dir", "round-2-optimizer"))
+    expect(storage.evidenceDirName("round-0")).toBe("round-0-evidence")
+  })
+
+  test("proposal id ↔ dir round-trip through the public seam", async () => {
+    const skillDir = await makeFakeSkill("roundtrip")
+    try {
+      const result = await storage.createProposal({
+        skillName: "roundtrip",
+        skillDir,
+        harness: "bare-agent",
+        optimizerModel: "anthropic/claude-opus-4.6",
+        targetModel: "openrouter/qwen/qwen3-30b",
+        source: "test",
+      })
+      expect(storage.proposalDirFromId(result.id)).toBe(result.dir)
+    } finally {
+      await rm(skillDir, { recursive: true, force: true })
+    }
+  })
+
+  test("aot variant dir applies safeModelName; passTag is an optional leaf", () => {
+    const dir = storage.getVariantDir("bare-agent", "openrouter/qwen/qwen3-30b", "calc", "p1p2")
+    expect(dir).toContain(path.join("aot-compile", "bare-agent", safeModelName("openrouter/qwen/qwen3-30b"), "calc", "p1p2"))
+    expect(storage.getVariantDir("bare-agent", "openrouter/qwen/qwen3-30b", "calc"))
+      .toBe(path.dirname(dir))
+    expect(storage.getVariantModelDir("bare-agent", "openrouter/qwen/qwen3-30b"))
+      .toBe(path.dirname(path.dirname(dir)))
+  })
+
+  test("jit-boost dir is model/harness agnostic", () => {
+    expect(storage.getJitBoostDir("calc")).toContain(path.join("jit-boost", "calc"))
+  })
+})
+
 describe("proposals storage — target-model keying", () => {
   test("createProposal writes under target-model segment, not optimizer-model", async () => {
     const skillDir = await makeFakeSkill("calc")

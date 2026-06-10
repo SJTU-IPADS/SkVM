@@ -2,7 +2,7 @@ import path from "node:path"
 import { mkdir } from "node:fs/promises"
 import type { BoostCandidate, SolidificationState } from "./types.ts"
 import { BoostCandidatesFileSchema, SolidificationStateSchema } from "./types.ts"
-import { getJitBoostDir } from "../core/config.ts"
+import { getJitBoostDir } from "../proposals/storage.ts"
 import { createLogger } from "../core/logger.ts"
 
 const log = createLogger("jit-boost-persistence")
@@ -15,7 +15,8 @@ function candidatesPath(skillId: string): string {
   return path.join(getJitBoostDir(skillId), "boost-candidates.json")
 }
 
-function statePath(skillId: string): string {
+/** Solidification-state file inside the skill's jit-boost tree (exported for the bench runner's stale-state reset). */
+export function solidificationStatePath(skillId: string): string {
   return path.join(getJitBoostDir(skillId), "solidification-state.json")
 }
 
@@ -72,7 +73,7 @@ export async function saveBoostCandidates(
 export async function loadSolidificationState(
   skillId: string,
 ): Promise<SolidificationState | null> {
-  const filePath = statePath(skillId)
+  const filePath = solidificationStatePath(skillId)
   const file = Bun.file(filePath)
 
   if (!(await file.exists())) return null
@@ -96,6 +97,6 @@ export async function saveSolidificationState(
   const dir = getJitBoostDir(skillId)
   await mkdir(dir, { recursive: true })
   const validated = SolidificationStateSchema.parse(state)
-  await Bun.write(statePath(skillId), JSON.stringify(validated, null, 2))
+  await Bun.write(solidificationStatePath(skillId), JSON.stringify(validated, null, 2))
   log.debug(`Saved solidification state for ${skillId}`)
 }

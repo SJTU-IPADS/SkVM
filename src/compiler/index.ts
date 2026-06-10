@@ -3,7 +3,8 @@ import { mkdir, writeFile, copyFile, rm, appendFile } from "node:fs/promises"
 import type { LLMProvider } from "../providers/types.ts"
 import { emptyTokenUsage, addTokenUsage } from "../core/types.ts"
 import { copyDirRecursive } from "../core/fs-utils.ts"
-import { AOT_COMPILE_DIR, toPassTag, safeModelName, getCompileLogDir } from "../core/config.ts"
+import { toPassTag, getCompileLogDir } from "../core/config.ts"
+import { getVariantDir } from "../proposals/storage.ts"
 import { createLogger } from "../core/logger.ts"
 import { createSpinner } from "../core/spinner.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
@@ -50,7 +51,7 @@ export async function compileSkill(
 
   const skillName = opts.skillName ?? extractSkillName(opts.skillContent, opts.skillDir ?? opts.skillPath)
   const passTag = toPassTag(numericPasses)
-  const workDir = path.join(AOT_COMPILE_DIR, opts.harness, safeModelName(opts.model), skillName, passTag)
+  const workDir = getVariantDir(opts.harness, opts.model, skillName, passTag)
   const compileLogDir = getCompileLogDir(opts.harness, opts.model, skillName)
   await Promise.all([
     mkdir(workDir, { recursive: true }),
@@ -221,11 +222,13 @@ function isEnvSim(value: unknown): value is { success: boolean; attemptCount: nu
   return typeof value === "object" && value !== null && "success" in value && "attemptCount" in value
 }
 
-/** Write a compiled skill variant to disk under AOT_COMPILE_DIR. */
+/** Write a compiled skill variant to disk under the aot-compile proposal tree. */
 export async function writeVariant(result: CompilationResult): Promise<string> {
-  const safeModel = result.model.replace(/\//g, "--")
+  // getVariantDir owns the layout — including safeModelName, which also
+  // escapes ":" (the old inline slug here only handled "/", so writer and
+  // readers disagreed for ids containing a colon).
   const passTag = toPassTag(result.passes)
-  const dir = path.join(AOT_COMPILE_DIR, result.harness, safeModel, result.skillName, passTag)
+  const dir = getVariantDir(result.harness, result.model, result.skillName, passTag)
   await mkdir(dir, { recursive: true })
 
   const writes: Promise<unknown>[] = [

@@ -51,9 +51,13 @@ import {
 } from "./evidence.ts"
 import { removeWorkspace } from "./workspace.ts"
 import { writeEvidenceSidecar, runRecordDir, recordConversationPath, resolveSafeTaskIds } from "./record.ts"
-import { copySkillDir } from "../core/fs-utils.ts"
+
 import { loadSkill, copySkillBundle, buildSkillBundle, type ResolvedSkill } from "../core/skill-loader.ts"
-import { createProposal, finalizeProposal, type CreateProposalResult } from "../proposals/storage.ts"
+import {
+  createProposal, finalizeProposal, persistRound,
+  roundDirPath, roundDirName, evidenceDirName, roundOptimizerDir,
+  type CreateProposalResult,
+} from "../proposals/storage.ts"
 import { createProviderForModel } from "../providers/registry.ts"
 import { isProviderError } from "../providers/errors.ts"
 import { isHeadlessAgentError } from "../core/headless-agent/index.ts"
@@ -396,7 +400,7 @@ export async function runLoop(
         cliTimeoutMs,
         cliMaxSteps,
         evalConfig: roundEvalConfig,
-        evidenceDir: path.join(proposal.dir, `${roundLabel}-evidence`),
+        evidenceDir: path.join(proposal.dir, evidenceDirName(roundLabel)),
         setLabel,
         skillMode: config.skillMode,
       })
@@ -437,7 +441,7 @@ export async function runLoop(
       cliTimeoutMs,
       cliMaxSteps,
       evalConfig: makeRoundEvalConfig(judgeAcc),
-      evidenceDir: path.join(proposal.dir, `${roundLabel}-evidence`),
+      evidenceDir: path.join(proposal.dir, evidenceDirName(roundLabel)),
       setLabel: "train",
       skillMode: config.skillMode,
     })
@@ -465,13 +469,12 @@ export async function runLoop(
   // Persist round 0 as a full skill folder snapshot unconditionally — even
   // an infra-blocked session needs round-0 to exist so `skvm proposals`
   // tooling can readdir it.
-  const round0Dir = path.join(proposal.dir, "round-0")
-  await copySkillDir(skillDir, round0Dir)
+  await persistRound(proposal.dir, 0, skillDir)
 
   const baselineSp = createSpinner("Round 0 (baseline) — evaluating original skill...")
 
   try {
-    const round0 = await runBoth(skillDir, "round-0", round0JudgeCost)
+    const round0 = await runBoth(skillDir, roundDirName(0), round0JudgeCost)
     const round0TrainScored = scoreEvidences(round0.train)
     const round0TestScored = testIsSeparate
       ? scoreEvidences(round0.test)
@@ -566,7 +569,7 @@ export async function runLoop(
 
       const roundOptSp = createSpinner(`Round ${round}/${rounds} — optimizing skill...`)
       const prevTrainEvidences = roundTrainEvidences[round - 1]!
-      const optimizerRecordDir = path.join(proposal.dir, `round-${round}-optimizer`)
+      const optimizerRecordDir = roundOptimizerDir(proposal.dir, round)
       let optimizeResult: Awaited<ReturnType<typeof runOptimizer>>
       try {
         optimizeResult = await runOptimizer(
@@ -640,7 +643,7 @@ export async function runLoop(
         }))
 
         infraBlocked = {
-          roundLabel: `round-${round}`,
+          roundLabel: roundDirName(round),
           reason,
           blockedIds: ids,
         }
@@ -678,8 +681,7 @@ export async function runLoop(
           )
         }
 
-        const roundDir = path.join(proposal.dir, `round-${round}`)
-        await copySkillDir(currentSkillDir, roundDir)
+        await persistRound(proposal.dir, round, currentSkillDir)
 
         history.push(historyEntry)
         allRounds.push(unscoredRound({
@@ -828,8 +830,7 @@ export async function runLoop(
       // Edit path: snapshot the workspace and evaluate the new skill on
       // both train and test sets. Each round has its own judge cost
       // accumulator, populated inside runBoth.
-      const roundDir = path.join(proposal.dir, `round-${round}`)
-      await copySkillDir(optimizeResult.workspaceDir, roundDir)
+      const roundDir = await persistRound(proposal.dir, round, optimizeResult.workspaceDir)
       await removeWorkspace(optimizeResult.workspaceDir)
 
       log.info(`Round ${round}: optimizer changed ${optimizeResult.actualChangedFiles.length} file(s)`)
@@ -838,7 +839,7 @@ export async function runLoop(
       let newEvidences: RoundEvidences
       const roundEvSp = createSpinner(`Round ${round}/${rounds} — collecting evidence...`)
       try {
-        newEvidences = await runBoth(roundDir, `round-${round}`, roundJudgeCost)
+        newEvidences = await runBoth(roundDir, roundDirName(round), roundJudgeCost)
         roundEvSp.succeed(`Round ${round}/${rounds} — evidence collected`)
       } catch (err) {
         roundEvSp.fail(`Round ${round}/${rounds} — evidence collection failed`)
@@ -985,7 +986,7 @@ export async function runLoop(
   if (!keepAllRounds && !infraBlocked) {
     for (const r of allRounds) {
       if (r.round === bestRound) continue
-      await rm(path.join(proposal.dir, `round-${r.round}`), { recursive: true, force: true })
+      await rm(roundDirPath(proposal.dir, r.round), { recursive: true, force: true })
     }
     log.info(`Pruned non-best rounds (keepAllRounds=false)`)
   }
@@ -1018,7 +1019,7 @@ export async function runLoop(
   // round-0 (the baseline copy) would be a no-op at best and destructive
   // at worst.
   if (autoApply && !infraBlocked) {
-    const bestDir = path.join(proposal.dir, `round-${bestRound}`)
+    const bestDir = roundDirPath(proposal.dir, bestRound)
     if (await dirExists(bestDir)) {
       await applyBestToSkillDir(bestDir, skillDir)
       log.info(`Auto-applied round ${bestRound} → ${skillDir}`)
@@ -1057,7 +1058,7 @@ async function runLogOnly(
   log.info(`Loaded ${preEvidences.length} evidence(s) from execution log(s)`)
 
   const logOptSp = createSpinner("Optimizing skill from execution logs...")
-  const optimizerRecordDir = path.join(proposal.dir, "round-1-optimizer")
+  const optimizerRecordDir = roundOptimizerDir(proposal.dir, 1)
   let optimizeResult: Awaited<ReturnType<typeof runOptimizer>>
   try {
     optimizeResult = await runOptimizer(
@@ -1075,11 +1076,8 @@ async function runLogOnly(
   }
 
   // Persist round 0 (original) and round 1 (optimized)
-  const round0Dir = path.join(proposal.dir, "round-0")
-  await copySkillDir(skillDir, round0Dir)
-
-  const roundDir = path.join(proposal.dir, "round-1")
-  await copySkillDir(optimizeResult.workspaceDir, roundDir)
+  await persistRound(proposal.dir, 0, skillDir)
+  await persistRound(proposal.dir, 1, optimizeResult.workspaceDir)
   await removeWorkspace(optimizeResult.workspaceDir)
 
   const historyEntry: HistoryEntry = {
@@ -1111,10 +1109,10 @@ async function runLogOnly(
     : "no changes were made"
 
   if (!keepAllRounds && bestRound !== 0) {
-    await rm(path.join(proposal.dir, "round-0"), { recursive: true, force: true })
+    await rm(roundDirPath(proposal.dir, 0), { recursive: true, force: true })
   }
   if (!keepAllRounds && bestRound !== 1) {
-    await rm(path.join(proposal.dir, "round-1"), { recursive: true, force: true })
+    await rm(roundDirPath(proposal.dir, 1), { recursive: true, force: true })
   }
 
   await finalizeProposal(proposal.dir, {

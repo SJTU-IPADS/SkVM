@@ -1125,11 +1125,11 @@ Notes:
 
   const path = await import("node:path")
   const { readdir, rm, stat, unlink } = await import("node:fs/promises")
-  const { AOT_COMPILE_DIR, LOGS_DIR, safeModelName } = await import("./core/config.ts")
+  const { LOGS_DIR, safeModelName } = await import("./core/config.ts")
+  const { getVariantModelDir } = await import("./proposals/storage.ts")
 
-  const safeModel = safeModelName(model)
-  const runtimeModelDir = path.join(LOGS_DIR, "runtime", adapter, safeModel)
-  const compiledModelDir = path.join(AOT_COMPILE_DIR, adapter, safeModel)
+  const runtimeModelDir = path.join(LOGS_DIR, "runtime", adapter, safeModelName(model))
+  const compiledModelDir = getVariantModelDir(adapter, model)
   const benchRootDir = path.join(LOGS_DIR, "bench")
 
   async function pathExists(p: string): Promise<boolean> {

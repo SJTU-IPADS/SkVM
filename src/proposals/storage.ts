@@ -30,7 +30,7 @@ import path from "node:path"
 import { mkdir, readdir, stat, readFile } from "node:fs/promises"
 import { tryAcquireFileLock, releaseFileLock } from "../core/file-lock.ts"
 import { z } from "zod"
-import { JIT_OPTIMIZE_DIR, safeModelName } from "../core/config.ts"
+import { JIT_OPTIMIZE_DIR, AOT_COMPILE_DIR, JIT_BOOST_DIR, safeModelName } from "../core/config.ts"
 import {
   HistoryEntrySchema,
   RoundResultSchema,
@@ -210,7 +210,7 @@ export async function createProposal(opts: CreateProposalOptions): Promise<Creat
   }
 
   // Copy original skill folder to proposal/original/
-  await copySkillDir(opts.skillDir, path.join(dir, "original"))
+  await copySkillDir(opts.skillDir, path.join(dir, ORIGINAL_DIR_NAME))
 
   const meta: ProposalMeta = {
     schemaVersion: PROPOSAL_SCHEMA_VERSION,
@@ -246,7 +246,7 @@ export async function persistRound(
   round: number,
   skillFolderSrc: string,
 ): Promise<string> {
-  const roundDir = path.join(proposalDir, `round-${round}`)
+  const roundDir = roundDirPath(proposalDir, round)
   await copySkillDir(skillFolderSrc, roundDir)
   return roundDir
 }
@@ -522,7 +522,7 @@ export async function readRoundSkillContent(
   proposalDir: string,
   round: number,
 ): Promise<string | null> {
-  const file = path.join(proposalDir, `round-${round}`, "SKILL.md")
+  const file = path.join(roundDirPath(proposalDir, round), "SKILL.md")
   try {
     return await Bun.file(file).text()
   } catch {
@@ -530,9 +530,70 @@ export async function readRoundSkillContent(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Layout accessors — the on-disk shape of all three proposal trees
+// (jit-optimize rounds below, aot-compile variants, jit-boost state) lives
+// HERE and nowhere else. Callers (loop runner, proposals CLI, bench
+// conditions, compiler) ask for finished paths instead of joining segments
+// and applying safeModelName themselves.
+// ---------------------------------------------------------------------------
+
+/**
+ * AOT-compiled variant directory for a skill × model × harness:
+ * `proposals/aot-compile/{harness}/{safeModel}/{skillName}[/{passTag}]`.
+ * Without `passTag`, the skill-level directory (legacy flat layout lives
+ * directly inside it).
+ */
+export function getVariantDir(
+  harness: string,
+  model: string,
+  skillName: string,
+  passTag?: string,
+): string {
+  const dir = path.join(AOT_COMPILE_DIR, harness, safeModelName(model), skillName)
+  return passTag ? path.join(dir, passTag) : dir
+}
+
+/** Model-level aot-compile directory (`proposals/aot-compile/{harness}/{safeModel}`) — clean-jit listings. */
+export function getVariantModelDir(harness: string, model: string): string {
+  return path.join(AOT_COMPILE_DIR, harness, safeModelName(model))
+}
+
+/** JIT-boost storage: `proposals/jit-boost/{skillId}/` — model/harness agnostic. */
+export function getJitBoostDir(skillId: string): string {
+  return path.join(JIT_BOOST_DIR, skillId)
+}
+
+/** Name of the pristine-skill snapshot directory inside a proposal. */
+export const ORIGINAL_DIR_NAME = "original"
+
+/** The directory name of round N ("round-3"). */
+export function roundDirName(round: number): string {
+  return `round-${round}`
+}
+
 /** Path to a round directory inside a proposal, for readers that need bundle files. */
 export function roundDirPath(proposalDir: string, round: number): string {
-  return path.join(proposalDir, `round-${round}`)
+  return path.join(proposalDir, roundDirName(round))
+}
+
+/**
+ * The evidence directory name for a round label ("round-2" → "round-2-evidence").
+ * Label form because the loop also writes evidence for synthetic labels
+ * (baseline, regen) that aren't plain numbered rounds.
+ */
+export function evidenceDirName(roundLabel: string): string {
+  return `${roundLabel}-evidence`
+}
+
+/** Durable per-run evidence directory of round N. */
+export function roundEvidenceDir(proposalDir: string, round: number): string {
+  return path.join(proposalDir, evidenceDirName(roundDirName(round)))
+}
+
+/** Optimizer-step record directory of round N (prompt, submission, diff, logs). */
+export function roundOptimizerDir(proposalDir: string, round: number): string {
+  return path.join(proposalDir, `${roundDirName(round)}-optimizer`)
 }
 
 export async function updateStatus(
@@ -609,7 +670,7 @@ export async function lookupLatestProposal(
         sawBlocked = true
         continue
       }
-      const bestDir = path.join(proposalDir, `round-${meta.bestRound}`)
+      const bestDir = roundDirPath(proposalDir, meta.bestRound)
       if (await dirExists(bestDir)) return { state: "has-usable", bestDir }
     } catch {
       continue

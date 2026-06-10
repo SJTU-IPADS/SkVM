@@ -1,7 +1,8 @@
 import path from "node:path"
 import { compileSkill, writeVariant } from "../../compiler/index.ts"
 import { ARTIFACT_DIR } from "../../compiler/artifacts.ts"
-import { AOT_COMPILE_DIR, toPassTag, safeModelName } from "../../core/config.ts"
+import { toPassTag } from "../../core/config.ts"
+import { getVariantDir } from "../../proposals/storage.ts"
 import { contentHash, parseSkillMeta, buildSkillBundleFromContent } from "../../core/skill-loader.ts"
 import { createLogger } from "../../core/logger.ts"
 import { parseAotPasses } from "../types.ts"
@@ -36,7 +37,7 @@ export const aotVariantRunner: ConditionRunner = {
     const convLog = await ctx.createConvLog(condition)
 
     const harness = adapter.name
-    const compiledPath = path.join(AOT_COMPILE_DIR, harness, safeModelName(adapterConfig.model), skillId, passTag, "SKILL.md")
+    const compiledPath = path.join(getVariantDir(harness, adapterConfig.model, skillId, passTag), "SKILL.md")
 
     let compiledContent: string
     let loadedSkillPath = compiledPath
@@ -49,7 +50,7 @@ export const aotVariantRunner: ConditionRunner = {
         log.info(`[${condition}] Using cached ${passTag} variant for ${skillId}`)
       } else if (passTag === "p1p2p3") {
         // Check legacy flat path (backward compatibility)
-        const legacyPath = path.join(AOT_COMPILE_DIR, harness, safeModelName(adapterConfig.model), skillId, "SKILL.md")
+        const legacyPath = path.join(getVariantDir(harness, adapterConfig.model, skillId), "SKILL.md")
         const legacyFile = Bun.file(legacyPath)
         if (await legacyFile.exists()) {
           compiledContent = await legacyFile.text()

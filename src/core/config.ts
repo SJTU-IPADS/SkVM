@@ -205,23 +205,9 @@ export function safeModelName(model: string): string {
   return replaced
 }
 
-// ---------------------------------------------------------------------------
-// Variant directory helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Get the AOT-compiled variant directory for a specific skill × model × harness.
- * When passTag is provided, appends it as a subdirectory (e.g. "p1", "p1p2p3").
- */
-export function getVariantDir(
-  harness: string,
-  model: string,
-  skillName: string,
-  passTag?: string,
-): string {
-  const dir = path.join(AOT_COMPILE_DIR, harness, safeModelName(model), skillName)
-  return passTag ? path.join(dir, passTag) : dir
-}
+// Proposal-tree layout accessors (aot-compile variants, jit-boost state,
+// jit-optimize rounds) live in src/proposals/storage.ts — the single owner
+// of the on-disk proposal shapes. Only the root constants stay here.
 
 // ---------------------------------------------------------------------------
 // Log directory helpers
@@ -245,11 +231,6 @@ export function getBenchLogDir(sessionId: string): string {
 /** Runtime logs (JIT traces, notebook): log/runtime/{harness}/{safeModel}/{skill}/ */
 export function getRuntimeLogDir(harness: string, model: string, skill: string): string {
   return path.join(LOGS_DIR, "runtime", harness, safeModelName(model), skill)
-}
-
-/** JIT-boost storage: proposals/jit-boost/{skillId}/ — model/harness agnostic */
-export function getJitBoostDir(skillId: string): string {
-  return path.join(JIT_BOOST_DIR, skillId)
 }
 
 // ---------------------------------------------------------------------------
