@@ -14,6 +14,7 @@ import {
 } from "../core/adapter-sandbox.ts"
 import { resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseOpenclaw } from "./diagnose-failure.ts"
+import { runSubprocess } from "../core/subprocess.ts"
 
 const log = createLogger("openclaw")
 
@@ -27,50 +28,6 @@ const USER_OPENCLAW_DIR = path.join(HOME, ".openclaw")
 
 export function normalizeAgentId(id: string): string {
   return id.replace(/[:./]/g, "-").toLowerCase()
-}
-
-async function runCommand(
-  cmd: string[],
-  opts?: { cwd?: string; timeout?: number; env?: Record<string, string | undefined> },
-): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }> {
-  const env = opts?.env && Object.keys(opts.env).length > 0
-    ? mergeEnv(process.env, opts.env)
-    : process.env
-  const proc = Bun.spawn(cmd, {
-    cwd: opts?.cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env,
-  })
-
-  let timedOut = false
-  let timer: ReturnType<typeof setTimeout> | undefined
-  if (opts?.timeout) {
-    timer = setTimeout(() => {
-      timedOut = true
-      proc.kill()
-    }, opts.timeout)
-  }
-
-  const [exitCode, stdout, stderr] = await Promise.all([
-    proc.exited.then((code) => { if (timer) clearTimeout(timer); return code }),
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ])
-  return { stdout, stderr, exitCode, timedOut }
-}
-
-function mergeEnv(
-  base: NodeJS.ProcessEnv,
-  overlay: Record<string, string | undefined>,
-): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const [k, v] of Object.entries(base)) if (typeof v === "string") out[k] = v
-  for (const [k, v] of Object.entries(overlay)) {
-    if (v === undefined) delete out[k]
-    else out[k] = v
-  }
-  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +54,7 @@ async function resolveOpenClawCmd(): Promise<string[]> {
     )
   }
 
-  const { exitCode, stdout } = await runCommand(["which", "openclaw"])
+  const { exitCode, stdout } = await runSubprocess(["which", "openclaw"])
   if (exitCode === 0 && stdout.trim()) {
     log.info(`Using global openclaw: ${stdout.trim()}`)
     return [stdout.trim()]
@@ -656,7 +613,7 @@ export class OpenClawAdapter implements AgentAdapter {
     await mkdir(agent.sessionsDir, { recursive: true })
 
     // 2. Copy task workDir contents into agent workspace
-    await runCommand(["cp", "-a", `${task.workDir}/.`, ws])
+    await runSubprocess(["cp", "-a", `${task.workDir}/.`, ws])
 
     // 3. Preserve bootstrap files
     const savedBootstrap: Record<string, Buffer> = {}
@@ -721,11 +678,11 @@ export class OpenClawAdapter implements AgentAdapter {
       ...this.extraCliArgs,
     ]
 
-    const { stderr, exitCode, timedOut } = await runCommand(
+    const { stderr, exitCode, timedOut } = await runSubprocess(
       cmd,
       {
         cwd: ws,
-        timeout: task.timeoutMs ?? this.timeoutMs,
+        timeoutMs: task.timeoutMs ?? this.timeoutMs,
         env: spawnEnv,
       },
     )
@@ -737,7 +694,7 @@ export class OpenClawAdapter implements AgentAdapter {
     }
 
     // 5. Copy sandbox workspace back to original task workDir for eval
-    await runCommand(["cp", "-a", `${ws}/.`, task.workDir])
+    await runSubprocess(["cp", "-a", `${ws}/.`, task.workDir])
 
     // 6. Load transcript
     const { transcript, rawJsonlPath } = await this.loadTranscript(agent, sessionId)

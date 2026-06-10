@@ -3,6 +3,7 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import type { AgentAdapter, AdapterConfig, AdapterConfigMode, RunResult, AgentStep, ToolCall, TokenUsage, SkillBundle } from "../core/types.ts"
 import { emptyTokenUsage } from "../core/types.ts"
+import { runSubprocess } from "../core/subprocess.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, getHeadlessAgentConfig, expandHome, stripRoutingPrefix } from "../core/config.ts"
 import { envForRoute, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
@@ -288,7 +289,7 @@ const tierHeadlessExplicit: Tier = async () => {
 }
 
 const tierGlobal: Tier = async () => {
-  const { exitCode, stdout } = await runCommand(["which", "opencode"])
+  const { exitCode, stdout } = await runSubprocess(["which", "opencode"])
   if (exitCode !== 0 || !stdout.trim()) return null
   const p = stdout.trim()
   return { resolution: { cmd: [p], env: {} }, logLine: `Using global opencode: ${p}` }
@@ -542,9 +543,9 @@ export class OpenCodeAdapter implements AgentAdapter {
       ...this.extraCliArgs,
     ]
 
-    const { stdout, stderr, exitCode, timedOut } = await runCommand(cmd, {
+    const { stdout, stderr, exitCode, timedOut } = await runSubprocess(cmd, {
       cwd: task.workDir,
-      timeout: task.timeoutMs ?? this.timeoutMs,
+      timeoutMs: task.timeoutMs ?? this.timeoutMs,
       env: this.envOverlay,
     })
 
@@ -642,37 +643,3 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-export async function runCommand(
-  cmd: string[],
-  opts?: { cwd?: string; timeout?: number; env?: Record<string, string> },
-): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }> {
-  const env = opts?.env && Object.keys(opts.env).length > 0
-    ? { ...process.env, ...opts.env }
-    : process.env
-  const proc = Bun.spawn(cmd, {
-    cwd: opts?.cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env,
-  })
-
-  let timedOut = false
-  let timer: ReturnType<typeof setTimeout> | undefined
-  if (opts?.timeout) {
-    timer = setTimeout(() => {
-      timedOut = true
-      proc.kill()
-    }, opts.timeout)
-  }
-
-  const [exitCode, stdout, stderr] = await Promise.all([
-    proc.exited.then((code) => { if (timer) clearTimeout(timer); return code }),
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ])
-  return { stdout, stderr, exitCode, timedOut }
-}

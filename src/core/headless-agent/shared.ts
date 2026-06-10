@@ -5,6 +5,7 @@
  */
 
 import type { TokenUsage, HeadlessAgentDriverName } from "../types.ts"
+import { runSubprocess, type SubprocessResult } from "../subprocess.ts"
 
 /**
  * Identifier for the concrete agent backend. Re-exports the canonical
@@ -81,19 +82,8 @@ export function isHeadlessAgentError(err: unknown): err is HeadlessAgentError {
 // Subprocess plumbing (used by opencode-driver; pi-driver is in-process)
 // ---------------------------------------------------------------------------
 
-export interface SpawnResult {
-  exitCode: number
-  stdout: string
-  stderr: string
-  durationMs: number
-  timedOut: boolean
-}
-
 /**
- * Spawn a subprocess with a kill-on-timeout and drain stdout/stderr in
- * parallel with waiting for exit. Draining concurrently avoids pipe deadlock
- * when the child's output exceeds the OS pipe buffer (~64 KB on macOS) while
- * the parent blocks on `proc.exited`.
+ * Run a driver subprocess via the shared `core/subprocess.ts` runner.
  *
  * On non-zero exit (or timeout), throws HeadlessAgentError unless the caller
  * opts out via `throwOnError: false`.
@@ -103,33 +93,19 @@ export async function spawnDriverSubprocess(
   cmd: string[],
   env: Record<string, string | undefined>,
   opts: { cwd: string; timeoutMs?: number; throwOnError?: boolean },
-): Promise<SpawnResult> {
-  const start = Date.now()
-  const proc = Bun.spawn(cmd, { cwd: opts.cwd, stdout: "pipe", stderr: "pipe", env })
-
-  let timer: ReturnType<typeof setTimeout> | undefined
-  let timedOut = false
-  if (opts.timeoutMs) {
-    timer = setTimeout(() => { timedOut = true; proc.kill() }, opts.timeoutMs)
-  }
-
-  const [exitCode, stdout, stderr] = await Promise.all([
-    proc.exited.then((code) => { if (timer) clearTimeout(timer); return code }),
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ])
-  const durationMs = Date.now() - start
+): Promise<SubprocessResult> {
+  const result = await runSubprocess(cmd, { cwd: opts.cwd, timeoutMs: opts.timeoutMs, env })
 
   const throwOnError = opts.throwOnError ?? true
-  if (throwOnError && (exitCode !== 0 || timedOut)) {
-    const suffix = timedOut ? " (timed out)" : ""
+  if (throwOnError && (result.exitCode !== 0 || result.timedOut)) {
+    const suffix = result.timedOut ? " (timed out)" : ""
     throw new HeadlessAgentError(
-      `${driver} subprocess failed with exit=${exitCode}${suffix}: ${stderr.slice(0, 500) || "(no stderr)"}`,
+      `${driver} subprocess failed with exit=${result.exitCode}${suffix}: ${result.stderr.slice(0, 500) || "(no stderr)"}`,
       driver,
-      exitCode,
-      timedOut,
-      stderr,
+      result.exitCode,
+      result.timedOut,
+      result.stderr,
     )
   }
-  return { exitCode, stdout, stderr, durationMs, timedOut }
+  return result
 }

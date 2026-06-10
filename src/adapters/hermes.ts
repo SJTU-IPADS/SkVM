@@ -7,7 +7,7 @@ import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, stripRoutingPrefix } from "../core/config.ts"
 import { envForRoute, resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseHermes } from "./diagnose-failure.ts"
-import { runCommand } from "./opencode.ts"
+import { runSubprocess } from "../core/subprocess.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import {
   createSandbox,
@@ -201,7 +201,7 @@ export async function resolveHermesCmd(): Promise<string[]> {
   }
 
   // 2. Global install
-  const { exitCode, stdout } = await runCommand(["which", "hermes"])
+  const { exitCode, stdout } = await runSubprocess(["which", "hermes"])
   if (exitCode === 0 && stdout.trim()) {
     log.info(`Using global hermes: ${stdout.trim()}`)
     return [stdout.trim()]
@@ -227,7 +227,7 @@ async function resolvePython(): Promise<string> {
     ? [override]
     : ["python", "python3", "python3.13", "python3.12", "python3.11"]
   for (const bin of candidates) {
-    const { exitCode } = await runCommand([bin, "--version"])
+    const { exitCode } = await runSubprocess([bin, "--version"])
     if (exitCode === 0) return bin
   }
   throw new Error(
@@ -388,20 +388,22 @@ export class HermesAdapter implements AgentAdapter {
       cmd.push("-s", task.skill.meta.name)
     }
 
-    // Build env with PYTHONPATH for source installs. Also inject standard SDK
-    // env vars from the matched providers.routes entry so hermes can reach
-    // the configured backend without the user also exporting them manually.
-    // HERMES_HOME points at the sandbox so hermes reads the managed / native
-    // config.yaml we just wrote and never touches ~/.hermes.
-    const env: Record<string, string | undefined> = { ...process.env, ...envForRoute(this.model) }
+    // Env overlay (runSubprocess merges it over process.env): PYTHONPATH for
+    // source installs, plus standard SDK env vars from the matched
+    // providers.routes entry so hermes can reach the configured backend
+    // without the user also exporting them manually. HERMES_HOME points at
+    // the sandbox so hermes reads the managed / native config.yaml we just
+    // wrote and never touches ~/.hermes.
+    const env: Record<string, string | undefined> = { ...envForRoute(this.model) }
     if (this.hermesHome) env.HERMES_HOME = this.hermesHome
     if (this.repoDir) {
-      env.PYTHONPATH = this.repoDir + (env.PYTHONPATH ? `:${env.PYTHONPATH}` : "")
+      const inheritedPyPath = env.PYTHONPATH ?? process.env.PYTHONPATH
+      env.PYTHONPATH = this.repoDir + (inheritedPyPath ? `:${inheritedPyPath}` : "")
     }
 
-    const { stdout, stderr, exitCode, timedOut } = await runCommandWithEnv(cmd, {
+    const { stdout, stderr, exitCode, timedOut } = await runSubprocess(cmd, {
       cwd: task.workDir,
-      timeout: task.timeoutMs ?? this.timeoutMs,
+      timeoutMs: task.timeoutMs ?? this.timeoutMs,
       env,
     })
 
@@ -495,8 +497,8 @@ export class HermesAdapter implements AgentAdapter {
       "--session-id", sessionId,
     ]
 
-    const exportResult = await runCommandWithEnv(exportCmd, {
-      timeout: 30_000,
+    const exportResult = await runSubprocess(exportCmd, {
+      timeoutMs: 30_000,
       env,
     })
 
@@ -696,32 +698,4 @@ export function buildMinimalResult(
     runStatus,
     ...(statusDetail ? { statusDetail } : {}),
   }
-}
-
-export async function runCommandWithEnv(
-  cmd: string[],
-  opts?: { cwd?: string; timeout?: number; env?: Record<string, string | undefined> },
-): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }> {
-  const proc = Bun.spawn(cmd, {
-    cwd: opts?.cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: opts?.env ?? process.env,
-  })
-
-  let timedOut = false
-  let timer: ReturnType<typeof setTimeout> | undefined
-  if (opts?.timeout) {
-    timer = setTimeout(() => {
-      timedOut = true
-      proc.kill()
-    }, opts.timeout)
-  }
-
-  const [exitCode, stdout, stderr] = await Promise.all([
-    proc.exited.then((code) => { if (timer) clearTimeout(timer); return code }),
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ])
-  return { stdout, stderr, exitCode, timedOut }
 }

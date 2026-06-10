@@ -1,12 +1,12 @@
 import { test, expect, describe } from "bun:test"
-import { buildMinimalResult, parseHermesSession, runCommandWithEnv } from "../../src/adapters/hermes.ts"
+import { buildMinimalResult, parseHermesSession } from "../../src/adapters/hermes.ts"
 
 // Regression coverage for docs/skvm/bench-adapter-error-false-positive.md.
 // The full `.run()` method orchestrates real subprocesses; these tests
 // exercise the building blocks most likely to regress:
 //   - buildMinimalResult propagates the runStatus passed by the caller
 //   - parseHermesSession stamps 'ok' on the happy path
-//   - runCommandWithEnv.timedOut fires exactly when setTimeout kills the proc
+// (subprocess timeout semantics are covered in test/core/subprocess.test.ts)
 
 describe("hermes: buildMinimalResult", () => {
   test("timeout path — runStatus=timeout, no tokens", () => {
@@ -91,21 +91,5 @@ describe("hermes: parseHermesSession", () => {
     expect(r.tokens.input).toBe(100)
     expect(r.tokens.output).toBe(50)
     expect(r.cost).toBe(0.01)
-  })
-})
-
-describe("hermes: runCommandWithEnv timedOut flag", () => {
-  test("returns timedOut=true when the subprocess is killed by setTimeout", async () => {
-    // Sleep 10s with a 200ms timeout → kill fires, timedOut flag propagates.
-    const result = await runCommandWithEnv(["sleep", "10"], { timeout: 200 })
-    expect(result.timedOut).toBe(true)
-    expect(result.exitCode).not.toBe(0)
-  })
-
-  test("returns timedOut=false on natural completion", async () => {
-    const result = await runCommandWithEnv(["sh", "-c", "echo ok"], { timeout: 5000 })
-    expect(result.timedOut).toBe(false)
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout.trim()).toBe("ok")
   })
 })

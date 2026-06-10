@@ -6,7 +6,7 @@ import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings, getHeadlessAgentConfig, expandHome, stripRoutingPrefix } from "../core/config.ts"
 import { envForRoute, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseClaudeCode } from "./diagnose-failure.ts"
-import { runCommand } from "./opencode.ts"
+import { runSubprocess } from "../core/subprocess.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import {
   createSandbox,
@@ -355,7 +355,7 @@ const tierHeadlessExplicit: Tier = async () => {
 }
 
 const tierGlobal: Tier = async () => {
-  const { exitCode, stdout } = await runCommand(["which", "claude"])
+  const { exitCode, stdout } = await runSubprocess(["which", "claude"])
   if (exitCode !== 0 || !stdout.trim()) return null
   const p = stdout.trim()
   return { resolution: { cmd: [p], env: {} }, logLine: `Using global claude: ${p}` }
@@ -616,9 +616,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       ...this.extraCliArgs,
     ]
 
-    const { stdout, stderr, exitCode, timedOut } = await runCommand(cmd, {
+    const { stdout, stderr, exitCode, timedOut } = await runSubprocess(cmd, {
       cwd: task.workDir,
-      timeout: task.timeoutMs ?? this.timeoutMs,
+      timeoutMs: task.timeoutMs ?? this.timeoutMs,
       env: this.envOverlay,
     })
 

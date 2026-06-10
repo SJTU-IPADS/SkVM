@@ -7,7 +7,7 @@ import { emptyTokenUsage } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, stripRoutingPrefix } from "../core/config.ts"
 import { acquireFileLock, releaseFileLock } from "../core/file-lock.ts"
-import { runCommandWithEnv } from "./hermes.ts"
+import { runSubprocess } from "../core/subprocess.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import { resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseJiuwenclaw } from "./diagnose-failure.ts"
@@ -206,7 +206,7 @@ export async function resolveJiuwenClawCmd(): Promise<string[]> {
   }
 
   // 2. Global install
-  const { exitCode, stdout } = await runCommandWithEnv(["which", "jiuwenclaw-cli"])
+  const { exitCode, stdout } = await runSubprocess(["which", "jiuwenclaw-cli"])
   if (exitCode === 0 && stdout.trim()) {
     log.info(`Using global jiuwenclaw-cli: ${stdout.trim()}`)
     return [stdout.trim()]
@@ -386,20 +386,21 @@ export class JiuwenClawAdapter implements AgentAdapter {
       prompt,
     ]
 
-    // Build env with PYTHONPATH for source installs. Model routing lives in
-    // ~/.jiuwenclaw/config/.env (rewritten by setup()) and is read by the
-    // long-running sidecar, not the short-lived ACP stdio client below.
-    const env: Record<string, string | undefined> = { ...process.env }
+    // Env overlay (runSubprocess merges it over process.env): PYTHONPATH for
+    // source installs. Model routing lives in ~/.jiuwenclaw/config/.env
+    // (rewritten by setup()) and is read by the long-running sidecar, not the
+    // short-lived ACP stdio client below.
+    const env: Record<string, string | undefined> = {}
     if (this.repoDir) {
-      env.PYTHONPATH = this.repoDir + (env.PYTHONPATH ? `:${env.PYTHONPATH}` : "")
+      env.PYTHONPATH = this.repoDir + (process.env.PYTHONPATH ? `:${process.env.PYTHONPATH}` : "")
     }
     if (this.apiKey) {
       env.OPENROUTER_API_KEY = this.apiKey
     }
 
-    const { stdout, stderr, exitCode, timedOut } = await runCommandWithEnv(cmd, {
+    const { stdout, stderr, exitCode, timedOut } = await runSubprocess(cmd, {
       cwd: task.workDir,
-      timeout: task.timeoutMs ?? this.timeoutMs,
+      timeoutMs: task.timeoutMs ?? this.timeoutMs,
       env,
     })
 

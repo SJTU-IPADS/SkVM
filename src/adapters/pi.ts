@@ -10,7 +10,7 @@ import type {
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings } from "../core/config.ts"
 import { envForRoute, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
-import { runCommand } from "./opencode.ts"
+import { runSubprocess } from "../core/subprocess.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import {
   createSandbox,
@@ -84,7 +84,7 @@ const tierAdapterRepo: Tier = async () => {
 }
 
 const tierGlobal: Tier = async () => {
-  const { exitCode, stdout } = await runCommand(["which", "pi"])
+  const { exitCode, stdout } = await runSubprocess(["which", "pi"])
   if (exitCode !== 0 || !stdout.trim()) return null
   const p = stdout.trim()
   return { cmd: [p], logLine: `Using global pi: ${p}` }
@@ -246,9 +246,9 @@ export class PiAdapter implements AgentAdapter {
     const envOverlay: Record<string, string> = { ...this.routeEnv }
     if (this.piAgentDir) envOverlay.PI_CODING_AGENT_DIR = this.piAgentDir
 
-    const { stdout, stderr, exitCode, timedOut } = await runCommand(cmd, {
+    const { stdout, stderr, exitCode, timedOut } = await runSubprocess(cmd, {
       cwd: task.workDir,
-      timeout: task.timeoutMs ?? this.timeoutMs,
+      timeoutMs: task.timeoutMs ?? this.timeoutMs,
       env: envOverlay,
     })
 
