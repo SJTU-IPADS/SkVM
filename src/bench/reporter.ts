@@ -4,6 +4,7 @@ import type {
   MultiModelReport, MultiAdapterReport,
 } from "./types.ts"
 import type { RunStatus } from "../core/types.ts"
+import { hasUsageTelemetry } from "../core/run-record.ts"
 
 /**
  * A row is "evaluable" — i.e. its score / pass boolean should be counted in
@@ -55,10 +56,12 @@ function computeSummary(tasks: TaskReport[], conditions: BenchCondition[]): Benc
 
     if (results.length === 0) continue
 
-    // Score / passRate exclude tainted rows (runStatus !== 'ok'). We still
-    // average cost/duration/tokens over ALL rows — those are real resources
-    // spent on the attempt regardless of whether it was evaluable.
+    // Score / passRate exclude tainted rows (runStatus !== 'ok'). Cost and
+    // tokens average over all rows WITH usage telemetry — resources are real
+    // regardless of evaluability, but a harness that reported nothing
+    // (usageAvailable: false) contributes no number, not a fake zero.
     const evaluable = results.filter(isEvaluable)
+    const withUsage = results.filter(hasUsageTelemetry)
     const byStatus: Partial<Record<RunStatus, number>> = {}
     for (const r of results) {
       const key: RunStatus = r.runStatus ?? "ok"
@@ -66,17 +69,18 @@ function computeSummary(tasks: TaskReport[], conditions: BenchCondition[]): Benc
     }
 
     // A condition with zero evaluable rows has no meaningful avgScore /
-    // passRate — emit null so downstream readers (deltas, multi-model
-    // ranking, report.md) can distinguish "all tainted" from "evaluated
-    // and scored 0". The cost/duration/token aggregates still average over
-    // all rows — those are real resources spent on the attempt.
+    // passRate, and one with zero telemetry-bearing rows has no meaningful
+    // avgTokens / avgCost — emit null so downstream readers (deltas,
+    // multi-model ranking, report.md) can distinguish "no data" from
+    // "measured 0". Durations always average over all rows — wall-clock is
+    // real regardless of telemetry.
     perCondition[condition] = {
       avgScore: evaluable.length > 0 ? avg(evaluable.map(r => r.score)) : null,
       passRate: evaluable.length > 0
         ? evaluable.filter(r => r.pass).length / evaluable.length
         : null,
-      avgTokens: avg(results.map(r => r.tokens.input + r.tokens.output)),
-      avgCost: avg(results.map(r => r.cost)),
+      avgTokens: withUsage.length > 0 ? avg(withUsage.map(r => r.tokens.input + r.tokens.output)) : null,
+      avgCost: withUsage.length > 0 ? avg(withUsage.map(r => r.cost)) : null,
       avgDurationMs: avg(results.map(r => r.durationMs)),
       avgLlmDurationMs: avg(results.map(r => r.llmDurationMs)),
       evaluableCount: evaluable.length,
@@ -189,7 +193,7 @@ export function printSummary(report: BenchReport): void {
 
   const avgTokens = conditions.map(cond => {
     const s = summary.perCondition[cond]
-    return s ? formatTokens(s.avgTokens).padStart(10) : "     -    "
+    return s ? fmtOrNa(s.avgTokens, formatTokens).padStart(10) : "     -    "
   })
   console.log(`${"Avg Tokens".padEnd(28)} | ${avgTokens.join(" | ")}`)
 
@@ -207,7 +211,7 @@ export function printSummary(report: BenchReport): void {
 
   const avgCost = conditions.map(cond => {
     const s = summary.perCondition[cond]
-    return s ? formatCost(s.avgCost).padStart(10) : "     -    "
+    return s ? fmtOrNa(s.avgCost, formatCost).padStart(10) : "     -    "
   })
   console.log(`${"Avg Cost".padEnd(28)} | ${avgCost.join(" | ")}`)
 
@@ -278,6 +282,11 @@ function formatCost(usd: number): string {
   return `$${usd.toFixed(3)}`
 }
 
+/** Null-sentinel aware formatting: null means "no usage telemetry" → "n/a". */
+function fmtOrNa(value: number | null, fmt: (n: number) => string): string {
+  return value !== null ? fmt(value) : "n/a"
+}
+
 // ---------------------------------------------------------------------------
 // Markdown Report
 // ---------------------------------------------------------------------------
@@ -325,7 +334,7 @@ export function generateMarkdown(report: BenchReport): string {
 
   const tokenRow = conditions.map(c => {
     const s = summary.perCondition[c]
-    return s ? formatTokens(s.avgTokens) : "-"
+    return s ? fmtOrNa(s.avgTokens, formatTokens) : "-"
   })
   lines.push(`| Avg Tokens | ${tokenRow.join(" | ")} |`)
 
@@ -343,7 +352,7 @@ export function generateMarkdown(report: BenchReport): string {
 
   const costRow = conditions.map(c => {
     const s = summary.perCondition[c]
-    return s ? formatCost(s.avgCost) : "-"
+    return s ? fmtOrNa(s.avgCost, formatCost) : "-"
   })
   lines.push(`| Avg Cost | ${costRow.join(" | ")} |`)
   lines.push("")

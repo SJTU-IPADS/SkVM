@@ -258,10 +258,11 @@ export function minimalRecord(text: string, statusDetail?: string): RunRecordBui
 }
 
 /**
- * Read `RunResult.usageAvailable` through this accessor. Absent means the
- * result came from an adapter not yet migrated to RunRecordBuilder and is
- * treated as available; only an explicit `false` means the harness reported
- * no usage telemetry at all.
+ * Read `usageAvailable` through this accessor — it owns the tri-state rule
+ * for `RunResult` and any record mirroring the field (bench's
+ * `ConditionResult`). Absent means the record predates the field (or an
+ * unmigrated adapter) and is treated as available; only an explicit `false`
+ * means the harness reported no usage telemetry at all.
  */
 export function hasUsageTelemetry(r: Pick<RunResult, "usageAvailable">): boolean {
   return r.usageAvailable !== false

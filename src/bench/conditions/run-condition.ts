@@ -93,6 +93,7 @@ export function toConditionResult(
     ...(opts?.gradingWeights ? { gradingWeights: opts.gradingWeights } : {}),
     tokens: runResult.tokens,
     cost: runResult.cost,
+    ...(runResult.usageAvailable !== undefined ? { usageAvailable: runResult.usageAvailable } : {}),
     durationMs: runResult.durationMs,
     llmDurationMs: runResult.llmDurationMs ?? 0,
     steps: runResult.steps.length,

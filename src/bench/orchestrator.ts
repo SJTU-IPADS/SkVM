@@ -19,6 +19,7 @@ import { CONDITION_RUNNERS, resolveConditionKind } from "./conditions/index.ts"
 import { generateReport, printSummary, printMultiModelSummary, generateMultiModelMarkdown, printMultiAdapterSummary, generateMultiAdapterMarkdown } from "./reporter.ts"
 import { type AdapterName, createAdapter } from "../adapters/registry.ts"
 import { getBenchLogDir, safeModelName } from "../core/config.ts"
+import { hasUsageTelemetry } from "../core/run-record.ts"
 import { createProviderForModel } from "../providers/registry.ts"
 import { createLogger } from "../core/logger.ts"
 import { createProgressSpinner } from "../core/spinner.ts"
@@ -428,9 +429,11 @@ export function averageEvalDetails(runs: { evalDetails: EvalDetail[] }[]): EvalD
  *      for single-row tainted results out of the runner gate, so consumers
  *      never have to special-case the runsPerTask layer.
  *
- * Per-run scores are still preserved in `runScores` for forensics. Cost,
- * tokens, and durations remain averaged over ALL runs — those are real
- * resources spent on the attempt regardless of evaluability.
+ * Per-run scores are still preserved in `runScores` for forensics.
+ * Durations average over ALL runs — wall-clock is real regardless of
+ * evaluability. Tokens/cost average only over runs whose harness reported
+ * usage telemetry (same sentinel rule as computeSummary), and the
+ * aggregate's `usageAvailable` is true iff any run's was.
  */
 export function averageConditionResults(runs: ConditionResult[]): ConditionResult {
   const n = runs.length
@@ -440,6 +443,9 @@ export function averageConditionResults(runs: ConditionResult[]): ConditionResul
   const evaluable = runs.filter(r => r.runStatus === undefined || r.runStatus === "ok")
   const firstTainted = runs.find(r => r.runStatus !== undefined && r.runStatus !== "ok")
   const allOk = firstTainted === undefined
+  const withUsage = runs.filter(hasUsageTelemetry)
+  const avgUsage = (pick: (r: ConditionResult) => number) =>
+    withUsage.length > 0 ? withUsage.reduce((s, r) => s + pick(r), 0) / withUsage.length : 0
 
   // Tainted aggregate ⇒ score=0/pass=false (runner-gate invariant).
   // All-ok aggregate ⇒ true average over the evaluable set.
@@ -461,12 +467,13 @@ export function averageConditionResults(runs: ConditionResult[]): ConditionResul
     // forensics. See round-4 Codex review.
     evalDetails: allOk ? averageEvalDetails(runs) : [],
     tokens: {
-      input: Math.round(avg(runs.map(r => r.tokens.input))),
-      output: Math.round(avg(runs.map(r => r.tokens.output))),
-      cacheRead: Math.round(avg(runs.map(r => r.tokens.cacheRead))),
-      cacheWrite: Math.round(avg(runs.map(r => r.tokens.cacheWrite))),
+      input: Math.round(avgUsage(r => r.tokens.input)),
+      output: Math.round(avgUsage(r => r.tokens.output)),
+      cacheRead: Math.round(avgUsage(r => r.tokens.cacheRead)),
+      cacheWrite: Math.round(avgUsage(r => r.tokens.cacheWrite)),
     },
-    cost: avg(runs.map(r => r.cost)),
+    cost: avgUsage(r => r.cost),
+    usageAvailable: withUsage.length > 0,
     durationMs: avg(runs.map(r => r.durationMs)),
     llmDurationMs: avg(runs.map(r => r.llmDurationMs)),
     steps: Math.round(avg(runs.map(r => r.steps))),
@@ -815,11 +822,14 @@ function buildComparison(reports: BenchReport[]): MultiModelReport["comparison"]
     for (const [cond, summary] of Object.entries(report.summary.perCondition)) {
       if (summary) {
         // Skip conditions with no evaluable rows — a null avgScore would be
-        // misread as "0.00" by consumers of the matrix.
+        // misread as "0.00" by consumers of the matrix. Same for avgTokens
+        // when no row carried usage telemetry.
         if (summary.avgScore !== null) {
           scoreMatrix[model]![cond as BenchCondition] = summary.avgScore
         }
-        tokenMatrix[model]![cond as BenchCondition] = summary.avgTokens
+        if (summary.avgTokens !== null) {
+          tokenMatrix[model]![cond as BenchCondition] = summary.avgTokens
+        }
       }
     }
 
@@ -1036,7 +1046,9 @@ function buildAdapterComparison(reports: BenchReport[]): MultiAdapterReport["com
         if (summary.avgScore !== null) {
           scoreMatrix[adapter]![cond as BenchCondition] = summary.avgScore
         }
-        tokenMatrix[adapter]![cond as BenchCondition] = summary.avgTokens
+        if (summary.avgTokens !== null) {
+          tokenMatrix[adapter]![cond as BenchCondition] = summary.avgTokens
+        }
       }
     }
 

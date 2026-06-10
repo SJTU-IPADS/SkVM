@@ -155,6 +155,13 @@ export interface ConditionResult {
   gradingWeights?: { automated: number; llmJudge: number }
   tokens: TokenUsage
   cost: number
+  /**
+   * Whether `tokens`/`cost` came from real harness telemetry (mirrors
+   * `RunResult.usageAvailable`). `false` means the harness reported nothing —
+   * render "n/a", and exclude the row from token/cost averages. Absent on
+   * rows written before this field existed; treat absent as available.
+   */
+  usageAvailable?: boolean
   durationMs: number
   llmDurationMs: number
   steps: number
@@ -207,8 +214,13 @@ export interface ConditionSummary {
    */
   avgScore: number | null
   passRate: number | null
-  avgTokens: number
-  avgCost: number
+  /**
+   * Averaged over rows whose harness reported usage telemetry
+   * (`usageAvailable !== false`). `null` when no row did — distinct from 0,
+   * which means "telemetry says zero". Renderers show "n/a" for null.
+   */
+  avgTokens: number | null
+  avgCost: number | null
   avgDurationMs: number
   avgLlmDurationMs: number
   /** Rows counted in the avgScore / passRate denominators (runStatus === 'ok'). */

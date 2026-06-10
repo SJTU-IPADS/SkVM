@@ -234,6 +234,7 @@ export const jitBoostRunner: ConditionRunner = {
       evalDetails: [],
       tokens: lastRunResult?.tokens ?? emptyTokenUsage(),
       cost: lastRunResult?.cost ?? 0,
+      ...(lastRunResult?.usageAvailable !== undefined ? { usageAvailable: lastRunResult.usageAvailable } : {}),
       durationMs: jitRunReports.reduce((sum, r) => sum + r.durationMs, 0),
       llmDurationMs: jitRunReports.reduce((sum, r) => sum + r.llmDurationMs, 0),
       steps: lastRunResult?.steps.length ?? 0,
