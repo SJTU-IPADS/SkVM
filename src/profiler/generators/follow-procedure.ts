@@ -1,36 +1,11 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
-
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "follow.procedure",
-  descriptions: {
-    L1: "Follow a 3-step procedure: write a start marker, list numbers 1 through N, write an end marker",
-    L2: "Follow a 6-step procedure with a conditional branch based on whether a number is even or odd, producing computed values at each step",
-    L3: "Follow a loop procedure: iterate over a word pool for R rounds, output each round's word, then count words starting with a target letter",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1": return generateL1()
-      case "L2": return generateL2()
-      case "L3": return generateL3()
-    }
-  },
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, type Rng } from "../generator-toolkit.ts"
 
 /**
  * L1: 1. Write START. 2. List numbers 1-N. 3. Write END.
  */
-function generateL1(): MicrobenchmarkInstance {
-  const N = randInt(4, 10)
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const N = rng.randInt(4, 10)
 
   const expectedLines = ["START"]
   for (let i = 1; i <= N; i++) {
@@ -49,14 +24,10 @@ Provide only the result, nothing else.`
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json
-text = open('response.txt').read().strip()
+    eval: pyEval({
+      body: `text = open('response.txt').read().strip()
 actual = [l.strip() for l in text.splitlines() if l.strip()]
 expected = json.loads(${JSON.stringify(expectedJson)})
-cp = []
 
 ok_count = len(actual) == len(expected)
 cp.append({"name": "line_count", "score": 1.0 if ok_count else 0.0,
@@ -68,20 +39,16 @@ for i, exp_line in enumerate(expected):
         cp.append({"name": f"line_{i+1}", "score": 1.0 if ok else 0.0,
           "reason": None if ok else f"expected [{exp_line}], got [{actual[i]}]"})
     else:
-        cp.append({"name": f"line_{i+1}", "score": 0.0, "reason": "line missing"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+        cp.append({"name": f"line_{i+1}", "score": 0.0, "reason": "line missing"})`,
+    }),
   }
 }
 
 /**
  * L2: 6 steps with conditional branch based on N even/odd.
  */
-function generateL2(): MicrobenchmarkInstance {
-  const N = randInt(10, 50)
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const N = rng.randInt(10, 50)
   const isEven = N % 2 === 0
 
   const expectedLines = [
@@ -107,14 +74,10 @@ Each step is exactly one line. Provide only these 6 lines, nothing else.`
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json
-text = open('response.txt').read().strip()
+    eval: pyEval({
+      body: `text = open('response.txt').read().strip()
 actual = [l.strip() for l in text.split('\\n') if l.strip()]
 expected = json.loads(${JSON.stringify(expectedJson)})
-cp = []
 
 ok_count = len(actual) == 6
 cp.append({"name": "line_count", "score": 1.0 if ok_count else 0.0,
@@ -128,27 +91,23 @@ for i, exp_line in enumerate(expected):
         cp.append({"name": name, "score": 1.0 if ok else 0.0,
           "reason": None if ok else f"expected [{exp_line}], got [{actual[i]}]"})
     else:
-        cp.append({"name": name, "score": 0.0, "reason": "line missing"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+        cp.append({"name": name, "score": 0.0, "reason": "line missing"})`,
+    }),
   }
 }
 
 /**
  * L3: Loop R times generating words from POOL, count starting with C.
  */
-function generateL3(): MicrobenchmarkInstance {
+function generateL3(rng: Rng): MicrobenchmarkInstance {
   const pool = ["apple", "avocado", "banana", "blueberry", "cherry", "coconut", "apricot", "blackberry"]
-  const R = randInt(5, 8)
-  const letter = randChoice(["a", "b", "c"] as const)
+  const R = rng.randInt(5, 8)
+  const letter = rng.randChoice(["a", "b", "c"] as const)
 
   // Pre-select the words for each round so we know the expected output
   const selectedWords: string[] = []
   for (let i = 0; i < R; i++) {
-    selectedWords.push(pool[randInt(0, pool.length - 1)]!)
+    selectedWords.push(pool[rng.randInt(0, pool.length - 1)]!)
   }
 
   const count = selectedWords.filter(w => w.startsWith(letter)).length
@@ -177,14 +136,10 @@ Provide exactly ${R + 1} lines total (${R} round lines + 1 count line), nothing 
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json
-text = open('response.txt').read().strip()
+    eval: pyEval({
+      body: `text = open('response.txt').read().strip()
 actual = [l.strip() for l in text.split('\\n') if l.strip()]
 expected = json.loads(${JSON.stringify(expectedJson)})
-cp = []
 
 ok_count = len(actual) == len(expected)
 cp.append({"name": "line_count", "score": 1.0 if ok_count else 0.0,
@@ -200,13 +155,17 @@ for i, exp_line in enumerate(expected):
         cp.append({"name": name, "score": 1.0 if ok else 0.0,
           "reason": None if ok else f"expected [{exp_line}], got [{actual[i]}]"})
     else:
-        cp.append({"name": name, "score": 0.0, "reason": "line missing"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+        cp.append({"name": name, "score": 0.0, "reason": "line missing"})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "follow.procedure",
+  descriptions: {
+    L1: "Follow a 3-step procedure: write a start marker, list numbers 1 through N, write an end marker",
+    L2: "Follow a 6-step procedure with a conditional branch based on whether a number is even or odd, producing computed values at each step",
+    L3: "Follow a loop procedure: iterate over a word pool for R rounds, output each round's word, then count words starting with a target letter",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

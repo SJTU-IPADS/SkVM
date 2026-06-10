@@ -1,39 +1,14 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
-
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "tool.exec",
-  descriptions: {
-    L1: "Run a single shell command (wc, sort, or head) on a data file and write the output to a result file",
-    L2: "Write a Python script that reads input, computes an aggregate (sum, product, or median), execute it, and write the result",
-    L3: "Execute a three-step shell pipeline (sort, grep, wc) producing intermediate files at each stage",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1": return generateL1()
-      case "L2": return generateL2()
-      case "L3": return generateL3()
-    }
-  },
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, type Rng } from "../generator-toolkit.ts"
 
 /**
  * L1: Run a command on data.txt, write result to result.txt.
  */
-function generateL1(): MicrobenchmarkInstance {
-  const lineCount = randInt(5, 15)
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const lineCount = rng.randInt(5, 15)
   const lines: string[] = []
   for (let i = 0; i < lineCount; i++) {
-    lines.push(`item_${randInt(100, 999)}`)
+    lines.push(`item_${rng.randInt(100, 999)}`)
   }
   // Trailing newline so `wc -l` (which counts newline characters) reports the
   // true line count instead of lineCount-1.
@@ -57,19 +32,16 @@ function generateL1(): MicrobenchmarkInstance {
     },
   ]
 
-  const cmdInfo = randChoice(commands)
+  const cmdInfo = rng.randChoice(commands)
 
   return {
     prompt: `${cmdInfo.description} and write the result to result.txt in the current directory.`,
     setupFiles: {
       "data.txt": content,
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os, re
-cp = []
-exists = os.path.isfile('result.txt')
+    eval: pyEval({
+      imports: ["os", "re"],
+      body: `exists = os.path.isfile('result.txt')
 cp.append({"name": "file_exists", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.txt not found"})
 if exists:
@@ -83,21 +55,18 @@ if exists:
     if not match:
         match = actual == expected
     cp.append({"name": "output_correct", "score": 1.0 if match else 0.0,
-      "reason": None if match else f"expected [{expected[:50]}], got [{actual[:50]}]"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if match else f"expected [{expected[:50]}], got [{actual[:50]}]"})`,
+    }),
   }
 }
 
 /**
  * L2: Write a Python script computing an expression from input, execute it, write output.
  */
-function generateL2(): MicrobenchmarkInstance {
+function generateL2(rng: Rng): MicrobenchmarkInstance {
   const scenarios = [
-    () => {
-      const nums = Array.from({ length: randInt(3, 6) }, () => randInt(1, 50))
+    (rng: Rng) => {
+      const nums = Array.from({ length: rng.randInt(3, 6) }, () => rng.randInt(1, 50))
       const expected = nums.reduce((a, b) => a + b, 0)
       return {
         description: `Write a Python script called compute.py that reads numbers from input.txt (one per line), computes their sum, and writes the result to result.txt.`,
@@ -105,8 +74,8 @@ function generateL2(): MicrobenchmarkInstance {
         expected: String(expected),
       }
     },
-    () => {
-      const nums = Array.from({ length: randInt(3, 6) }, () => randInt(2, 20))
+    (rng: Rng) => {
+      const nums = Array.from({ length: rng.randInt(3, 6) }, () => rng.randInt(2, 20))
       const expected = nums.reduce((a, b) => a * b, 1)
       return {
         description: `Write a Python script called compute.py that reads numbers from input.txt (one per line), computes their product, and writes the result to result.txt.`,
@@ -114,8 +83,8 @@ function generateL2(): MicrobenchmarkInstance {
         expected: String(expected),
       }
     },
-    () => {
-      const nums = Array.from({ length: randInt(4, 8) }, () => randInt(1, 100))
+    (rng: Rng) => {
+      const nums = Array.from({ length: rng.randInt(4, 8) }, () => rng.randInt(1, 100))
       const sorted = [...nums].sort((a, b) => a - b)
       const mid = Math.floor(sorted.length / 2)
       const median = sorted.length % 2 === 0
@@ -130,19 +99,16 @@ function generateL2(): MicrobenchmarkInstance {
     },
   ]
 
-  const scenario = randChoice(scenarios)()
+  const scenario = rng.randChoice(scenarios)(rng)
 
   return {
     prompt: `${scenario.description} Then execute the script. All files should be in the current directory.`,
     setupFiles: {
       "input.txt": scenario.inputContent,
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os
-cp = []
-script_exists = os.path.isfile('compute.py')
+    eval: pyEval({
+      imports: ["os"],
+      body: `script_exists = os.path.isfile('compute.py')
 cp.append({"name": "file_exists", "score": 1.0 if script_exists else 0.0,
   "reason": None if script_exists else "compute.py not found"})
 result_exists = os.path.isfile('result.txt')
@@ -160,32 +126,28 @@ if result_exists:
     if not match:
         match = actual == expected
     cp.append({"name": "output_correct", "score": 1.0 if match else 0.0,
-      "reason": None if match else f"expected {expected}, got {actual}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if match else f"expected {expected}, got {actual}"})`,
+    }),
   }
 }
 
 /**
  * L3: Three-step pipeline using shell commands.
  */
-function generateL3(): MicrobenchmarkInstance {
-  const lineCount = randInt(8, 15)
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  const lineCount = rng.randInt(8, 15)
   const lines: string[] = []
   const words = ["apple", "banana", "cherry", "date", "elderberry"]
   for (let i = 0; i < lineCount; i++) {
-    const word = randChoice(words)
-    const num = randInt(1, 100)
+    const word = rng.randChoice(words)
+    const num = rng.randInt(1, 100)
     lines.push(`${word} ${num}`)
   }
   const content = lines.join("\n")
 
   // Pipeline: sort -> grep for a word -> count lines
-  const targetWord = randChoice(words)
+  const targetWord = rng.randChoice(words)
   const matchingLines = lines.filter(l => l.startsWith(targetWord))
-  const sortedMatching = [...matchingLines].sort()
   const expectedCount = matchingLines.length
 
   return {
@@ -199,12 +161,9 @@ Use shell commands (sort, grep, wc) to accomplish each step. All files should be
     setupFiles: {
       "data.txt": content,
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os, re
-cp = []
-int_exists = os.path.isfile('intermediate.txt')
+    eval: pyEval({
+      imports: ["os", "re"],
+      body: `int_exists = os.path.isfile('intermediate.txt')
 cp.append({"name": "intermediate_exists", "score": 1.0 if int_exists else 0.0,
   "reason": None if int_exists else "intermediate.txt not found"})
 proc_exists = os.path.isfile('processed.txt')
@@ -219,12 +178,17 @@ if result_exists:
     nums = re.findall(r'\\d+', result.split('\\n')[0])
     ok = result == expected or (nums and nums[0] == expected)
     cp.append({"name": "output_correct", "score": 1.0 if ok else 0.0,
-      "reason": None if ok else f"expected {expected}, got {result}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if ok else f"expected {expected}, got {result}"})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "tool.exec",
+  descriptions: {
+    L1: "Run a single shell command (wc, sort, or head) on a data file and write the output to a result file",
+    L2: "Write a Python script that reads input, computes an aggregate (sum, product, or median), execute it, and write the result",
+    L3: "Execute a three-step shell pipeline (sort, grep, wc) producing intermediate files at each stage",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

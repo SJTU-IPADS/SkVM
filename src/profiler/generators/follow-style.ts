@@ -1,35 +1,10 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
-
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "follow.style",
-  descriptions: {
-    L1: "Write 2-3 sentences in formal academic tone with no contractions and no first-person pronouns",
-    L2: "Explain a scientific concept to a 5-year-old using simple words and enthusiastic tone, avoiding jargon",
-    L3: "Write a multi-section document maintaining a specific stylistic register (e.g., pirate, Shakespearean, film noir) consistently throughout every section",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1": return generateL1()
-      case "L2": return generateL2()
-      case "L3": return generateL3()
-    }
-  },
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, type Rng } from "../generator-toolkit.ts"
 
 /**
  * L1: Write 2-3 sentences about TOPIC in formal academic tone. No contractions, no first person.
  */
-function generateL1(): MicrobenchmarkInstance {
+function generateL1(rng: Rng): MicrobenchmarkInstance {
   const topics = [
     "climate change",
     "quantum computing",
@@ -39,7 +14,7 @@ function generateL1(): MicrobenchmarkInstance {
     "the Roman Empire",
   ]
 
-  const topic = randChoice(topics)
+  const topic = rng.randChoice(topics)
 
   const prompt = `Respond with 2-3 sentences about ${topic} in a formal academic tone. Rules:
 - No contractions (don't, can't, it's, etc.)
@@ -49,12 +24,9 @@ Provide only the sentences, nothing else.`
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-text = open('response.txt').read().strip()
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip()
 
 contractions = re.findall(r"\\b\\w+'\\w+\\b", text)
 common_contractions = ["don't", "can't", "won't", "isn't", "aren't", "wasn't", "weren't",
@@ -76,19 +48,15 @@ cp.append({"name": "tone_correct", "score": 1.0 if no_fp else 0.0,
 sentences = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip()]
 sent_ok = 2 <= len(sentences) <= 3
 cp.append({"name": "word_count", "score": 1.0 if sent_ok else 0.0,
-  "reason": None if sent_ok else "expected 2-3 sentences, got %d" % len(sentences)})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+  "reason": None if sent_ok else "expected 2-3 sentences, got %d" % len(sentences)})`,
+    }),
   }
 }
 
 /**
  * L2: Explain CONCEPT to a 5-year-old. Simple words, enthusiastic tone with exclamation marks.
  */
-function generateL2(): MicrobenchmarkInstance {
+function generateL2(rng: Rng): MicrobenchmarkInstance {
   const concepts = [
     "gravity",
     "photosynthesis",
@@ -98,7 +66,7 @@ function generateL2(): MicrobenchmarkInstance {
     "the moon",
   ]
 
-  const concept = randChoice(concepts)
+  const concept = rng.randChoice(concepts)
   const jargonWords = [
     "therefore", "consequently", "furthermore", "nevertheless", "notwithstanding",
     "paradigm", "methodology", "hypothesis", "synthesize", "extrapolate",
@@ -113,12 +81,9 @@ Provide only the explanation, nothing else.`
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, re
-text = open('response.txt').read().strip()
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip()
 
 has_excl = '!' in text
 cp.append({"name": "tone_correct", "score": 1.0 if has_excl else 0.0,
@@ -135,19 +100,15 @@ cp.append({"name": "no_jargon", "score": 1.0 if no_jargon else 0.0,
 word_count = len(text.split())
 wc_ok = word_count <= 120
 cp.append({"name": "word_count", "score": 1.0 if wc_ok else 0.0,
-  "reason": None if wc_ok else f"too long for a 5-year-old explanation: {word_count} words"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+  "reason": None if wc_ok else f"too long for a 5-year-old explanation: {word_count} words"})`,
+    }),
   }
 }
 
 /**
  * L3: Write S-section document about TOPIC in REGISTER style throughout.
  */
-function generateL3(): MicrobenchmarkInstance {
+function generateL3(rng: Rng): MicrobenchmarkInstance {
   const scenarios = [
     {
       topic: "coffee",
@@ -187,7 +148,7 @@ function generateL3(): MicrobenchmarkInstance {
     },
   ]
 
-  const s = randChoice(scenarios)
+  const s = rng.randChoice(scenarios)
   const markersJson = JSON.stringify(s.markers)
 
   const prompt = `Respond with a ${s.sections}-section document about ${s.topic} in the style of a ${s.register}. Each section should have a heading (on its own line, starting with "##") followed by 2-3 sentences. The ${s.register} style must be maintained consistently throughout EVERY section.
@@ -196,12 +157,9 @@ Provide only the document, nothing else.`
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, re
-text = open('response.txt').read().strip()
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip()
 
 sections = [s.strip() for s in re.split(r'^##', text, flags=re.MULTILINE) if s.strip()]
 sec_ok = len(sections) >= ${s.sections}
@@ -229,13 +187,17 @@ if len(sections) >= ${s.sections}:
     missing = [i + 1 for i, sec in enumerate(sections)
                if not marker_hits(sec)]
     cp.append({"name": "style_consistent", "score": round(frac, 3),
-      "reason": None if not missing else f"sections lacking ${s.register} style markers: {missing}"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if not missing else f"sections lacking ${s.register} style markers: {missing}"})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "follow.style",
+  descriptions: {
+    L1: "Write 2-3 sentences in formal academic tone with no contractions and no first-person pronouns",
+    L2: "Explain a scientific concept to a 5-year-old using simple words and enthusiastic tone, avoiding jargon",
+    L3: "Write a multi-section document maintaining a specific stylistic register (e.g., pirate, Shakespearean, film noir) consistently throughout every section",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

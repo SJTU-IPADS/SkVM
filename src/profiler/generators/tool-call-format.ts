@@ -1,42 +1,17 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
-
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "tool.call.format",
-  descriptions: {
-    L1: "Output a JSON function call object with simple string arguments matching exact values",
-    L2: "Output a JSON function call object with nested arguments including arrays and sub-objects",
-    L3: "Output a JSON function call object with deeply nested structures, special characters requiring proper escaping, and mixed types",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1": return generateL1()
-      case "L2": return generateL2()
-      case "L3": return generateL3()
-    }
-  },
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, PY_EMIT_CHECKPOINTS, type Rng } from "../generator-toolkit.ts"
 
 /**
  * L1: Output JSON function call with simple args.
  */
-function generateL1(): MicrobenchmarkInstance {
+function generateL1(rng: Rng): MicrobenchmarkInstance {
   const funcs = [
-    { name: "send_email", args: { to: `user${randInt(1, 99)}@example.com`, subject: `Report ${randInt(100, 999)}` } },
-    { name: "create_user", args: { username: `user_${randInt(100, 999)}`, role: randChoice(["admin", "editor", "viewer"]) } },
-    { name: "set_config", args: { key: `timeout_${randInt(1, 50)}`, value: String(randInt(10, 300)) } },
+    { name: "send_email", args: { to: `user${rng.randInt(1, 99)}@example.com`, subject: `Report ${rng.randInt(100, 999)}` } },
+    { name: "create_user", args: { username: `user_${rng.randInt(100, 999)}`, role: rng.randChoice(["admin", "editor", "viewer"]) } },
+    { name: "set_config", args: { key: `timeout_${rng.randInt(1, 50)}`, value: String(rng.randInt(10, 300)) } },
   ]
 
-  const fn = randChoice(funcs)
+  const fn = rng.randChoice(funcs)
   const argsStr = Object.entries(fn.args).map(([k, v]) => `${k}="${v}"`).join(", ")
   const expectedJson = JSON.stringify({ function: fn.name, arguments: fn.args })
 
@@ -48,12 +23,9 @@ Output only the JSON, nothing else.`
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, re
-cp = []
-text = open('response.txt').read().strip()
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip()
 json_match = re.search(r'\\{[\\s\\S]*\\}', text)
 valid = json_match is not None
 cp.append({"name": "json_valid", "score": 1.0 if valid else 0.0,
@@ -63,7 +35,7 @@ if valid:
         parsed = json.loads(json_match.group())
     except json.JSONDecodeError as e:
         cp[-1] = {"name": "json_valid", "score": 0.0, "reason": f"invalid JSON: {e}"}
-        print(json.dumps({"checkpoints": cp}))
+        ${PY_EMIT_CHECKPOINTS}
         exit(0)
     expected = json.loads(${JSON.stringify(expectedJson)})
     fn_ok = parsed.get('function') == expected['function']
@@ -75,31 +47,28 @@ if valid:
             args_errors.append(k)
     args_ok = len(args_errors) == 0
     cp.append({"name": "args_correct", "score": 1.0 if args_ok else 0.0,
-      "reason": None if args_ok else f"mismatched args: {', '.join(args_errors)}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if args_ok else f"mismatched args: {', '.join(args_errors)}"})`,
+    }),
   }
 }
 
 /**
  * L2: Output JSON function call with nested args (arrays, objects).
  */
-function generateL2(): MicrobenchmarkInstance {
-  const items = Array.from({ length: randInt(2, 4) }, () => ({
-    id: randInt(100, 999),
-    name: randChoice(["widget", "gadget", "gizmo", "doohickey"]) + "_" + randInt(1, 99),
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const items = Array.from({ length: rng.randInt(2, 4) }, () => ({
+    id: rng.randInt(100, 999),
+    name: rng.randChoice(["widget", "gadget", "gizmo", "doohickey"]) + "_" + rng.randInt(1, 99),
   }))
 
   const fnCall = {
     function: "create_order",
     arguments: {
-      customer_id: `cust_${randInt(100, 999)}`,
+      customer_id: `cust_${rng.randInt(100, 999)}`,
       items: items,
       shipping: {
-        method: randChoice(["express", "standard", "overnight"]),
-        address: `${randInt(100, 999)} Main St`,
+        method: rng.randChoice(["express", "standard", "overnight"]),
+        address: `${rng.randInt(100, 999)} Main St`,
       },
     },
   }
@@ -118,12 +87,9 @@ Output only the JSON, nothing else.`
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, re
-cp = []
-text = open('response.txt').read().strip()
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip()
 json_match = re.search(r'\\{[\\s\\S]*\\}', text)
 valid = json_match is not None
 cp.append({"name": "json_valid", "score": 1.0 if valid else 0.0,
@@ -133,7 +99,7 @@ if valid:
         parsed = json.loads(json_match.group())
     except json.JSONDecodeError as e:
         cp[-1] = {"name": "json_valid", "score": 0.0, "reason": f"invalid JSON: {e}"}
-        print(json.dumps({"checkpoints": cp}))
+        ${PY_EMIT_CHECKPOINTS}
         exit(0)
     expected = json.loads(${JSON.stringify(expectedJson)})
     fn_ok = parsed.get('function') == 'create_order'
@@ -149,21 +115,18 @@ if valid:
     ship = args.get('shipping')
     ship_ok = isinstance(ship, dict) and ship.get('method') == expected['arguments']['shipping']['method']
     cp.append({"name": "shipping_correct", "score": 1.0 if ship_ok else 0.0,
-      "reason": None if ship_ok else "shipping method mismatch or not an object"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if ship_ok else "shipping method mismatch or not an object"})`,
+    }),
   }
 }
 
 /**
  * L3: Output JSON function call with special characters and deep nesting.
  */
-function generateL3(): MicrobenchmarkInstance {
-  const depth = randChoice([3, 4])
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  const depth = rng.randChoice([3, 4])
   const specialStr = `value with "quotes" and \\backslash and tab\\there`
-  const specialKey = `field_${randInt(1, 99)}`
+  const specialKey = `field_${rng.randInt(1, 99)}`
 
   // Build a deeply nested object
   function buildNested(d: number, val: string): unknown {
@@ -174,14 +137,12 @@ function generateL3(): MicrobenchmarkInstance {
   const fnCall = {
     function: "process_data",
     arguments: {
-      id: `id_${randInt(100, 999)}`,
+      id: `id_${rng.randInt(100, 999)}`,
       [specialKey]: specialStr,
-      nested: buildNested(depth, `deep_value_${randInt(1, 99)}`),
-      tags: [`tag-${randInt(1, 9)}`, `special "tag"`, `back\\slash`],
+      nested: buildNested(depth, `deep_value_${rng.randInt(1, 99)}`),
+      tags: [`tag-${rng.randInt(1, 9)}`, `special "tag"`, `back\\slash`],
     },
   }
-
-  const expectedJson = JSON.stringify(fnCall)
 
   // Build description of nested structure
   let nestingDesc = ""
@@ -206,12 +167,9 @@ All special characters must be properly escaped. Output only the JSON, nothing e
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, re
-cp = []
-text = open('response.txt').read().strip()
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip()
 json_match = re.search(r'\\{[\\s\\S]*\\}', text)
 valid = json_match is not None
 cp.append({"name": "json_valid", "score": 1.0 if valid else 0.0,
@@ -221,7 +179,7 @@ if valid:
         parsed = json.loads(json_match.group())
     except json.JSONDecodeError as e:
         cp[-1] = {"name": "json_valid", "score": 0.0, "reason": f"invalid JSON: {e}"}
-        print(json.dumps({"checkpoints": cp}))
+        ${PY_EMIT_CHECKPOINTS}
         exit(0)
     fn_ok = parsed.get('function') == 'process_data'
     cp.append({"name": "function_name", "score": 1.0 if fn_ok else 0.0,
@@ -248,12 +206,17 @@ if valid:
                 break
             obj = obj[key]
     cp.append({"name": "nested_structure", "score": 1.0 if nest_ok else 0.0,
-      "reason": nest_reason})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": nest_reason})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "tool.call.format",
+  descriptions: {
+    L1: "Output a JSON function call object with simple string arguments matching exact values",
+    L2: "Output a JSON function call object with nested arguments including arrays and sub-objects",
+    L3: "Output a JSON function call object with deeply nested structures, special characters requiring proper escaping, and mixed types",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

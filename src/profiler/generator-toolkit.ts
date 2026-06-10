@@ -45,6 +45,21 @@ export const mathRandomRng: Rng = {
   sample: (arr, n) => [...arr].sort(() => Math.random() - 0.5).slice(0, n),
 }
 
+/**
+ * Unbiased Fisher–Yates shuffle driven by `rng.random()`. Distinct from
+ * `Rng.shuffle`, which reproduces the historical biased-sort shuffle: the
+ * reason.* generators have always used Fisher–Yates (different algorithm,
+ * different Math.random draw count), so they keep it via this helper.
+ */
+export function fisherYatesShuffle<T>(rng: Rng, arr: readonly T[]): T[] {
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng.random() * (i + 1))
+    ;[a[i], a[j]] = [a[j]!, a[i]!]
+  }
+  return a
+}
+
 /** Builds one microbenchmark instance for one difficulty level. */
 export type LevelBuilder = (rng: Rng) => MicrobenchmarkInstance
 
@@ -91,6 +106,13 @@ export interface PyEvalSpec {
    */
   preamble?: string
   /**
+   * Shell command run before the `python3 << 'PYEOF'` heredoc — e.g.
+   * `"bash solution.sh >/dev/null 2>&1"` to run the candidate solution
+   * before the checkpoint script inspects its output files (the
+   * gen.code.shell pattern). The toolkit owns the `"; "` join.
+   */
+  shellPrefix?: string
+  /**
    * Python statements that append `{"name", "score", "reason"}` dicts to the
    * pre-initialized `cp` list. May use `${PY_EMIT_CHECKPOINTS}` followed by
    * `raise SystemExit(0)` to exit early after a fatal checkpoint.
@@ -121,7 +143,7 @@ export function pyEval(spec: PyEvalSpec): EvalCriterion {
   ]
   return {
     method: "script",
-    command: `python3 << 'PYEOF'\n${lines.join("\n")}\nPYEOF`,
+    command: `${spec.shellPrefix ? `${spec.shellPrefix}; ` : ""}python3 << 'PYEOF'\n${lines.join("\n")}\nPYEOF`,
     expectedExitCode: 0,
   }
 }

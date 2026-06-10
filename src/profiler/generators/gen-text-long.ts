@@ -1,13 +1,5 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, type Rng } from "../generator-toolkit.ts"
 
 const TOPICS = [
   "machine learning algorithms",
@@ -23,35 +15,15 @@ const TOPICS = [
 const START_MARKERS = ["===BEGIN===", "---START---", "<<<CONTENT>>>"]
 const END_MARKERS = ["===END===", "---FINISH---", "<<<END>>>"]
 
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "gen.text.long",
-  descriptions: {
-    L1: "Write a numbered list of key concepts on a topic, wrapped in start/end markers, with exact item count",
-    L2: "Write a technical document with multiple sections (## headings), each with multiple paragraphs, within a byte-size range",
-    L3: "Write a comprehensive reference document with table of contents, main sections with subsections, and a summary, exceeding 5KB",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1":
-        return generateL1()
-      case "L2":
-        return generateL2()
-      case "L3":
-        return generateL3()
-    }
-  },
-}
-
 /**
  * L1: Write numbered list of K TOPIC items with descriptions,
  * wrap with START/END markers. Eval: markers present, length <1KB, item count match.
  */
-function generateL1(): MicrobenchmarkInstance {
-  const K = randInt(5, 10)
-  const TOPIC = randChoice(TOPICS)
-  const START = randChoice(START_MARKERS)
-  const END = randChoice(END_MARKERS)
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const K = rng.randInt(5, 10)
+  const TOPIC = rng.randChoice(TOPICS)
+  const START = rng.randChoice(START_MARKERS)
+  const END = rng.randChoice(END_MARKERS)
 
   return {
     prompt: `Respond with a numbered list of exactly ${K} key concepts related to ${TOPIC}. Each item should have a brief one-sentence description.
@@ -61,12 +33,9 @@ IMPORTANT: Wrap your entire response with these exact markers:
 - End with: ${END}
 
 Provide ONLY the markers and the list between them, nothing else.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-text = open('response.txt').read()
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read()
 has_start = '${START}' in text
 cp.append({"name": "start_marker", "score": 1.0 if has_start else 0.0,
   "reason": None if has_start else "missing start marker"})
@@ -81,11 +50,8 @@ if has_start and has_end:
       "reason": None if count_ok else f"expected ${K} items, got {len(items)}"})
     size_ok = len(text.encode()) < 1024 * 5
     cp.append({"name": "byte_size", "score": 1.0 if size_ok else 0.0,
-      "reason": None if size_ok else f"response too large: {len(text.encode())} bytes"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if size_ok else f"response too large: {len(text.encode())} bytes"})`,
+    }),
   }
 }
 
@@ -94,16 +60,11 @@ PYEOF`,
  * each with ## heading and >=3 paragraphs, wrap with markers.
  * Length 1.5-5KB.
  */
-function generateL2(): MicrobenchmarkInstance {
-  const TOPIC = randChoice(TOPICS)
-  const S = randInt(3, 5)
-  const START = randChoice(START_MARKERS)
-  const END = randChoice(END_MARKERS)
-
-  const sectionNames: string[] = []
-  for (let i = 0; i < S; i++) {
-    sectionNames.push(`Section ${i + 1}`)
-  }
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const TOPIC = rng.randChoice(TOPICS)
+  const S = rng.randInt(3, 5)
+  const START = rng.randChoice(START_MARKERS)
+  const END = rng.randChoice(END_MARKERS)
 
   return {
     prompt: `Respond with a technical document about ${TOPIC} with exactly ${S} sections. Each section must:
@@ -115,12 +76,9 @@ IMPORTANT: Wrap your entire response with these exact markers:
 - End with: ${END}
 
 The document should be between 1500 and 5000 bytes. Provide ONLY the markers and the document between them, nothing else.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-text = open('response.txt').read()
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read()
 has_start = '${START}' in text
 cp.append({"name": "start_marker", "score": 1.0 if has_start else 0.0,
   "reason": None if has_start else "missing start marker"})
@@ -139,11 +97,8 @@ if has_start and has_end:
     sections = re.findall(r'^##\\s+.+', content, re.MULTILINE)
     sec_ok = len(sections) >= ${S}
     cp.append({"name": "section_count", "score": 1.0 if sec_ok else 0.0,
-      "reason": None if sec_ok else f"expected ${S} sections, got {len(sections)}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if sec_ok else f"expected ${S} sections, got {len(sections)}"})`,
+    }),
   }
 }
 
@@ -152,12 +107,12 @@ PYEOF`,
  * and SUB subsections each, table of contents and summary.
  * Wrap with markers. Length 5-10KB.
  */
-function generateL3(): MicrobenchmarkInstance {
-  const TOPIC = randChoice(TOPICS)
-  const S = randInt(3, 5)
-  const SUB = randInt(2, 3)
-  const START = randChoice(START_MARKERS)
-  const END = randChoice(END_MARKERS)
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  const TOPIC = rng.randChoice(TOPICS)
+  const S = rng.randInt(3, 5)
+  const SUB = rng.randInt(2, 3)
+  const START = rng.randChoice(START_MARKERS)
+  const END = rng.randChoice(END_MARKERS)
 
   return {
     prompt: `Respond with a comprehensive reference document about ${TOPIC} with:
@@ -172,12 +127,9 @@ IMPORTANT: Wrap your entire response with these exact markers:
 - End with: ${END}
 
 The document should be at least 5000 bytes. Provide ONLY the markers and the document between them, nothing else.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-text = open('response.txt').read()
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read()
 has_start = '${START}' in text
 cp.append({"name": "start_marker", "score": 1.0 if has_start else 0.0,
   "reason": None if has_start else "missing start marker"})
@@ -198,12 +150,17 @@ if has_start and has_end:
     min_sub = ${S * SUB}
     sub_ok = len(subsections) >= min_sub
     cp.append({"name": "subsection_count", "score": 1.0 if sub_ok else 0.0,
-      "reason": None if sub_ok else f"expected >= {min_sub} subsections (###), got {len(subsections)}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if sub_ok else f"expected >= {min_sub} subsections (###), got {len(subsections)}"})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "gen.text.long",
+  descriptions: {
+    L1: "Write a numbered list of key concepts on a topic, wrapped in start/end markers, with exact item count",
+    L2: "Write a technical document with multiple sections (## headings), each with multiple paragraphs, within a byte-size range",
+    L3: "Write a comprehensive reference document with table of contents, main sections with subsections, and a summary, exceeding 5KB",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

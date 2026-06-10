@@ -1,41 +1,16 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
-
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "reason.spatial",
-  descriptions: {
-    L1: "Compute the Euclidean or Manhattan distance between two 2D points",
-    L2: "Compute a geometric property (area, perimeter, or diagonal) of a triangle or rectangle given vertex coordinates",
-    L3: "Compute the great-circle distance between two cities using the haversine formula given their latitude and longitude",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1": return generateL1()
-      case "L2": return generateL2()
-      case "L3": return generateL3()
-    }
-  },
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, fisherYatesShuffle, pyEval, type Rng } from "../generator-toolkit.ts"
 
 /**
  * L1: Distance between two points
  */
-function generateL1(): MicrobenchmarkInstance {
-  const x1 = randInt(-20, 20)
-  const y1 = randInt(-20, 20)
-  const x2 = randInt(-20, 20)
-  const y2 = randInt(-20, 20)
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const x1 = rng.randInt(-20, 20)
+  const y1 = rng.randInt(-20, 20)
+  const x2 = rng.randInt(-20, 20)
+  const y2 = rng.randInt(-20, 20)
 
-  const metric = randChoice(["Euclidean", "Manhattan"] as const)
+  const metric = rng.randChoice(["Euclidean", "Manhattan"] as const)
   let expected: number
   if (metric === "Euclidean") {
     expected = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
@@ -48,12 +23,9 @@ function generateL1(): MicrobenchmarkInstance {
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-text = open('response.txt').read().strip()
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip()
 nums = re.findall(r'-?[\\d]+\\.?\\d*', text)
 cp.append({"name": "number_found", "score": 1.0 if nums else 0.0,
   "reason": None if nums else "no number found in response"})
@@ -62,29 +34,26 @@ if nums:
     expected = float('${expectedStr}')
     ok = abs(actual - expected) <= 0.15
     cp.append({"name": "value_correct", "score": 1.0 if ok else 0.0,
-      "reason": None if ok else f"expected ${expectedStr}, got {actual}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if ok else f"expected ${expectedStr}, got {actual}"})`,
+    }),
   }
 }
 
 /**
  * L2: Compute property of a shape (area or perimeter)
  */
-function generateL2(): MicrobenchmarkInstance {
-  const shapeType = randChoice(["triangle", "rectangle"] as const)
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const shapeType = rng.randChoice(["triangle", "rectangle"] as const)
   let prompt: string
   let expected: number
 
   if (shapeType === "triangle") {
     // Triangle with 3 vertices, compute area using shoelace
-    const x1 = randInt(0, 10), y1 = randInt(0, 10)
-    const x2 = randInt(0, 10), y2 = randInt(0, 10)
-    const x3 = randInt(0, 10), y3 = randInt(0, 10)
+    const x1 = rng.randInt(0, 10), y1 = rng.randInt(0, 10)
+    const x2 = rng.randInt(0, 10), y2 = rng.randInt(0, 10)
+    const x3 = rng.randInt(0, 10), y3 = rng.randInt(0, 10)
 
-    const prop = randChoice(["area", "perimeter"] as const)
+    const prop = rng.randChoice(["area", "perimeter"] as const)
 
     if (prop === "area") {
       expected = Math.abs((x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)) / 2)
@@ -98,10 +67,10 @@ function generateL2(): MicrobenchmarkInstance {
     prompt = `A triangle has vertices at (${x1},${y1}), (${x2},${y2}), and (${x3},${y3}). What is its ${prop}? Answer with just the number rounded to 2 decimal places, nothing else.`
   } else {
     // Rectangle with bottom-left and top-right
-    const x1 = randInt(0, 5), y1 = randInt(0, 5)
-    const x2 = x1 + randInt(1, 10), y2 = y1 + randInt(1, 10)
+    const x1 = rng.randInt(0, 5), y1 = rng.randInt(0, 5)
+    const x2 = x1 + rng.randInt(1, 10), y2 = y1 + rng.randInt(1, 10)
 
-    const prop = randChoice(["area", "perimeter", "diagonal"] as const)
+    const prop = rng.randChoice(["area", "perimeter", "diagonal"] as const)
 
     if (prop === "area") {
       expected = (x2 - x1) * (y2 - y1)
@@ -118,12 +87,9 @@ function generateL2(): MicrobenchmarkInstance {
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-text = open('response.txt').read().strip()
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip()
 nums = re.findall(r'-?[\\d]+\\.?\\d*', text)
 cp.append({"name": "number_found", "score": 1.0 if nums else 0.0,
   "reason": None if nums else "no number found in response"})
@@ -133,18 +99,15 @@ if nums:
     tol = max(0.02, abs(expected) * 0.005)
     ok = abs(actual - expected) <= tol
     cp.append({"name": "value_correct", "score": 1.0 if ok else 0.0,
-      "reason": None if ok else f"expected ${expectedStr}, got {actual}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if ok else f"expected ${expectedStr}, got {actual}"})`,
+    }),
   }
 }
 
 /**
  * L3: Great-circle distance between two cities (lat/lon)
  */
-function generateL3(): MicrobenchmarkInstance {
+function generateL3(rng: Rng): MicrobenchmarkInstance {
   const cities = [
     { name: "New York", lat: 40.7128, lon: -74.006 },
     { name: "London", lat: 51.5074, lon: -0.1278 },
@@ -156,7 +119,7 @@ function generateL3(): MicrobenchmarkInstance {
     { name: "Sao Paulo", lat: -23.5505, lon: -46.6333 },
   ]
 
-  const [cityA, cityB] = shuffle(cities).slice(0, 2) as [typeof cities[0], typeof cities[0]]
+  const [cityA, cityB] = fisherYatesShuffle(rng, cities).slice(0, 2) as [typeof cities[0], typeof cities[0]]
 
   // Haversine formula
   const R = 6371 // Earth radius in km
@@ -172,12 +135,9 @@ function generateL3(): MicrobenchmarkInstance {
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-text = open('response.txt').read().strip().replace(',', '')
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip().replace(',', '')
 nums = re.findall(r'\\d+', text)
 cp.append({"name": "number_found", "score": 1.0 if nums else 0.0,
   "reason": None if nums else "no number found in response"})
@@ -186,21 +146,17 @@ if nums:
     expected = ${expected}
     ok = abs(actual - expected) <= max(5, expected * 0.005)
     cp.append({"name": "distance_correct", "score": 1.0 if ok else 0.0,
-      "reason": None if ok else f"expected ~{expected} km, got {actual} km"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if ok else f"expected ~{expected} km, got {actual} km"})`,
+    }),
   }
 }
 
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr]
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j]!, a[i]!]
-  }
-  return a
-}
-
-export default generator
+export default defineGenerator({
+  primitiveId: "reason.spatial",
+  descriptions: {
+    L1: "Compute the Euclidean or Manhattan distance between two 2D points",
+    L2: "Compute a geometric property (area, perimeter, or diagonal) of a triangle or rectangle given vertex coordinates",
+    L3: "Compute the great-circle distance between two cities using the haversine formula given their latitude and longitude",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

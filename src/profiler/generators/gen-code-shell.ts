@@ -1,51 +1,29 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, type Rng } from "../generator-toolkit.ts"
 
 const PREFIXES = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"]
 const LOG_LEVELS = ["ERROR", "WARN", "INFO", "DEBUG"]
 const AGG_FUNCS = ["sum", "avg", "count"] as const
 const NAMES = ["Alice", "Bob", "Carol", "Dave", "Eve", "Frank", "Grace", "Hank"]
 
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "gen.code.shell",
-  descriptions: {
-    L1: "Write a bash script using grep to count lines in a file that start with a given prefix",
-    L2: "Write a bash script using a pipeline (filter, sort, head) to extract top-scoring entries from a file",
-    L3: "Write a bash script using awk to parse a structured log file, extract key-value pairs by log level, and compute an aggregate",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1":
-        return generateL1()
-      case "L2":
-        return generateL2()
-      case "L3":
-        return generateL3()
-    }
-  },
-}
+/**
+ * Shell prefix shared by all levels: run the candidate script before the
+ * checkpoint script inspects result.txt.
+ */
+const RUN_SOLUTION_PREFIX = "bash solution.sh >/dev/null 2>&1"
 
 /**
  * L1: Using grep, count lines in data.txt starting with PREFIX,
  * write count to result.txt. Eval: exact int match.
  */
-function generateL1(): MicrobenchmarkInstance {
-  const PREFIX = randChoice(PREFIXES)
-  const N = randInt(15, 50)
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const PREFIX = rng.randChoice(PREFIXES)
+  const N = rng.randInt(15, 50)
 
   const lines: string[] = []
   let expectedCount = 0
   for (let i = 0; i < N; i++) {
-    const pfx = randChoice(PREFIXES)
+    const pfx = rng.randChoice(PREFIXES)
     const msg = `${pfx}: something happened at line ${i}`
     lines.push(msg)
     if (pfx === PREFIX) expectedCount++
@@ -56,12 +34,10 @@ function generateL1(): MicrobenchmarkInstance {
     setupFiles: {
       "data.txt": lines.join("\n"),
     },
-    eval: {
-      method: "script",
-      command: `bash solution.sh >/dev/null 2>&1; python3 << 'PYEOF'
-import json, re, os
-cp = []
-exists = os.path.isfile('result.txt')
+    eval: pyEval({
+      shellPrefix: RUN_SOLUTION_PREFIX,
+      imports: ["re", "os"],
+      body: `exists = os.path.isfile('result.txt')
 cp.append({"name": "script_created", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.txt not created"})
 if exists:
@@ -74,11 +50,8 @@ if exists:
         actual = int(nums[0])
         correct = actual == ${expectedCount}
         cp.append({"name": "output_correct", "score": 1.0 if correct else 0.0,
-          "reason": None if correct else f"expected ${expectedCount}, got {actual}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+          "reason": None if correct else f"expected ${expectedCount}, got {actual}"})`,
+    }),
   }
 }
 
@@ -86,16 +59,16 @@ PYEOF`,
  * L2: Using pipeline, find lines in scores.txt with score >= T,
  * sort descending, take top K, write to result.txt.
  */
-function generateL2(): MicrobenchmarkInstance {
-  const T = randInt(50, 80)
-  const K = randInt(3, 7)
-  const N = randInt(15, 40)
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const T = rng.randInt(50, 80)
+  const K = rng.randInt(3, 7)
+  const N = rng.randInt(15, 40)
 
   const lines: string[] = []
   const scores: Array<{ name: string; score: number }> = []
   for (let i = 0; i < N; i++) {
-    const name = randChoice(NAMES) + i
-    const score = randInt(10, 100)
+    const name = rng.randChoice(NAMES) + i
+    const score = rng.randInt(10, 100)
     lines.push(`${name} ${score}`)
     scores.push({ name, score })
   }
@@ -111,12 +84,10 @@ function generateL2(): MicrobenchmarkInstance {
     setupFiles: {
       "scores.txt": lines.join("\n"),
     },
-    eval: {
-      method: "script",
-      command: `bash solution.sh >/dev/null 2>&1; python3 << 'PYEOF'
-import json, os
-cp = []
-exists = os.path.isfile('result.txt')
+    eval: pyEval({
+      shellPrefix: RUN_SOLUTION_PREFIX,
+      imports: ["os"],
+      body: `exists = os.path.isfile('result.txt')
 cp.append({"name": "script_created", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.txt not created"})
 if exists:
@@ -137,11 +108,8 @@ if exists:
                 mismatch = f"score mismatch: {a} vs {e}"
                 break
         cp.append({"name": "output_correct", "score": 1.0 if all_match else 0.0,
-          "reason": mismatch})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+          "reason": mismatch})`,
+    }),
   }
 }
 
@@ -150,19 +118,19 @@ PYEOF`,
  * extract key-values where LEVEL is L, compute AGG of numeric values,
  * write to result.txt.
  */
-function generateL3(): MicrobenchmarkInstance {
-  const L = randChoice(LOG_LEVELS)
-  const AGG = randChoice(AGG_FUNCS)
-  const N = randInt(20, 60)
-  const targetKey = randChoice(["latency", "duration", "count", "size"])
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  const L = rng.randChoice(LOG_LEVELS)
+  const AGG = rng.randChoice(AGG_FUNCS)
+  const N = rng.randInt(20, 60)
+  const targetKey = rng.randChoice(["latency", "duration", "count", "size"])
 
   const logLines: string[] = []
   const matchingValues: number[] = []
 
   for (let i = 0; i < N; i++) {
-    const level = randChoice(LOG_LEVELS)
-    const ts = `2024-01-${String(randInt(1, 28)).padStart(2, "0")}T${String(randInt(0, 23)).padStart(2, "0")}:${String(randInt(0, 59)).padStart(2, "0")}:${String(randInt(0, 59)).padStart(2, "0")}`
-    const val = randInt(1, 500)
+    const level = rng.randChoice(LOG_LEVELS)
+    const ts = `2024-01-${String(rng.randInt(1, 28)).padStart(2, "0")}T${String(rng.randInt(0, 23)).padStart(2, "0")}:${String(rng.randInt(0, 59)).padStart(2, "0")}:${String(rng.randInt(0, 59)).padStart(2, "0")}`
+    const val = rng.randInt(1, 500)
     const msg = `request processed ${targetKey}=${val}`
     logLines.push(`[${ts}] ${level}: ${msg}`)
     if (level === L) {
@@ -194,12 +162,10 @@ function generateL3(): MicrobenchmarkInstance {
     setupFiles: {
       "app.log": logLines.join("\n"),
     },
-    eval: {
-      method: "script",
-      command: `bash solution.sh >/dev/null 2>&1; python3 << 'PYEOF'
-import re, json, os
-cp = []
-exists = os.path.isfile('result.txt')
+    eval: pyEval({
+      shellPrefix: RUN_SOLUTION_PREFIX,
+      imports: ["re", "os"],
+      body: `exists = os.path.isfile('result.txt')
 cp.append({"name": "script_created", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.txt not created"})
 if exists:
@@ -214,12 +180,17 @@ if exists:
         tol = max(0.01, abs(expected) * 0.01)
         correct = abs(actual - expected) <= tol
         cp.append({"name": "output_correct", "score": 1.0 if correct else 0.0,
-          "reason": None if correct else f"expected ${expectedResult}, got {actual}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+          "reason": None if correct else f"expected ${expectedResult}, got {actual}"})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "gen.code.shell",
+  descriptions: {
+    L1: "Write a bash script using grep to count lines in a file that start with a given prefix",
+    L2: "Write a bash script using a pipeline (filter, sort, head) to extract top-scoring entries from a file",
+    L3: "Write a bash script using awk to parse a structured log file, extract key-value pairs by log level, and compute an aggregate",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

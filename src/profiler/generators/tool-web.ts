@@ -1,38 +1,13 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
-
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "tool.web",
-  descriptions: {
-    L1: "Start a local HTTP server, fetch a JSON response, extract a specific field, and write it to a file",
-    L2: "Fetch JSON from a local server with query parameters, extract nested data (total and item IDs), and write structured JSON output",
-    L3: "Fetch all pages from a paginated local API, merge items across pages, and write the combined result to JSON",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1": return generateL1()
-      case "L2": return generateL2()
-      case "L3": return generateL3()
-    }
-  },
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, PY_EMIT_CHECKPOINTS, type Rng } from "../generator-toolkit.ts"
 
 /**
  * L1: Fetch JSON from localhost:PORT, extract KEY field, write to result.txt.
  */
-function generateL1(): MicrobenchmarkInstance {
-  const port = randInt(18100, 18999)
-  const key = randChoice(["name", "status", "version", "message"])
-  const value = `${randChoice(["alpha", "bravo", "charlie"])}_${randInt(100, 999)}`
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const port = rng.randInt(18100, 18999)
+  const key = rng.randChoice(["name", "status", "version", "message"])
+  const value = `${rng.randChoice(["alpha", "bravo", "charlie"])}_${rng.randInt(100, 999)}`
 
   const serverData: Record<string, string> = {
     name: "test-service",
@@ -56,12 +31,9 @@ console.log("Server running on port " + server.port);
     setupFiles: {
       "server.js": serverScript,
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os
-cp = []
-exists = os.path.isfile('result.txt')
+    eval: pyEval({
+      imports: ["os"],
+      body: `exists = os.path.isfile('result.txt')
 cp.append({"name": "file_exists", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.txt not found"})
 if exists:
@@ -69,22 +41,19 @@ if exists:
     expected = '${value}'
     ok = actual == expected
     cp.append({"name": "data_extraction", "score": 1.0 if ok else 0.0,
-      "reason": None if ok else f"expected {expected}, got {actual}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if ok else f"expected {expected}, got {actual}"})`,
+    }),
   }
 }
 
 /**
  * L2: Fetch with query params, extract total and IDs, write to result.json.
  */
-function generateL2(): MicrobenchmarkInstance {
-  const port = randInt(18100, 18999)
-  const category = randChoice(["books", "tools", "games", "music"])
-  const items = Array.from({ length: randInt(3, 6) }, (_, i) => ({
-    id: randInt(100, 999),
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const port = rng.randInt(18100, 18999)
+  const category = rng.randChoice(["books", "tools", "games", "music"])
+  const items = Array.from({ length: rng.randInt(3, 6) }, (_, i) => ({
+    id: rng.randInt(100, 999),
     name: `${category}_item_${i + 1}`,
   }))
 
@@ -115,12 +84,9 @@ When done, stop the server using \`kill $PID\` (do NOT use pkill or killall).`,
     setupFiles: {
       "server.js": serverScript,
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os
-cp = []
-exists = os.path.isfile('result.json')
+    eval: pyEval({
+      imports: ["os"],
+      body: `exists = os.path.isfile('result.json')
 cp.append({"name": "file_exists", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.json not found"})
 if exists:
@@ -128,7 +94,7 @@ if exists:
         result = json.load(open('result.json'))
     except json.JSONDecodeError as e:
         cp.append({"name": "json_valid", "score": 0.0, "reason": f"invalid JSON: {e}"})
-        print(json.dumps({"checkpoints": cp}))
+        ${PY_EMIT_CHECKPOINTS}
         exit(0)
     expected = json.loads('${expectedJson}')
     total_ok = result.get('total') == expected['total']
@@ -138,26 +104,23 @@ if exists:
     expected_ids = sorted(expected['ids'])
     ids_ok = actual_ids == expected_ids
     cp.append({"name": "ids_correct", "score": 1.0 if ids_ok else 0.0,
-      "reason": None if ids_ok else f"ids mismatch: expected {len(expected_ids)}, got {len(actual_ids)}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if ids_ok else f"ids mismatch: expected {len(expected_ids)}, got {len(actual_ids)}"})`,
+    }),
   }
 }
 
 /**
  * L3: Paginated API, fetch all pages, merge items, write to result.json.
  */
-function generateL3(): MicrobenchmarkInstance {
-  const port = randInt(18100, 18999)
-  const totalItems = randInt(8, 15)
-  const pageSize = randChoice([3, 4, 5])
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  const port = rng.randInt(18100, 18999)
+  const totalItems = rng.randInt(8, 15)
+  const pageSize = rng.randChoice([3, 4, 5])
   const totalPages = Math.ceil(totalItems / pageSize)
 
   const allItems = Array.from({ length: totalItems }, (_, i) => ({
     id: i + 1,
-    value: `item_${randInt(100, 999)}`,
+    value: `item_${rng.randInt(100, 999)}`,
   }))
 
   // Build pages
@@ -203,12 +166,9 @@ All files should be in the current directory. When done, stop the server using \
     setupFiles: {
       "server.js": serverScript,
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os
-cp = []
-exists = os.path.isfile('result.json')
+    eval: pyEval({
+      imports: ["os"],
+      body: `exists = os.path.isfile('result.json')
 cp.append({"name": "file_exists", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.json not found"})
 if exists:
@@ -216,7 +176,7 @@ if exists:
         result = json.load(open('result.json'))
     except json.JSONDecodeError as e:
         cp.append({"name": "json_valid", "score": 0.0, "reason": f"invalid JSON: {e}"})
-        print(json.dumps({"checkpoints": cp}))
+        ${PY_EMIT_CHECKPOINTS}
         exit(0)
     is_list = isinstance(result, list)
     cp.append({"name": "server_response", "score": 1.0 if is_list else 0.0,
@@ -225,12 +185,17 @@ if exists:
         expected = json.loads('${expectedJson}')
         ok = sorted(result) == sorted(expected)
         cp.append({"name": "pagination", "score": 1.0 if ok else 0.0,
-          "reason": None if ok else f"items mismatch: expected {len(expected)}, got {len(result)}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+          "reason": None if ok else f"items mismatch: expected {len(expected)}, got {len(result)}"})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "tool.web",
+  descriptions: {
+    L1: "Start a local HTTP server, fetch a JSON response, extract a specific field, and write it to a file",
+    L2: "Fetch JSON from a local server with query parameters, extract nested data (total and item IDs), and write structured JSON output",
+    L3: "Fetch all pages from a paginated local API, merge items across pages, and write the combined result to JSON",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

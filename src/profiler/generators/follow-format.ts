@@ -59,8 +59,6 @@ function generateL2(rng: Rng): MicrobenchmarkInstance {
 
   const entity = rng.randChoice(entities)
   const minArrayItems = entity.fields.features ? 3 : entity.fields.genres ? 2 : 3
-  const arrayField = Object.entries(entity.fields).find(([_, v]) => v.startsWith("array"))![0]
-  const objectField = Object.entries(entity.fields).find(([_, v]) => v === "object")![0]
 
   const fieldsDesc = Object.entries(entity.fields).map(([k, v]) => {
     if (v === "string") return `"${k}" (string)`

@@ -1,18 +1,5 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
-
-function sample<T>(arr: readonly T[], n: number): T[] {
-  const shuffled = [...arr].sort(() => Math.random() - 0.5)
-  return shuffled.slice(0, n)
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, type Rng } from "../generator-toolkit.ts"
 
 const TOPICS = [
   "artificial intelligence", "renewable energy", "space exploration",
@@ -37,46 +24,23 @@ const REGISTERS = [
   "technical", "analytical",
 ]
 
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "gen.text.prose",
-  descriptions: {
-    L1: "Write a single paragraph with a minimum sentence count on a topic, naturally incorporating required keywords",
-    L2: "Write a structured essay with a title, multiple headed sections, and multiple paragraphs per section",
-    L3: "Write a genre-specific document (e.g., technical analysis, persuasive essay) with introduction, body sections, and conclusion in a specified register",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1":
-        return generateL1()
-      case "L2":
-        return generateL2()
-      case "L3":
-        return generateL3()
-    }
-  },
-}
-
 /**
  * L1: Write paragraph of >=S sentences about TOPIC including keywords KW.
  * Eval: length, sentence count, keyword presence.
  */
-function generateL1(): MicrobenchmarkInstance {
-  const S = randInt(4, 7)
-  const TOPIC = randChoice(TOPICS)
-  const KW = sample(KEYWORDS_POOL, randInt(2, 3))
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const S = rng.randInt(4, 7)
+  const TOPIC = rng.randChoice(TOPICS)
+  const KW = rng.sample(KEYWORDS_POOL, rng.randInt(2, 3))
   const kwList = KW.map((k) => `"${k}"`).join(", ")
 
   return {
     prompt: `Respond with a single paragraph of at least ${S} sentences about ${TOPIC}. You must include these keywords naturally in the text: ${kwList}.
 
 Provide ONLY the paragraph, nothing else.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-text = open('response.txt').read().strip()
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip()
 sentences = [s.strip() for s in re.split(r'[.!?]+(?:\\s|$)', text) if s.strip()]
 sent_ok = len(sentences) >= ${S}
 cp.append({"name": "sentence_count", "score": 1.0 if sent_ok else 0.0,
@@ -89,11 +53,8 @@ for kw in keywords:
       "reason": None if found else f"missing keyword: {kw}"})
 len_ok = len(text) >= 100
 cp.append({"name": "length_ok", "score": 1.0 if len_ok else 0.0,
-  "reason": None if len_ok else f"too short: {len(text)} chars"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+  "reason": None if len_ok else f"too short: {len(text)} chars"})`,
+    }),
   }
 }
 
@@ -102,9 +63,9 @@ PYEOF`,
  * (## headed, 2-3 paragraphs of 3-4 sentences).
  * Eval: section markers, paragraph counts.
  */
-function generateL2(): MicrobenchmarkInstance {
-  const TITLE = randChoice(TITLES)
-  const S = randInt(3, 5)
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const TITLE = rng.randChoice(TITLES)
+  const S = rng.randInt(3, 5)
 
   return {
     prompt: `Respond with a structured essay titled "${TITLE}" with exactly ${S} sections. Each section must:
@@ -113,12 +74,9 @@ function generateL2(): MicrobenchmarkInstance {
 - Each paragraph should have 3-4 sentences
 
 Provide ONLY the essay, nothing else.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-text = open('response.txt').read().strip()
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip()
 sections = re.findall(r'^##\\s+.+', text, re.MULTILINE)
 sec_ok = len(sections) >= ${S}
 cp.append({"name": "section_count", "score": 1.0 if sec_ok else 0.0,
@@ -138,11 +96,8 @@ if body_ok:
             para_reason = f"section {i+1} has only {len(paragraphs)} paragraphs (need >= 2)"
             break
     cp.append({"name": "paragraphs_per_section", "score": 1.0 if para_ok else 0.0,
-      "reason": para_reason})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": para_reason})`,
+    }),
   }
 }
 
@@ -151,11 +106,11 @@ PYEOF`,
  * Maintain REGISTER throughout. Target: 3-5KB.
  * Eval: structure completeness, register consistency.
  */
-function generateL3(): MicrobenchmarkInstance {
-  const GENRE = randChoice(GENRES)
-  const TOPIC = randChoice(TOPICS)
-  const S = randInt(3, 5)
-  const REGISTER = randChoice(REGISTERS)
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  const GENRE = rng.randChoice(GENRES)
+  const TOPIC = rng.randChoice(TOPICS)
+  const S = rng.randInt(3, 5)
+  const REGISTER = rng.randChoice(REGISTERS)
 
   return {
     prompt: `Respond with a ${GENRE} about ${TOPIC} in a ${REGISTER} register. The document must include:
@@ -167,12 +122,9 @@ Each section should have at least 2 paragraphs. Maintain a ${REGISTER} tone thro
 The total length should be approximately 3000-5000 bytes.
 
 Provide ONLY the document, nothing else.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-text = open('response.txt').read().strip()
-cp = []
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip()
 byte_len = len(text.encode())
 sections = re.findall(r'^##\\s+.+', text, re.MULTILINE)
 min_sections = ${S} + 2
@@ -190,12 +142,17 @@ cp.append({"name": "byte_size_min", "score": 1.0 if min_ok else 0.0,
   "reason": None if min_ok else f"too short: {byte_len} bytes"})
 max_ok = byte_len <= 10000
 cp.append({"name": "byte_size_max", "score": 1.0 if max_ok else 0.0,
-  "reason": None if max_ok else f"too long: {byte_len} bytes"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+  "reason": None if max_ok else f"too long: {byte_len} bytes"})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "gen.text.prose",
+  descriptions: {
+    L1: "Write a single paragraph with a minimum sentence count on a topic, naturally incorporating required keywords",
+    L2: "Write a structured essay with a title, multiple headed sections, and multiple paragraphs per section",
+    L3: "Write a genre-specific document (e.g., technical analysis, persuasive essay) with introduction, body sections, and conclusion in a specified register",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

@@ -1,40 +1,15 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
-
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "tool.browser",
-  descriptions: {
-    L1: "Parse an HTML file and extract the text content of an element by its id attribute",
-    L2: "Parse an HTML table, extract all data rows, and write them as a CSV file",
-    L3: "Crawl multiple linked HTML pages by following next-page links, collect list items from each page, and write the sorted result as JSON",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1": return generateL1()
-      case "L2": return generateL2()
-      case "L3": return generateL3()
-    }
-  },
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, PY_EMIT_CHECKPOINTS, type Rng } from "../generator-toolkit.ts"
 
 /**
  * L1: Parse an HTML file and extract a specific element's text content.
  * Simplified browser-like test using command-line HTML parsing.
  */
-function generateL1(): MicrobenchmarkInstance {
-  const title = `Page ${randInt(100, 999)}`
-  const heading = `${randChoice(["Welcome", "Hello", "Greetings"])} ${randChoice(["World", "User", "Friend"])}`
-  const targetId = `content-${randInt(1, 99)}`
-  const targetText = `${randChoice(["alpha", "bravo", "charlie"])}_${randInt(100, 999)}`
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const title = `Page ${rng.randInt(100, 999)}`
+  const heading = `${rng.randChoice(["Welcome", "Hello", "Greetings"])} ${rng.randChoice(["World", "User", "Friend"])}`
+  const targetId = `content-${rng.randInt(1, 99)}`
+  const targetText = `${rng.randChoice(["alpha", "bravo", "charlie"])}_${rng.randInt(100, 999)}`
 
   const html = `<!DOCTYPE html>
 <html>
@@ -51,12 +26,9 @@ function generateL1(): MicrobenchmarkInstance {
     setupFiles: {
       "page.html": html,
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os
-cp = []
-exists = os.path.isfile('result.txt')
+    eval: pyEval({
+      imports: ["os"],
+      body: `exists = os.path.isfile('result.txt')
 cp.append({"name": "file_exists", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.txt not found"})
 if exists:
@@ -64,22 +36,19 @@ if exists:
     expected = '${targetText}'
     ok = actual == expected
     cp.append({"name": "extraction_correct", "score": 1.0 if ok else 0.0,
-      "reason": None if ok else f"expected {expected}, got {actual}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+      "reason": None if ok else f"expected {expected}, got {actual}"})`,
+    }),
   }
 }
 
 /**
  * L2: Parse HTML with a table, extract data, write as CSV.
  */
-function generateL2(): MicrobenchmarkInstance {
-  const rows = Array.from({ length: randInt(3, 6) }, () => ({
-    name: randChoice(["Alice", "Bob", "Carol", "Dave", "Eve"]),
-    score: randInt(50, 100),
-    grade: randChoice(["A", "B", "C", "D"]),
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const rows = Array.from({ length: rng.randInt(3, 6) }, () => ({
+    name: rng.randChoice(["Alice", "Bob", "Carol", "Dave", "Eve"]),
+    score: rng.randInt(50, 100),
+    grade: rng.randChoice(["A", "B", "C", "D"]),
   }))
 
   const tableRows = rows.map(r =>
@@ -99,7 +68,6 @@ ${tableRows}
 </body>
 </html>`
 
-  const expectedCsv = "Name,Score,Grade\n" + rows.map(r => `${r.name},${r.score},${r.grade}`).join("\n")
   const expectedJson = JSON.stringify(rows)
 
   return {
@@ -107,12 +75,9 @@ ${tableRows}
     setupFiles: {
       "page.html": html,
     },
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import csv, json, os
-cp = []
-exists = os.path.isfile('result.csv')
+    eval: pyEval({
+      imports: ["csv", "os"],
+      body: `exists = os.path.isfile('result.csv')
 cp.append({"name": "file_exists", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.csv not found"})
 if exists:
@@ -121,7 +86,7 @@ if exists:
         actual = list(reader)
     except Exception as e:
         cp.append({"name": "parsing_correct", "score": 0.0, "reason": f"CSV parse error: {e}"})
-        print(json.dumps({"checkpoints": cp}))
+        ${PY_EMIT_CHECKPOINTS}
         exit(0)
     expected = json.loads(${JSON.stringify(expectedJson)})
     count_ok = len(actual) == len(expected)
@@ -141,11 +106,8 @@ if exists:
                 mismatches.append(f"score parse error for {exp['name']}")
         ok = len(mismatches) == 0
         cp.append({"name": "extraction_correct", "score": 1.0 if ok else 0.0,
-          "reason": None if ok else "; ".join(mismatches[:3])})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+          "reason": None if ok else "; ".join(mismatches[:3])})`,
+    }),
   }
 }
 
@@ -153,16 +115,16 @@ PYEOF`,
  * L3: Parse HTML with multiple pages (files), follow "links" between them,
  * collect data across all pages.
  */
-function generateL3(): MicrobenchmarkInstance {
-  const totalPages = randInt(3, 4)
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  const totalPages = rng.randInt(3, 4)
   const allItems: string[] = []
   const setupFiles: Record<string, string> = {}
 
   for (let p = 1; p <= totalPages; p++) {
-    const itemCount = randInt(2, 4)
+    const itemCount = rng.randInt(2, 4)
     const items: string[] = []
     for (let i = 0; i < itemCount; i++) {
-      const item = `item_${randInt(100, 999)}`
+      const item = `item_${rng.randInt(100, 999)}`
       items.push(item)
       allItems.push(item)
     }
@@ -201,12 +163,9 @@ Starting from page1.html:
 
 Use any method you like (Python, command-line tools, etc.).`,
     setupFiles,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os
-cp = []
-exists = os.path.isfile('result.json')
+    eval: pyEval({
+      imports: ["os"],
+      body: `exists = os.path.isfile('result.json')
 cp.append({"name": "file_exists", "score": 1.0 if exists else 0.0,
   "reason": None if exists else "result.json not found"})
 if exists:
@@ -214,7 +173,7 @@ if exists:
         result = json.load(open('result.json'))
     except json.JSONDecodeError as e:
         cp.append({"name": "parsing_correct", "score": 0.0, "reason": f"invalid JSON: {e}"})
-        print(json.dumps({"checkpoints": cp}))
+        ${PY_EMIT_CHECKPOINTS}
         exit(0)
     is_list = isinstance(result, list)
     cp.append({"name": "parsing_correct", "score": 1.0 if is_list else 0.0,
@@ -223,12 +182,17 @@ if exists:
         expected = json.loads(${JSON.stringify(expectedJson)})
         ok = sorted(result) == sorted(expected)
         cp.append({"name": "aggregation_correct", "score": 1.0 if ok else 0.0,
-          "reason": None if ok else f"items mismatch: expected {len(expected)}, got {len(result)}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+          "reason": None if ok else f"items mismatch: expected {len(expected)}, got {len(result)}"})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "tool.browser",
+  descriptions: {
+    L1: "Parse an HTML file and extract the text content of an element by its id attribute",
+    L2: "Parse an HTML table, extract all data rows, and write them as a CSV file",
+    L3: "Crawl multiple linked HTML pages by following next-page links, collect list items from each page, and write the sorted result as JSON",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

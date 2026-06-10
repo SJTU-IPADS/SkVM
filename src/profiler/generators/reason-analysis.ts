@@ -1,35 +1,10 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
-
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "reason.analysis",
-  descriptions: {
-    L1: "Describe what a short Python function does in five words or fewer",
-    L2: "Identify the bug in a single Python function and describe it in one sentence",
-    L3: "Identify the root-cause file and buggy line number in a multi-file Python program given a runtime error description",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1": return generateL1()
-      case "L2": return generateL2()
-      case "L3": return generateL3()
-    }
-  },
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, type Rng } from "../generator-toolkit.ts"
 
 /**
  * L1: What does this function do? Answer in <=5 words. Eval: contains expected keyword.
  */
-function generateL1(): MicrobenchmarkInstance {
+function generateL1(rng: Rng): MicrobenchmarkInstance {
   const functions = [
     {
       code: `def f(lst):\n    return [x for x in lst if x % 2 == 0]`,
@@ -65,7 +40,7 @@ function generateL1(): MicrobenchmarkInstance {
     },
   ]
 
-  const fn = randChoice(functions)
+  const fn = rng.randChoice(functions)
 
   const prompt = `What does this function do? Answer in 5 words or fewer.
 
@@ -75,26 +50,20 @@ ${fn.code}
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json
-text = open('response.txt').read().strip().lower()
+    eval: pyEval({
+      body: `text = open('response.txt').read().strip().lower()
 keyword = '${fn.keyword}'
 found = keyword in text
 cp = [{"name": "keyword_found", "score": 1.0 if found else 0.0,
-  "reason": None if found else f"expected keyword \\"${fn.keyword}\\" in response"}]
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+  "reason": None if found else f"expected keyword \\"${fn.keyword}\\" in response"}]`,
+    }),
   }
 }
 
 /**
  * L2: Identify the bug in a function. Eval: contains keyword describing the bug.
  */
-function generateL2(): MicrobenchmarkInstance {
+function generateL2(rng: Rng): MicrobenchmarkInstance {
   const buggyFunctions = [
     {
       code: `def avg(lst):
@@ -158,7 +127,7 @@ function generateL2(): MicrobenchmarkInstance {
     },
   ]
 
-  const fn = randChoice(buggyFunctions)
+  const fn = rng.randChoice(buggyFunctions)
 
   const prompt = `This function has a bug. What is the bug? Answer in one sentence.
 
@@ -168,27 +137,28 @@ ${fn.code}
 
   return {
     prompt,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json
-text = open('response.txt').read().strip().lower()
+    eval: pyEval({
+      body: `text = open('response.txt').read().strip().lower()
 keyword = '${fn.keyword}'.lower()
 found = keyword in text
 cp = [{"name": "keyword_found", "score": 1.0 if found else 0.0,
-  "reason": None if found else f"expected keyword \\"${fn.keyword}\\" in response"}]
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+  "reason": None if found else f"expected keyword \\"${fn.keyword}\\" in response"}]`,
+    }),
   }
 }
 
 /**
  * L3: Multi-file program with a bug. Identify root-cause file and buggy line.
  */
-function generateL3(): MicrobenchmarkInstance {
-  const scenarios = [
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  const scenarios: Array<{
+    files: Record<string, string>
+    testOutput: string
+    bugFile: string
+    bugLine: number
+    bugKeyword: string
+    explanation: string
+  }> = [
     {
       files: {
         "utils.py": `def parse_number(s):
@@ -287,10 +257,10 @@ def process():
     },
   ]
 
-  const scenario = randChoice(scenarios)
+  const scenario = rng.randChoice(scenarios)
   const fileNames = Object.keys(scenario.files)
   const filesDescription = fileNames.map(f =>
-    `--- ${f} ---\n${scenario.files[f as keyof typeof scenario.files]}`
+    `--- ${f} ---\n${scenario.files[f]}`
   ).join("\n")
 
   const prompt = `A program consists of ${fileNames.length} files:
@@ -306,14 +276,11 @@ Nothing else.`
 
   return {
     prompt,
-    setupFiles: { ...scenario.files } as unknown as Record<string, string>,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import re, json
-text = open('response.txt').read().strip()
+    setupFiles: { ...scenario.files },
+    eval: pyEval({
+      imports: ["re"],
+      body: `text = open('response.txt').read().strip()
 lines = [l.strip() for l in text.split('\\n') if l.strip()]
-cp = []
 has_lines = len(lines) >= 2
 cp.append({"name": "format_correct", "score": 1.0 if has_lines else 0.0,
   "reason": None if has_lines else f"need 2 lines, got {len(lines)}"})
@@ -342,12 +309,17 @@ if has_lines:
           "reason": None if line_ok else f"expected ${scenario.bugLine} +/-2, got {actual_line}"})
     else:
         cp.append({"name": "line_correct", "score": 0.0,
-          "reason": f"no line number found in: {line_num_line}"})
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+          "reason": f"no line number found in: {line_num_line}"})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "reason.analysis",
+  descriptions: {
+    L1: "Describe what a short Python function does in five words or fewer",
+    L2: "Identify the bug in a single Python function and describe it in one sentence",
+    L3: "Identify the root-cause file and buggy line number in a multi-file Python program given a runtime error description",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})

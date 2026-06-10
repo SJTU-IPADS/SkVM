@@ -1,13 +1,5 @@
-import type { MicrobenchmarkGenerator, MicrobenchmarkInstance } from "../types.ts"
-import type { Level } from "../../core/types.ts"
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function randChoice<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]!
-}
+import type { MicrobenchmarkInstance } from "../types.ts"
+import { defineGenerator, pyEval, PY_EMIT_CHECKPOINTS, type Rng } from "../generator-toolkit.ts"
 
 const TITLES = [
   "Welcome to My Site", "About Our Team", "Product Overview",
@@ -26,33 +18,13 @@ const CHART_LABELS = [
   "July", "August", "September", "October", "November", "December",
 ]
 
-const generator: MicrobenchmarkGenerator = {
-  primitiveId: "gen.code.html",
-  descriptions: {
-    L1: "Write an HTML document with an h1 heading and an unordered list containing specified items",
-    L2: "Write an HTML document with semantic structure (header, main, footer) containing a data table with thead and tbody",
-    L3: "Write an HTML document containing an inline SVG bar chart with rect elements visualizing data points",
-  },
-
-  generate(level: Exclude<Level, "L0">): MicrobenchmarkInstance {
-    switch (level) {
-      case "L1":
-        return generateL1()
-      case "L2":
-        return generateL2()
-      case "L3":
-        return generateL3()
-    }
-  },
-}
-
 /**
  * L1: Write HTML with h1 heading TITLE and unordered list of K items.
  * Eval: parse HTML, verify elements.
  */
-function generateL1(): MicrobenchmarkInstance {
-  const TITLE = randChoice(TITLES)
-  const K = randInt(3, 7)
+function generateL1(rng: Rng): MicrobenchmarkInstance {
+  const TITLE = rng.randChoice(TITLES)
+  const K = rng.randInt(3, 7)
   const items = ITEMS.slice(0, K)
 
   const itemListStr = items.map((it) => `"${it}"`).join(", ")
@@ -63,17 +35,14 @@ function generateL1(): MicrobenchmarkInstance {
 2. An unordered list (ul) with exactly ${K} list items (li): ${itemListStr}
 
 Save it as index.html in the current directory.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os
-from html.parser import HTMLParser
-cp = []
+    eval: pyEval({
+      imports: ["os"],
+      body: `from html.parser import HTMLParser
 
 # Check file exists
 if not os.path.exists('index.html'):
     cp.append({"name": "file_created", "score": 0.0, "reason": "index.html not found"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 cp.append({"name": "file_created", "score": 1.0, "reason": None})
@@ -122,12 +91,8 @@ for exp in expected_items:
     if found:
         cp.append({"name": f"item_{exp.lower()}", "score": 1.0, "reason": None})
     else:
-        cp.append({"name": f"item_{exp.lower()}", "score": 0.0, "reason": f"missing item: {exp}"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+        cp.append({"name": f"item_{exp.lower()}", "score": 0.0, "reason": f"missing item: {exp}"})`,
+    }),
   }
 }
 
@@ -135,9 +100,9 @@ PYEOF`,
  * L2: Write HTML with semantic structure (header, main, footer)
  * containing data table with C columns and R rows.
  */
-function generateL2(): MicrobenchmarkInstance {
-  const C = randInt(3, 5)
-  const R = randInt(3, 6)
+function generateL2(rng: Rng): MicrobenchmarkInstance {
+  const C = rng.randInt(3, 5)
+  const R = rng.randInt(3, 6)
   const columns = COL_NAMES.slice(0, C)
 
   const colListStr = columns.map((c) => `"${c}"`).join(", ")
@@ -151,17 +116,14 @@ function generateL2(): MicrobenchmarkInstance {
 3. A <footer> element with copyright text
 
 Save it as index.html in the current directory.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os
-from html.parser import HTMLParser
-cp = []
+    eval: pyEval({
+      imports: ["os"],
+      body: `from html.parser import HTMLParser
 
 # Check file exists
 if not os.path.exists('index.html'):
     cp.append({"name": "file_created", "score": 0.0, "reason": "index.html not found"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 cp.append({"name": "file_created", "score": 1.0, "reason": None})
@@ -207,12 +169,8 @@ else:
 if c.tr_count == ${R}:
     cp.append({"name": "content_correct", "score": 1.0, "reason": None})
 else:
-    cp.append({"name": "content_correct", "score": 0.0, "reason": f"expected ${R} tbody rows, got {c.tr_count}"})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+    cp.append({"name": "content_correct", "score": 0.0, "reason": f"expected ${R} tbody rows, got {c.tr_count}"})`,
+    }),
   }
 }
 
@@ -220,12 +178,12 @@ PYEOF`,
  * L3: Write HTML with inline SVG bar chart visualizing K data points.
  * Each bar with correct x/y/width/height. Eval: parse SVG, verify bar count.
  */
-function generateL3(): MicrobenchmarkInstance {
-  const K = randInt(4, 8)
+function generateL3(rng: Rng): MicrobenchmarkInstance {
+  const K = rng.randInt(4, 8)
   const labels = CHART_LABELS.slice(0, K)
   const values: number[] = []
   for (let i = 0; i < K; i++) {
-    values.push(randInt(10, 100))
+    values.push(rng.randInt(10, 100))
   }
 
   const dataPoints = labels.map((l, i) => `${l}: ${values[i]}`).join(", ")
@@ -241,17 +199,14 @@ Requirements:
 - Include text labels for each bar
 
 Save it as index.html in the current directory.`,
-    eval: {
-      method: "script",
-      command: `python3 << 'PYEOF'
-import json, os
-from html.parser import HTMLParser
-cp = []
+    eval: pyEval({
+      imports: ["os"],
+      body: `from html.parser import HTMLParser
 
 # Check file exists
 if not os.path.exists('index.html'):
     cp.append({"name": "file_created", "score": 0.0, "reason": "index.html not found"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 cp.append({"name": "file_created", "score": 1.0, "reason": None})
@@ -294,7 +249,7 @@ if c.svg_found:
     cp.append({"name": "tag_svg", "score": 1.0, "reason": None})
 else:
     cp.append({"name": "tag_svg", "score": 0.0, "reason": "no SVG element found"})
-    print(json.dumps({"checkpoints": cp}))
+    ${PY_EMIT_CHECKPOINTS}
     raise SystemExit(0)
 
 # Check viewBox attribute
@@ -316,13 +271,17 @@ else:
     reason = f"{c.rect_attrs_ok}/${K} rects have all attributes"
     if c.rect_attrs_errors:
         reason += "; " + c.rect_attrs_errors[0]
-    cp.append({"name": "content_correct", "score": 0.0, "reason": reason})
-
-print(json.dumps({"checkpoints": cp}))
-PYEOF`,
-      expectedExitCode: 0,
-    },
+    cp.append({"name": "content_correct", "score": 0.0, "reason": reason})`,
+    }),
   }
 }
 
-export default generator
+export default defineGenerator({
+  primitiveId: "gen.code.html",
+  descriptions: {
+    L1: "Write an HTML document with an h1 heading and an unordered list containing specified items",
+    L2: "Write an HTML document with semantic structure (header, main, footer) containing a data table with thead and tbody",
+    L3: "Write an HTML document containing an inline SVG bar chart with rect elements visualizing data points",
+  },
+  levels: { L1: generateL1, L2: generateL2, L3: generateL3 },
+})
