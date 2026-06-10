@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test"
-import { defineFlags, parseOrExit, UsageError } from "../../src/cli/flags.ts"
+import { defineFlags, parseOrExit, runOrExit, UsageError } from "../../src/cli/flags.ts"
 
 const ADAPTERS = ["bare-agent", "opencode", "pi"] as const
 
@@ -77,10 +77,20 @@ describe("defineFlags().parse — happy paths", () => {
     expect(config.count).toBe(2)
   })
 
-  test("empty value (--key=) counts as flag-not-provided", () => {
-    const config = makeDef().parse(["--model=x/y", "--count="])
+  test("empty value (--key=) on string/bool counts as flag-not-provided", () => {
+    const config = makeDef().parse(["--model=x/y", "--note=", "--force="])
     if (config.help) throw new Error("unexpected help")
-    expect(config.count).toBe(3)
+    expect(config.note).toBeUndefined()
+    expect(config.force).toBe(false)
+  })
+
+  test("empty value (--key=) on int/enum is rejected, not defaulted", () => {
+    // Legacy profile/run errored on empty --timeout-ms= / --adapter=;
+    // silently substituting the default would hide the typo.
+    const intErr = parseError(makeDef(), ["--model=x/y", "--count="])
+    expect(intErr.message).toContain('--count expects an integer, got ""')
+    const enumErr = parseError(makeDef(), ["--model=x/y", "--adapter="])
+    expect(enumErr.message).toContain('invalid --adapter ""')
   })
 
   test("global flags are accepted without declaration and kept out of the config", () => {
@@ -275,6 +285,43 @@ describe("defineFlags().help — generated help text", () => {
     const err = parseError(def, ["--modle=x"])
     expect(err.help).toBe(def.help())
   })
+
+  test("usage lines render between summary and Options; epilogue renders after", () => {
+    const def = defineFlags(
+      "demo",
+      "Do demo things",
+      { type: { kind: "string", placeholder: "<type>", help: "Filter by type" } },
+      {
+        usage: ["skvm demo --type=<type> [options]", "skvm demo [options]"],
+        epilogue: "Notes:\n  - This is a demo.",
+      },
+    )
+    expect(def.help()).toBe(
+      [
+        "skvm demo - Do demo things",
+        "",
+        "Usage:",
+        "  skvm demo --type=<type> [options]",
+        "  skvm demo [options]",
+        "",
+        "Options:",
+        "  --type=<type>    Filter by type",
+        "",
+        "Notes:",
+        "  - This is a demo.",
+      ].join("\n"),
+    )
+  })
+
+  test("required flags render '(required)' from the declaration", () => {
+    const def = defineFlags("demo", "s", {
+      model: { kind: "string", required: true, help: "Model id" },
+      bare: { kind: "int", required: true },
+    })
+    const help = def.help()
+    expect(help).toContain("--model=<value>    Model id (required)")
+    expect(help).toContain("--bare=<n>         (required)")
+  })
 })
 
 describe("defineFlags — define-time validation", () => {
@@ -307,6 +354,12 @@ describe("defineFlags — define-time validation", () => {
     expect(() => defineFlags("demo", "s", { n: { kind: "int", min: 1, default: 0 } })).toThrow(
       "defineFlags(demo): --n default 0 is below min 1",
     )
+  })
+
+  test("a flag cannot be both required and have a default", () => {
+    expect(() =>
+      defineFlags("demo", "s", { m: { kind: "string", required: true, default: "x" } }),
+    ).toThrow("defineFlags(demo): --m cannot be both required and have a default")
   })
 })
 
@@ -356,5 +409,49 @@ describe("parseOrExit", () => {
     const config = parseOrExit(makeDef(), ["--model=x/y"])
     expect(config.model).toBe("x/y")
     expect(config.count).toBe(3)
+  })
+})
+
+describe("runOrExit", () => {
+  test("invokes the handler with the typed config on success", async () => {
+    let seen: unknown
+    await runOrExit(makeDef(), ["--model=x/y"], (config) => {
+      seen = config.model
+    })
+    expect(seen).toBe("x/y")
+  })
+
+  test("a UsageError thrown by the handler (cross-flag rule) prints to stderr and exits 1", async () => {
+    const def = makeDef()
+    const captured = { exitCode: null as number | null, stderr: "" }
+    const origExit = process.exit
+    const origErr = console.error
+    process.exit = ((code?: number) => {
+      captured.exitCode = code ?? 0
+      throw new Error("__exit__")
+    }) as typeof process.exit
+    console.error = (...a: unknown[]) => {
+      captured.stderr += a.join(" ") + "\n"
+    }
+    try {
+      await expect(
+        runOrExit(def, ["--model=x/y"], () => {
+          throw new UsageError("demo: --force requires --note to also be specified", def.help)
+        }),
+      ).rejects.toThrow("__exit__")
+    } finally {
+      process.exit = origExit
+      console.error = origErr
+    }
+    expect(captured.exitCode).toBe(1)
+    expect(captured.stderr).toBe("demo: --force requires --note to also be specified\n")
+  })
+
+  test("non-UsageError handler failures propagate to the caller", async () => {
+    await expect(
+      runOrExit(makeDef(), ["--model=x/y"], () => {
+        throw new Error("boom")
+      }),
+    ).rejects.toThrow("boom")
   })
 })
