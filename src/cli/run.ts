@@ -3,13 +3,13 @@
  * only, no evaluation or scoring).
  *
  * Flags are declared once via `defineFlags` (#49); help is generated from the
- * declarations and `runRun` takes the typed config, so the parse path and
- * cross-flag rules are unit-testable without spawning the CLI. The one rule
- * the layer cannot express — `--skill-mode` requires `--skill` — lives here
- * and throws `UsageError`.
+ * declarations and `runRun` takes the typed config, so the parse path is
+ * unit-testable without spawning the CLI. The `--skill-mode` requires `--skill`
+ * rule is declared on the flag (`requires: "skill"`) so the check and its
+ * help suffix generate from one place.
  */
 
-import { defineFlags, UsageError, type ConfigOf } from "./flags.ts"
+import { defineFlags, type ConfigOf } from "./flags.ts"
 import { ALL_ADAPTERS, createAdapter } from "../adapters/registry.ts"
 import { resolveAdapterConfigMode } from "../core/config.ts"
 import { AdapterConfigModeSchema, type AdapterConfig, type SkillMode } from "../core/types.ts"
@@ -46,8 +46,9 @@ export const RUN_FLAGS = defineFlags(
     "skill-mode": {
       kind: "enum",
       values: SKILL_MODES,
+      requires: "skill",
       placeholder: "<mode>",
-      help: "inject | discover (default: inject).\nRequires --skill. inject: skill text is concatenated\ninto the system prompt. discover: skill is written\nto .claude/skills/<name>/ and discovered via its\nSKILL.md description.",
+      help: "inject | discover (default: inject).\ninject: skill text is concatenated into the system\nprompt. discover: skill is written to\n.claude/skills/<name>/ and discovered via its\nSKILL.md description.",
     },
     adapter: {
       kind: "enum",
@@ -93,10 +94,10 @@ export const RUN_FLAGS = defineFlags(
 export type RunConfig = ConfigOf<typeof RUN_FLAGS>
 
 export async function runRun(config: RunConfig): Promise<void> {
+  // The `--skill-mode requires --skill` rule is declared on the flag spec
+  // (`requires: "skill"`) and enforced in `parse()`, so by the time runRun
+  // sees the config the pairing is already valid.
   const skillMode = config["skill-mode"]
-  if (skillMode && !config.skill) {
-    throw new UsageError("run: --skill-mode requires --skill to also be specified", RUN_FLAGS.help)
-  }
 
   const { task: taskPath, skill: skillPath, model, adapter: harness } = config
 

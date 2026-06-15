@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test"
-import { RUN_FLAGS, runRun } from "../../src/cli/run.ts"
+import { RUN_FLAGS } from "../../src/cli/run.ts"
 import { UsageError } from "../../src/cli/flags.ts"
 import { ALL_ADAPTERS } from "../../src/adapters/registry.ts"
 import { CLI_DEFAULTS } from "../../src/core/ui-defaults.ts"
@@ -94,17 +94,26 @@ describe("RUN_FLAGS.parse — typed config", () => {
   })
 })
 
-describe("runRun — cross-flag rules (typed config, no subprocess)", () => {
-  test("--skill-mode without --skill throws before any execution", async () => {
-    const config = RUN_FLAGS.parse(["--task=/tmp/task.json", "--model=x/y", "--skill-mode=inject"])
+describe("RUN_FLAGS.parse — cross-flag rules (declarative, enforced at parse)", () => {
+  test("--skill-mode without --skill is rejected during parse (declarative `requires`)", () => {
+    // Migrated from the hand-coded runRun check to `requires: "skill"` on the
+    // flag spec (#49) — same wording, now enforced in parse() so the help
+    // suffix and the rule come from one declaration.
+    expect(parseError(["--task=/tmp/task.json", "--model=x/y", "--skill-mode=inject"]).message).toBe(
+      "run: --skill-mode requires --skill to also be specified",
+    )
+  })
+
+  test("--skill-mode with --skill parses", () => {
+    const config = RUN_FLAGS.parse([
+      "--task=/tmp/task.json",
+      "--model=x/y",
+      "--skill=/tmp/SKILL.md",
+      "--skill-mode=discover",
+    ])
     if (config.help) throw new Error("unexpected help")
-    try {
-      await runRun(config)
-      throw new Error("expected UsageError")
-    } catch (err) {
-      expect(err).toBeInstanceOf(UsageError)
-      expect((err as UsageError).message).toBe("run: --skill-mode requires --skill to also be specified")
-    }
+    expect(config["skill-mode"]).toBe("discover")
+    expect(config.skill).toBe("/tmp/SKILL.md")
   })
 })
 
@@ -122,10 +131,10 @@ Options:
   --model=<id>            Model identifier, <provider>/<model-id> (required)
   --skill=<path>          Optional path to a SKILL.md file
   --skill-mode=<mode>     inject | discover (default: inject).
-                          Requires --skill. inject: skill text is concatenated
-                          into the system prompt. discover: skill is written
-                          to .claude/skills/<name>/ and discovered via its
-                          SKILL.md description.
+                          inject: skill text is concatenated into the system
+                          prompt. discover: skill is written to
+                          .claude/skills/<name>/ and discovered via its
+                          SKILL.md description. (requires --skill)
   --adapter=<name>        Agent adapter: ${ALL_ADAPTERS.join(" | ")} (default: ${CLI_DEFAULTS.adapter})
   --workdir=<path>        Use this directory instead of a temp work directory
   --timeout-ms=<n>        Override the per-task agent execution timeout (ms).

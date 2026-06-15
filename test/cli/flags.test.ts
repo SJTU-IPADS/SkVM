@@ -181,6 +181,84 @@ describe("defineFlags().parse — aliasOf", () => {
   })
 })
 
+describe("defineFlags().parse — cross-flag rules (requires / requiredUnless)", () => {
+  // "--mode requires --skill" and "--model required unless --list" — the two
+  // real cases from run.ts and profile.ts.
+  function ruleDef() {
+    return defineFlags("demo", "s", {
+      skill: { kind: "string" },
+      mode: { kind: "enum", values: ["inject", "discover"], requires: "skill" },
+      model: { kind: "string", requiredUnless: "list" },
+      list: { kind: "bool" },
+    })
+  }
+
+  test("requires: satisfied when both flags are present", () => {
+    const config = ruleDef().parse(["--skill=/s", "--mode=inject", "--list"])
+    if (config.help) throw new Error("unexpected help")
+    expect(config.mode).toBe("inject")
+    expect(config.skill).toBe("/s")
+  })
+
+  test("requires: violated when the dependent flag is present but its target is absent", () => {
+    const err = parseError(ruleDef(), ["--mode=inject", "--list"])
+    expect(err.message).toBe("demo: --mode requires --skill to also be specified")
+  })
+
+  test("requires: not triggered when the dependent flag is itself absent", () => {
+    // No --mode, so the requires rule is moot even though --skill is missing.
+    const config = ruleDef().parse(["--list"])
+    if (config.help) throw new Error("unexpected help")
+    expect(config.mode).toBeUndefined()
+  })
+
+  test("requires: an empty value (--mode=) counts as absent, so the rule is moot", () => {
+    // Enum empty value would normally be rejected, but `--mode` is not in the
+    // string/bool empty-as-absent set; assert with a string dependent instead.
+    const def = defineFlags("demo", "s", {
+      note: { kind: "string" },
+      tag: { kind: "string", requires: "note" },
+    })
+    const config = def.parse(["--tag="])
+    if (config.help) throw new Error("unexpected help")
+    expect(config.tag).toBeUndefined()
+  })
+
+  test("requiredUnless: satisfied when the flag itself is present", () => {
+    const config = ruleDef().parse(["--model=x/y"])
+    if (config.help) throw new Error("unexpected help")
+    expect(config.model).toBe("x/y")
+  })
+
+  test("requiredUnless: satisfied when the alternative is present", () => {
+    const config = ruleDef().parse(["--list"])
+    if (config.help) throw new Error("unexpected help")
+    expect(config.model).toBeUndefined()
+    expect(config.list).toBe(true)
+  })
+
+  test("requiredUnless: violated when neither the flag nor its alternative is present", () => {
+    const err = parseError(ruleDef(), [])
+    expect(err.message).toBe("demo: --model is required unless --list is given")
+  })
+
+  test("rule markers render in help after default/required markers", () => {
+    const help = ruleDef().help()
+    expect(help).toContain("--mode=<inject|discover>")
+    expect(help).toContain("(requires --skill)")
+    expect(help).toContain("(required unless --list)")
+  })
+
+  test("requires marker appends after a declared default", () => {
+    const def = defineFlags("demo", "s", {
+      base: { kind: "string" },
+      n: { kind: "int", default: 3, requires: "base" },
+    })
+    // Marker order is prose → default/required → requiredUnless → requires.
+    expect(def.help()).toContain("(default: 3) (requires --base)")
+  })
+})
+
 describe("defineFlags().parse — unknown-flag rejection (same wording as assertKnownFlags)", () => {
   test("typo gets a did-you-mean hint plus the help trailer", () => {
     const err = parseError(makeDef(), ["--modle=x/y"])
@@ -360,6 +438,26 @@ describe("defineFlags — define-time validation", () => {
     expect(() =>
       defineFlags("demo", "s", { m: { kind: "string", required: true, default: "x" } }),
     ).toThrow("defineFlags(demo): --m cannot be both required and have a default")
+  })
+
+  test("requires must reference a declared non-alias flag", () => {
+    expect(() =>
+      defineFlags("demo", "s", { a: { kind: "string", requires: "missing" } }),
+    ).toThrow('defineFlags(demo): --a requires "missing" must name a declared non-alias flag')
+    // An alias is not a valid rule target — rules reference canonical names.
+    expect(() =>
+      defineFlags("demo", "s", {
+        x: { kind: "string" },
+        old: { aliasOf: "x" },
+        a: { kind: "string", requires: "old" },
+      }),
+    ).toThrow('defineFlags(demo): --a requires "old" must name a declared non-alias flag')
+  })
+
+  test("requiredUnless must reference a declared non-alias flag", () => {
+    expect(() =>
+      defineFlags("demo", "s", { a: { kind: "string", requiredUnless: "nope" } }),
+    ).toThrow('defineFlags(demo): --a requiredUnless "nope" must name a declared non-alias flag')
   })
 })
 

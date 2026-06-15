@@ -32,7 +32,38 @@ import { GLOBAL_FLAGS, formatUnknownFlagErrors } from "../core/cli-flags.ts"
 // Spec types
 // ---------------------------------------------------------------------------
 
-export interface StringFlag {
+/**
+ * Declarative cross-flag rules, attached to the *dependent* flag so the rule
+ * and its generated help suffix come from one declaration (the same
+ * drift-killing property as `default` / `required`). Both reference another
+ * declared non-alias flag by its canonical name; a dangling reference is a
+ * define-time programmer error.
+ *
+ * Only the two single-other-flag shapes the migrated commands actually need
+ * live here. Anything genuinely conditional or multi-flag (e.g. the
+ * per-task-source matrices in jit-optimize) stays hand-coded in the handler
+ * on the typed config — see `runOrExit`.
+ */
+export interface CrossFlagRules {
+  /**
+   * "This flag requires <name>": if this flag is present, `requires` must be
+   * present too. (e.g. `--skill-mode` requires `--skill`.)
+   *
+   * Single-target by design. The sanctioned widening when a command needs
+   * "requires A AND B AND …" (e.g. bench's `--compare`) is to make this
+   * `string | readonly string[]` here, NOT to hand-code the check in the
+   * handler.
+   */
+  requires?: string
+  /**
+   * "This flag is required unless <name>": this flag must be present unless
+   * `requiredUnless` is present. (e.g. `--model` is required unless `--list`
+   * short-circuits the command.)
+   */
+  requiredUnless?: string
+}
+
+export interface StringFlag extends CrossFlagRules {
   kind: "string"
   required?: boolean
   default?: string
@@ -41,7 +72,7 @@ export interface StringFlag {
   help?: string
 }
 
-export interface IntFlag {
+export interface IntFlag extends CrossFlagRules {
   kind: "int"
   required?: boolean
   default?: number
@@ -52,14 +83,14 @@ export interface IntFlag {
   help?: string
 }
 
-export interface BoolFlag {
+export interface BoolFlag extends CrossFlagRules {
   kind: "bool"
   /** Default when the flag is absent. Default: false. */
   default?: boolean
   help?: string
 }
 
-export interface EnumFlag {
+export interface EnumFlag extends CrossFlagRules {
   kind: "enum"
   values: readonly string[]
   required?: boolean
@@ -166,6 +197,7 @@ export function defineFlags<const S extends FlagSpecs>(
 ): FlagsDef<S> {
   // -- Define-time validation (programmer errors → plain Error) --------------
   const dataEntries: Array<[string, Exclude<FlagSpec, AliasFlag>]> = []
+  const specByName = new Map<string, Exclude<FlagSpec, AliasFlag>>()
   const aliasesByTarget = new Map<string, string[]>()
 
   for (const [name, s] of Object.entries(spec) as Array<[string, FlagSpec]>) {
@@ -174,8 +206,12 @@ export function defineFlags<const S extends FlagSpecs>(
     }
     if ("aliasOf" in s) continue
     dataEntries.push([name, s])
+    specByName.set(name, s)
     if (s.kind !== "bool" && s.required && s.default !== undefined) {
       throw new Error(`defineFlags(${command}): --${name} cannot be both required and have a default`)
+    }
+    if (s.kind !== "bool" && s.required && s.requiredUnless !== undefined) {
+      throw new Error(`defineFlags(${command}): --${name} cannot be both required and requiredUnless`)
     }
     if (s.kind === "enum" && s.default !== undefined && !s.values.includes(s.default)) {
       throw new Error(`defineFlags(${command}): --${name} default "${s.default}" is not in values`)
@@ -195,6 +231,22 @@ export function defineFlags<const S extends FlagSpecs>(
     aliasesByTarget.set(s.aliasOf, list)
   }
 
+  // Cross-flag rules must reference a declared non-alias flag (same class of
+  // programmer error as a dangling aliasOf). Collected here so the parse loop
+  // and help renderer share one validated source.
+  const assertRuleTarget = (owner: string, field: keyof CrossFlagRules, ref: string) => {
+    const t = spec[ref]
+    if (t === undefined || "aliasOf" in t) {
+      throw new Error(
+        `defineFlags(${command}): --${owner} ${field} "${ref}" must name a declared non-alias flag`,
+      )
+    }
+  }
+  for (const [name, s] of dataEntries) {
+    if (s.requires !== undefined) assertRuleTarget(name, "requires", s.requires)
+    if (s.requiredUnless !== undefined) assertRuleTarget(name, "requiredUnless", s.requiredUnless)
+  }
+
   const knownKeys: ReadonlySet<string> = new Set(Object.keys(spec))
 
   // -- Help generation --------------------------------------------------------
@@ -204,12 +256,18 @@ export function defineFlags<const S extends FlagSpecs>(
       // Declared defaults and required markers render automatically so flag
       // authors never repeat them in prose (the drift this layer exists to
       // kill). Bool defaults stay silent — absent simply means false.
-      let text = s.help ?? ""
+      // Order: prose, then the static-from-declaration markers so help can
+      // never drift from the spec.
+      const markers: string[] = []
       if (s.kind !== "bool" && s.default !== undefined) {
-        text = text ? `${text} (default: ${s.default})` : `(default: ${s.default})`
+        markers.push(`(default: ${s.default})`)
       } else if (s.kind !== "bool" && s.required) {
-        text = text ? `${text} (required)` : "(required)"
+        markers.push("(required)")
       }
+      if (s.requiredUnless !== undefined) markers.push(`(required unless --${s.requiredUnless})`)
+      if (s.requires !== undefined) markers.push(`(requires --${s.requires})`)
+      let text = s.help ?? ""
+      if (markers.length > 0) text = text ? `${text} ${markers.join(" ")}` : markers.join(" ")
       return [left, text]
     })
     const width = Math.max(...rows.map(([left]) => left.length)) + 4
@@ -292,9 +350,12 @@ export function defineFlags<const S extends FlagSpecs>(
 
     if (raw.help === "true") return { help: true }
 
-    const config: Record<string, unknown> = { help: false }
-    for (const [name, s] of dataEntries) {
-      let value: string | undefined = raw[name]
+    // Resolve the raw value of a flag honoring aliases and the empty-as-absent
+    // rule for string/bool. Cross-flag rules use this so "present" follows the
+    // same truthiness the legacy handlers used (`if (flags.skill)`) regardless
+    // of declaration order — a flag can require another declared after it.
+    const rawValue = (name: string, s: Exclude<FlagSpec, AliasFlag>): string | undefined => {
+      let value = raw[name]
       if (value === undefined) {
         for (const alias of aliasesByTarget.get(name) ?? []) {
           const v = raw[alias]
@@ -304,14 +365,32 @@ export function defineFlags<const S extends FlagSpecs>(
           }
         }
       }
-      // Empty value (`--key=`): for string/bool flags it counts as "not
-      // provided" (the truthiness semantics of the legacy handlers); for
-      // int/enum flags it falls through to coercion, which rejects "" like
-      // any other unparseable value — the legacy handlers errored on empty
-      // --timeout-ms= / --adapter=, and silently substituting a default
-      // would hide the typo.
-      if (value === "" && (s.kind === "string" || s.kind === "bool")) value = undefined
+      if (value === "" && (s.kind === "string" || s.kind === "bool")) return undefined
+      return value
+    }
+    const isPresent = (name: string): boolean => {
+      const t = specByName.get(name)
+      return t !== undefined && rawValue(name, t) !== undefined
+    }
+
+    const config: Record<string, unknown> = { help: false }
+    for (const [name, s] of dataEntries) {
+      const value = rawValue(name, s)
+      // `requiredUnless` is folded into the per-flag pass (before coercion's
+      // plain `required` throw on later flags) so a missing conditionally-
+      // required flag is reported in declaration order, alongside `required`.
+      if (value === undefined && s.requiredUnless !== undefined && !isPresent(s.requiredUnless)) {
+        throw usage(`${command}: --${name} is required unless --${s.requiredUnless} is given`)
+      }
       config[name] = coerce(name, s, value)
+    }
+
+    // `requires` fires only when the dependent flag is itself present, so the
+    // values are already coerced; iterate in declaration order for stability.
+    for (const [name, s] of dataEntries) {
+      if (s.requires !== undefined && isPresent(name) && !isPresent(s.requires)) {
+        throw usage(`${command}: --${name} requires --${s.requires} to also be specified`)
+      }
     }
     return config as ParseResult<S>
   }
