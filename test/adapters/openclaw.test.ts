@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test"
-import { normalizeAgentId } from "../../src/adapters/openclaw.ts"
+import { normalizeAgentId, renderOpenclawProviderEntries } from "../../src/adapters/openclaw.ts"
+import type { ProviderRoute } from "../../src/core/types.ts"
 
 describe("normalizeAgentId", () => {
   test("lowercases and replaces slashes, dots, and colons with dashes", () => {
@@ -10,5 +11,33 @@ describe("normalizeAgentId", () => {
 
   test("leaves already-safe IDs unchanged", () => {
     expect(normalizeAgentId("plain-model-id")).toBe("plain-model-id")
+  })
+})
+
+describe("renderOpenclawProviderEntries — block synthesis from a resolved route", () => {
+  // Route selection is the resolver's job (resolveRoute → findMatchingRoute,
+  // covered in test/providers/registry.test.ts incl. the shared-prefix case).
+  // This renderer just builds the provider block from the route it's handed.
+  test("keys the block by the model's prefix and builds it from the route", () => {
+    const route: ProviderRoute = {
+      match: "openrouter/anthropic/*", kind: "openai-compatible",
+      apiKey: "anthropic-key", baseUrl: "https://anthropic.example/v1",
+    }
+    const entries = renderOpenclawProviderEntries(route, "openrouter/anthropic/claude-sonnet-4.6")
+    // Key is the model's own leading segment, not the route's.
+    expect(entries.openrouter).toBeDefined()
+    expect(entries.openrouter!.baseUrl).toBe("https://anthropic.example/v1")
+    expect(entries.openrouter!.apiKey).toBe("anthropic-key")
+    expect(entries.openrouter!.api).toBe("openai-completions")
+    // Synthesized model id is backend-namespace (provider prefix stripped).
+    expect(entries.openrouter!.models[0]!.id).toBe("anthropic/claude-sonnet-4.6")
+  })
+
+  test("anthropic-kind route uses the anthropic-messages api + default baseUrl", () => {
+    const route: ProviderRoute = { match: "anthropic/*", kind: "anthropic", apiKey: "k" }
+    const entries = renderOpenclawProviderEntries(route, "anthropic/claude-sonnet-4.6")
+    expect(entries.anthropic!.api).toBe("anthropic-messages")
+    // baseUrl falls back to the anthropic default when the route omits it.
+    expect(entries.anthropic!.baseUrl).toBe("https://api.anthropic.com/v1")
   })
 })

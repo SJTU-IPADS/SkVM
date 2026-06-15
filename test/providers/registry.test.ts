@@ -102,6 +102,23 @@ describe("findMatchingRoute", () => {
   test("no routes → undefined", () => {
     expect(findMatchingRoute("anything", { routes: [] })).toBeUndefined()
   })
+
+  test("routes sharing a leading segment are disambiguated by the full glob", () => {
+    // Regression for the openclaw managed-config bug: two routes share the
+    // "openrouter" prefix but differ deeper, so leading-segment equality would
+    // pick the wrong one. Full-glob matching selects the route the model id
+    // actually matches.
+    const shared: ProvidersConfig = {
+      routes: [
+        { match: "openrouter/qwen/*", kind: "openai-compatible", apiKey: "q", baseUrl: "https://q/v1" },
+        { match: "openrouter/anthropic/*", kind: "openai-compatible", apiKey: "a", baseUrl: "https://a/v1" },
+      ],
+    }
+    expect(findMatchingRoute("openrouter/anthropic/claude-sonnet-4.6", shared)?.baseUrl).toBe("https://a/v1")
+    expect(findMatchingRoute("openrouter/qwen/qwen3-30b", shared)?.baseUrl).toBe("https://q/v1")
+    // A model matching neither deeper glob falls through (caller → DEFAULT_ROUTE).
+    expect(findMatchingRoute("openrouter/openai/gpt-4o", shared)).toBeUndefined()
+  })
 })
 
 describe("resolveBackendModel", () => {
