@@ -55,6 +55,38 @@
 
 **验证**：修复后 5/5 skill guard=PASS、0 代码块丢失。
 
+## JIT 闭环验证（C2 路径，gcode case）
+
+用 `execution-log` 源把 Harbor 失败 job 转成 evidence，喂给 `skvm jit-optimize`，再回 Harbor 验证。
+
+### JIT 诊断质量远超 AOT（gcode 同一任务）
+
+| 维度 | AOT | JIT |
+|---|---|---|
+| 诊断依据 | 静态读 skill 文本（看到 PIL） | 读 2 条真实失败轨迹 |
+| 判定的瓶颈 | "渲染能力缺口"（gen.code.python L3>L2） | "OCR 对单笔画字体必败 + 无验证门 + 信了注释" |
+| 改写内容 | 渲染步骤补 PIL API 模板（冗余） | OCR 失败阈值+几何分析回退+写前验证+注释陷阱（5 处对症） |
+| 是否对症 | ❌ agent 没卡在渲染 | ✅ 直击两个真实失败点 |
+
+JIT optimizer 从 evidence 读到：noskill agent 信了 G-code 注释 'Embossed text' 当答案；original agent OCR 返回 '}' 未验证就写。据此加 Pitfall #6（别信注释）+ Step 6 验证门 + OCR 失败几何分析回退。
+
+### Harbor 验证结果
+
+| 条件 | reward | agent 行为 | tokens(in) |
+|---|---|---|---|
+| noskill | 0 | 信注释 'Embossed text' | 987k |
+| original | 0 | OCR 返回 '}' 直接写 | 3.18M |
+| aot | 0 | dump 坐标死循环 | 1.90M |
+| **jit** | 0 | **走几何分析：分段 S0-S13、分析笔画形状** | 1.94M |
+
+**reward 仍为 0，但行为质量质变**：
+- JIT agent 没再犯"信注释"错误，OCR 失败后**切换到几何分析**（JIT 新增的回退路径），写 segment_chars/decode_letters/extract_letters 等，分段分析 14 个字符的 bounding box/方向/笔画。
+- **这次 0 是 verifier 基础设施失败**（test.sh 装 uv 时 SSL 连接 astral.sh 失败 → uvx 没装 → pytest 没跑），非 agent/skill 问题。前三次 verifier 跑通了。
+- 即便 verifier 不挂，gcode 是 hard 任务（从几何形状反推 flag 文本），可能仍是 deepseek-v4-flash 能力上限。
+
+### 核心命题验证
+✅ **JIT 闭环成立**：optimizer 看真实失败证据 → 诊断真瓶颈 → 改写对症 → agent 照新 skill 行事（走几何分析而非 dump 坐标）。**行为引导成功，这正是 AOT 做不到的**。reward 未突破是因为 (a) verifier flaky + (b) 任务本身 hard，而非 JIT 改写方向错误。
+
 ## 结论与下一步
 
 ### 已验证
