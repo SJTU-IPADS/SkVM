@@ -15,6 +15,52 @@ import { createLogger } from "../../../core/logger.ts"
 const log = createLogger("compiler-agent")
 
 // ---------------------------------------------------------------------------
+// Code-block masking
+//
+// The compiler agent rewrites SKILL.md wholesale and, despite prompt
+// instructions, sometimes drops or mutates original code blocks — a regression
+// the guard (correctly) rejects. To make code-block preservation structural
+// rather than advisory, every fenced code block is replaced with an atomic
+// single-line placeholder before the agent sees the skill, then restored
+// verbatim afterward. The agent edits prose only; original code survives
+// byte-for-byte, so guard check #2 passes by construction.
+// ---------------------------------------------------------------------------
+
+const CODE_BLOCK_RE = /```(\w*)\n([\s\S]*?)```/g
+const codeBlockToken = (i: number): string => `[[SKVM_CODE_BLOCK_${i}]]`
+
+export function maskCodeBlocks(text: string): { masked: string; blocks: string[] } {
+  const blocks: string[] = []
+  const masked = text.replace(CODE_BLOCK_RE, (match) => {
+    const token = codeBlockToken(blocks.length)
+    blocks.push(match)
+    return token
+  })
+  return { masked, blocks }
+}
+
+export function unmaskCodeBlocks(text: string, blocks: string[]): string {
+  let out = text
+  const dropped: string[] = []
+  blocks.forEach((block, i) => {
+    const token = codeBlockToken(i)
+    if (out.includes(token)) {
+      out = out.split(token).join(block) // literal replace; avoids regex $ pitfalls
+    } else {
+      dropped.push(block)
+    }
+  })
+  // Safety net: if the agent deleted a placeholder line outright, re-attach the
+  // original block so the skill never loses reference content. Appends raw
+  // blocks (no new heading), keeping the guard's heading check happy.
+  if (dropped.length > 0) {
+    log.warn(`Compiler agent dropped ${dropped.length} code-block placeholder(s); restoring verbatim`)
+    out = `${out.replace(/\s*$/, "")}\n\n${dropped.join("\n\n")}\n`
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
 // WorkDir File Pre-loading
 // ---------------------------------------------------------------------------
 
@@ -286,8 +332,16 @@ If you cannot answer all six, do not make the edit.
 Preserve:
 - YAML frontmatter
 - all markdown headings
-- all original code blocks, unless a specific degradation requires a local simplification inside one
+- every code-block placeholder token exactly as written (see "Code Blocks Are Locked")
 - the overall workflow shape of the skill
+
+## Code Blocks Are Locked
+The skill's fenced code blocks have been replaced with atomic placeholder tokens
+of the form [[SKVM_CODE_BLOCK_N]], each on its own line. They are immutable:
+- Keep every [[SKVM_CODE_BLOCK_N]] token verbatim, on its own line, in its original position.
+- Never delete, reorder, merge, or edit a placeholder, and never invent new ones.
+- Compensate for gaps by editing the surrounding prose/instructions only.
+- If a gap genuinely requires new code, you may add your own fenced block, but you must still keep every existing placeholder.
 
 ## Workflow
 The full SKILL.md and bundled files are already provided.
@@ -347,8 +401,11 @@ function buildInitialMessage(
 EDIT the existing SKILL.md for model **${tcp.model}** on harness **${tcp.harness}**.
 All file contents are provided below. Plan your edits based on the gap details, then write the edited SKILL.md.`)
 
-  // Inline SKILL.md content
-  sections.push(`\n## Current SKILL.md\n\n\`\`\`markdown\n${skillContent}\n\`\`\``)
+  // Inline SKILL.md content (code blocks shown as [[SKVM_CODE_BLOCK_N]] placeholders)
+  sections.push(`\n## Current SKILL.md
+Fenced code blocks are shown as immutable [[SKVM_CODE_BLOCK_N]] placeholders — keep them verbatim and edit only the surrounding prose.
+
+\`\`\`markdown\n${skillContent}\n\`\`\``)
 
   // Inline bundled files
   if (bundledFiles.length > 0) {
@@ -427,9 +484,15 @@ export async function runPass1Agentic(
     return { scr, gaps, compiledSkill: skillContent }
   }
 
+  // Lock code blocks behind atomic placeholders so the agent edits prose only;
+  // originals are restored verbatim afterward. Write the masked SKILL.md to the
+  // workDir too, so a stray read_file stays consistent with the prompt.
+  const { masked, blocks } = maskCodeBlocks(skillContent)
+  await Bun.write(path.join(workDir, "SKILL.md"), masked)
+
   const bundledFiles = await readWorkDirFiles(workDir)
   const system = buildSystemPrompt(tcp)
-  const initialMessage = buildInitialMessage(scr, gaps, tcp, skillContent, bundledFiles, failureContext)
+  const initialMessage = buildInitialMessage(scr, gaps, tcp, masked, bundledFiles, failureContext)
   const executeTool = createAgentToolExecutor(workDir, { requireReadBeforeWrite: false })
 
   const loopResult = await runAgentLoop(
@@ -450,7 +513,8 @@ export async function runPass1Agentic(
   const compiledSkillFile = Bun.file(path.join(workDir, "SKILL.md"))
   let compiledSkill: string
   if (await compiledSkillFile.exists()) {
-    compiledSkill = await compiledSkillFile.text()
+    const written = await compiledSkillFile.text()
+    compiledSkill = unmaskCodeBlocks(written, blocks)
   } else {
     log.warn("Compiler agent did not write SKILL.md — using original")
     compiledSkill = skillContent
