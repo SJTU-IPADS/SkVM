@@ -97,8 +97,44 @@ export async function handleImport(opts: {
 
     console.log(`\nTasks written to: skvm-data/tasks/`)
     console.log(`Skills written to: skvm-data/skills/`)
+  } else if (source.startsWith("terminalbench")) {
+    const tbRepoDir = flags.path
+    if (!tbRepoDir) {
+      console.error("Error: --path=<terminal-bench-2.1 repo> is required for terminalbench import")
+      process.exit(1)
+    }
+
+    const excludedTasks = flags.exclude
+      ? flags.exclude.split(",").map(s => s.trim())
+      : []
+
+    // Optional --tasks=<name1,name2> filter (path-B minimum: import one task).
+    const tasksFilter = flags.tasks
+      ? flags.tasks.split(",").map(s => s.trim())
+      : undefined
+
+    console.log(`Importing from Terminal-Bench 2.1: ${tbRepoDir}`)
+    if (excludedTasks.length > 0) console.log(`Excluding: ${excludedTasks.join(", ")}`)
+    if (tasksFilter) console.log(`Filtering to: ${tasksFilter.join(", ")}`)
+
+    const { importTerminalBench } = await import("./importers/terminalbench.ts")
+    const { imported, skipped, errors } = await importTerminalBench(tbRepoDir, { excludedTasks, tasks: tasksFilter })
+
+    console.log(`\nImported: ${imported.length}`)
+    for (const i of imported) console.log(`  ${i}`)
+
+    if (skipped.length > 0) {
+      console.log(`\nSkipped: ${skipped.length}`)
+      for (const s of skipped) console.log(`  ${s}`)
+    }
+    if (errors.length > 0) {
+      console.log(`\nErrors: ${errors.length}`)
+      for (const e of errors) console.log(`  ${e}`)
+    }
+
+    console.log(`\nTasks written to: skvm-data/tasks/`)
   } else {
-    console.error(`Unknown import source: "${source}". Available: pinchbench, skillsbench`)
+    console.error(`Unknown import source: "${source}". Available: pinchbench, skillsbench, terminalbench`)
     process.exit(1)
   }
 }

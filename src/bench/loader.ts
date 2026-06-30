@@ -93,6 +93,8 @@ export async function loadTasks(opts?: {
         taskDir,
         hostReady: parsed.hostReady,
         difficulty: parsed.difficulty,
+        tbDockerImage: parsed.tbDockerImage,
+        tbTestsDir: parsed.tbTestsDir,
       }
 
       tasks.push(benchTask)
@@ -154,6 +156,8 @@ export async function writeTask(
   if (task.gradingWeights) data.gradingWeights = task.gradingWeights
   if (task.hostReady === false) data.hostReady = false
   if (task.difficulty) data.difficulty = task.difficulty
+  if (task.tbDockerImage) data.tbDockerImage = task.tbDockerImage
+  if (task.tbTestsDir) data.tbTestsDir = task.tbTestsDir
 
   await Bun.write(filePath, JSON.stringify(data, null, 2))
 
