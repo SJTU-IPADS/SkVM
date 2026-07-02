@@ -324,6 +324,31 @@ describe("defineFlags().help — generated help text", () => {
   })
 })
 
+describe("defineFlags — empty spec (flagless subcommands)", () => {
+  // proposals reject/cancel declare no flags of their own. help() must not
+  // render a dangling "Options:" header, and the row-width Math.max must not
+  // run over zero rows (Math.max of an empty spread is -Infinity).
+  const def = defineFlags("demo reject", "No flags at all", {}, { usage: ["skvm demo reject <id>"] })
+
+  test("help() renders title + usage and omits the Options block", () => {
+    expect(def.help()).toBe(
+      ["skvm demo reject - No flags at all", "", "Usage:", "  skvm demo reject <id>"].join("\n"),
+    )
+  })
+
+  test("help() without usage is just the title line", () => {
+    expect(defineFlags("demo bare", "s", {}).help()).toBe("skvm demo bare - s")
+  })
+
+  test("parse: empty config, --help short-circuits, any data flag is unknown", () => {
+    expect(def.parse([])).toEqual({ help: false })
+    expect(def.parse(["--help"])).toEqual({ help: true })
+    expect(parseError(def, ["--round=1"]).message).toBe(
+      "demo reject: Unknown flag --round.\nRun 'skvm demo reject --help' for the list of supported flags.",
+    )
+  })
+})
+
 describe("defineFlags — define-time validation", () => {
   test("aliasOf must reference a declared non-alias flag", () => {
     expect(() => defineFlags("demo", "s", { a: { aliasOf: "missing" } })).toThrow(

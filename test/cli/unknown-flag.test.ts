@@ -114,14 +114,15 @@ describe("CLI rejects unknown flags", () => {
     expect(stderr).toContain("Did you mean --full?")
   })
 
-  test("proposals with unknown sub-command still rejects unknown flags", async () => {
-    // Unknown sub-command falls through to an empty allow-set, so any flag is
-    // unknown. This guards against a regression where `proposals liist --skll=foo`
-    // silently skipped the flag check (the unknown sub gets reported by the
-    // existing sub-command dispatcher below).
+  test("proposals with unknown sub-command reports the sub, not the flags", async () => {
+    // Migration deviation (#49): legacy checked the flags against an empty
+    // allow-set first, so `proposals liist --skll=foo` reported the unknown
+    // FLAG and never named the bad sub. The per-sub router now reports the
+    // unknown SUBCOMMAND itself — flags of a nonexistent sub have no
+    // definition to check against. Still a loud exit-1 either way.
     const { exitCode, stderr } = await runCli(["proposals", "liist", "--skll=foo"])
     expect(exitCode).toBe(1)
-    expect(stderr).toContain("Unknown flag --skll")
+    expect(stderr).toContain("Unknown proposals subcommand: liist")
   })
 
   test("proposals serve rejects --hst (typo for --host) — unknown flag without close match shows no hint", async () => {

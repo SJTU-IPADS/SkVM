@@ -241,19 +241,23 @@ export function defineFlags<const S extends FlagSpecs>(
       }
       return [left, text]
     })
-    const width = Math.max(...rows.map(([left]) => left.length)) + 4
-    const lines = [`skvm ${command} - ${summary}`, ""]
+    const lines = [`skvm ${command} - ${summary}`]
     if (options?.usage !== undefined && options.usage.length > 0) {
-      lines.push("Usage:")
+      lines.push("", "Usage:")
       for (const u of options.usage) lines.push(`  ${u}`)
-      lines.push("")
     }
-    lines.push("Options:")
-    for (const [left, text] of rows) {
-      const [first = "", ...rest] = text.split("\n")
-      lines.push(`  ${left.padEnd(width)}${first}`.trimEnd())
-      for (const cont of rest) {
-        lines.push(`  ${" ".repeat(width)}${cont}`.trimEnd())
+    // Flagless subcommands (e.g. `proposals reject <id>`) declare an empty
+    // spec; skip the Options block entirely — a dangling "Options:" header
+    // (and Math.max over zero rows) would render nonsense.
+    if (rows.length > 0) {
+      const width = Math.max(...rows.map(([left]) => left.length)) + 4
+      lines.push("", "Options:")
+      for (const [left, text] of rows) {
+        const [first = "", ...rest] = text.split("\n")
+        lines.push(`  ${left.padEnd(width)}${first}`.trimEnd())
+        for (const cont of rest) {
+          lines.push(`  ${" ".repeat(width)}${cont}`.trimEnd())
+        }
       }
     }
     if (options?.epilogue !== undefined && options.epilogue !== "") {
@@ -383,13 +387,12 @@ function defaultPlaceholder(s: StringFlag | IntFlag | FloatFlag | EnumFlag): str
 // ---------------------------------------------------------------------------
 
 /**
- * The impure entry used by `src/index.ts`: parse argv, printing the error to
- * stderr and exiting 1 on UsageError (same behavior as the legacy
- * `assertKnownFlags` / inline-validation paths), or printing the generated
- * help to stdout and exiting 0 when `--help` was requested.
+ * UsageError → stderr + exit 1; anything else propagates to the crash handler.
+ * Exported for the proposals router (`src/cli/proposals.ts`), which parses
+ * per-sub argv itself instead of going through `runOrExit` and needs the same
+ * exit path for handler-thrown UsageErrors.
  */
-/** UsageError → stderr + exit 1; anything else propagates to the crash handler. */
-function exitOnUsageError(err: unknown): never {
+export function exitOnUsageError(err: unknown): never {
   if (err instanceof UsageError) {
     console.error(err.message)
     process.exit(1)
@@ -397,6 +400,12 @@ function exitOnUsageError(err: unknown): never {
   throw err
 }
 
+/**
+ * The impure entry used by `src/index.ts`: parse argv, printing the error to
+ * stderr and exiting 1 on UsageError (same behavior as the legacy
+ * `assertKnownFlags` / inline-validation paths), or printing the generated
+ * help to stdout and exiting 0 when `--help` was requested.
+ */
 export function parseOrExit<S extends FlagSpecs>(def: FlagsDef<S>, argv: string[]): FlagConfig<S> {
   let result: ParseResult<S>
   try {
