@@ -40,4 +40,25 @@ describe("renderOpenclawProviderEntries — block synthesis from a resolved rout
     // baseUrl falls back to the anthropic default when the route omits it.
     expect(entries.anthropic!.baseUrl).toBe("https://api.anthropic.com/v1")
   })
+
+  test("apiKeyEnv resolves to the env var's value, never its name", () => {
+    process.env.SKVM_TEST_OPENCLAW_KEY = "from-env"
+    try {
+      const route: ProviderRoute = { match: "anthropic/*", kind: "anthropic", apiKeyEnv: "SKVM_TEST_OPENCLAW_KEY" }
+      const entries = renderOpenclawProviderEntries(route, "anthropic/claude-sonnet-4.6")
+      expect(entries.anthropic!.apiKey).toBe("from-env")
+    } finally {
+      delete process.env.SKVM_TEST_OPENCLAW_KEY
+    }
+  })
+
+  test("throws when apiKeyEnv names an unset env var", () => {
+    // The openclaw child inherits this process's env, so an unset var can
+    // never resolve later — fail at synthesis with the var's name instead of
+    // writing it as a literal apiKey and failing inside openclaw with a
+    // generic auth error.
+    const route: ProviderRoute = { match: "anthropic/*", kind: "anthropic", apiKeyEnv: "SKVM_TEST_OPENCLAW_UNSET_KEY" }
+    expect(() => renderOpenclawProviderEntries(route, "anthropic/claude-sonnet-4.6"))
+      .toThrow(/SKVM_TEST_OPENCLAW_UNSET_KEY/)
+  })
 })

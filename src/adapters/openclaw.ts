@@ -180,9 +180,8 @@ function transcriptToRunRecord(entries: OpenClawTranscriptEntry[]): RunRecordBui
  * Synthesize the openclaw `models.providers` block for the active model from
  * its already-resolved route. openclaw's resolver requires a non-empty
  * `models[]` array on each provider block (see
- * `src/agents/pi-embedded-runner/model.ts:251-399 buildInlineProviderModels`);
- * attach a synthetic entry only on the active provider — the rest stay
- * auth-only since openclaw won't route to them in this run.
+ * `src/agents/pi-embedded-runner/model.ts:251-399 buildInlineProviderModels`),
+ * so the block carries a synthetic entry for the active model.
  *
  * The caller resolves the route via `resolveRoute(model)` — the same
  * chokepoint setup() validates against, so the synthesized provider matches
@@ -249,12 +248,23 @@ export function renderOpenclawProviderEntries(
       `add it to providers.routes in skvm.config.json.`,
     )
   }
-  const resolvedKey = resolveRouteApiKey(route) ?? route.apiKeyEnv ?? ""
+  // Fail fast on a key that resolves to nothing: the child inherits this
+  // process's env (runSubprocess merges over process.env), so an env var
+  // unset here is unset for openclaw too — a block without a real key can
+  // only fail later inside openclaw with an opaque auth error.
+  const resolvedKey = resolveRouteApiKey(route)
+  if (!resolvedKey) {
+    throw new Error(
+      `openclaw (managed): route "${route.match}" (kind=${route.kind}) has no usable API key` +
+      (route.apiKeyEnv ? ` — env var ${route.apiKeyEnv} is not set` : "") +
+      `; export it or store a key via \`skvm config init\`.`,
+    )
+  }
   return {
     [activePrefix]: {
       api: route.kind === "anthropic" ? "anthropic-messages" : "openai-completions",
       baseUrl,
-      ...(resolvedKey ? { apiKey: resolvedKey } : {}),
+      apiKey: resolvedKey,
       models: [buildDefaultModelEntry(bareModel)],
     },
   }
@@ -303,6 +313,7 @@ class OpenclawSandboxPool {
   private heldByThisProcess = new Set<string>()
   private nativeSourceAgent = "main"
   private initModel = ""
+  private initRoute: ProviderRoute | undefined
   private initialized = false
   private initPromise: Promise<void> | null = null
 
@@ -333,6 +344,12 @@ class OpenclawSandboxPool {
     this.mode = config.mode
     this.nativeSourceAgent = config.nativeSourceAgent
     this.initModel = config.model
+    // Resolve once, through the same chokepoint setup() validated against
+    // (incl. the built-in openrouter/* default), and reuse it for every
+    // openclaw.json rewrite: pool expansion must not flip provider mid-run
+    // if the routes config changes underneath us (auto-probe can prepend a
+    // discovered route to providers.routes while a pool is live).
+    this.initRoute = config.mode === "managed" ? resolveRoute(config.model) : undefined
     this.cmdPrefix = await resolveOpenClawCmd()
     log.info(`openclaw command: ${this.cmdPrefix.join(" ")}`)
 
@@ -428,12 +445,8 @@ class OpenclawSandboxPool {
       model: { primary: this.initModel, fallbacks: [] },
     }))
     const doc: Record<string, unknown> = { agents: { list } }
-    if (this.mode === "managed") {
-      // Resolve through the same chokepoint setup() validated against, so the
-      // synthesized provider matches the accepted route (incl. the built-in
-      // openrouter/* default). setup() already validated, so this won't throw.
-      const route = resolveRoute(this.initModel)
-      doc.models = { providers: renderOpenclawProviderEntries(route, this.initModel) }
+    if (this.mode === "managed" && this.initRoute) {
+      doc.models = { providers: renderOpenclawProviderEntries(this.initRoute, this.initModel) }
     }
     await Bun.write(path.join(root, "openclaw.json"), JSON.stringify(doc, null, 2))
   }
