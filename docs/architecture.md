@@ -23,7 +23,8 @@ Three layers, each independently usable:
 
 ```
 src/
-├── index.ts            # CLI entry — hand-rolled flag parser
+├── index.ts            # CLI entry — dispatch to src/cli/ subcommand modules
+├── cli/                # Declarative flag layer (flags.ts) + per-subcommand modules (see #49)
 ├── core/               # Shared types, config, logging, concurrency, headless-agent helpers
 ├── providers/          # LLMProvider backends (Anthropic, OpenAI-compatible, OpenRouter) + auto-probe
 ├── adapters/           # Seven agent harness adapters (registry.ts is the single source of truth)

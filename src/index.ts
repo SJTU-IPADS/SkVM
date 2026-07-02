@@ -25,17 +25,6 @@ const isTopLevelHelp = !rawCommand || rawCommand === "--help" || rawCommand === 
 const isTopLevelVersion = rawCommand === "--version" || rawCommand === "-v"
 const command = isTopLevelHelp || isTopLevelVersion ? undefined : rawCommand
 
-function parseFlags(args: string[]): Record<string, string> {
-  const flags: Record<string, string> = {}
-  for (const arg of args) {
-    if (arg.startsWith("--")) {
-      const [key, val] = arg.slice(2).split("=")
-      flags[key!] = val ?? "true"
-    }
-  }
-  return flags
-}
-
 async function main() {
   // Hidden subcommand for `skvm jit-optimize --detach`. Spawned by the
   // parent CLI with stdio: ignore + IPC channel; takes a JSON-stringified
@@ -49,9 +38,11 @@ async function main() {
     return
   }
 
-  const flags = parseFlags(args.slice(1))
-
-  if (flags.verbose) setLogLevel("debug")
+  // Legacy parseFlags treated any `--verbose=<non-empty>` (including
+  // --verbose=false) as set. This scan is a slight superset: `--verbose=`
+  // (empty value) and `--verbose` in the command position also enable
+  // debug — acceptable for a debug toggle.
+  if (args.some((a) => a === "--verbose" || a.startsWith("--verbose="))) setLogLevel("debug")
 
   if (isTopLevelVersion) {
     console.log(pkgJson.version)

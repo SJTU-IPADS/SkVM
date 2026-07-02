@@ -1,13 +1,13 @@
 /**
- * Reject unknown CLI flags with a typo-aware error, and parse skill-mode flag.
+ * Wording/suggestion engine behind the declarative flag parser
+ * (`src/cli/flags.ts`): the set of global flags every command accepts, and
+ * typo-aware "unknown flag" error formatting shared across all commands.
  *
- * Each `runX` function in src/index.ts (and the bench mode dispatcher) calls
- * `assertKnownFlags(label, flags, KNOWN_FLAGS)` at the very top so that a
- * misspelled flag (e.g. `--adpter` instead of `--adapter`) terminates with a
- * loud error instead of silently falling through to the default. See #12.
+ * `formatUnknownFlagErrors` terminates a command with a loud error when a
+ * flag is misspelled (e.g. `--adpter` instead of `--adapter`) instead of
+ * silently falling through to the default — see #12 for the typo-hint
+ * history.
  */
-
-import type { SkillMode } from "./types.ts"
 
 export const GLOBAL_FLAGS: ReadonlySet<string> = new Set([
   "help",
@@ -39,8 +39,8 @@ export function suggestFlag(typo: string, known: Iterable<string>): string | nul
 /**
  * Build the unknown-flag error lines for `flagKeys` against
  * `knownFlags ∪ GLOBAL_FLAGS`. Returns `[]` when every key is known.
- * Single source of truth for the wording — used by both `assertKnownFlags`
- * (legacy exit-on-error path) and `src/cli/flags.ts` (UsageError path).
+ * Single source of truth for the wording — consumed by `src/cli/flags.ts`
+ * (UsageError path).
  */
 export function formatUnknownFlagErrors(
   commandLabel: string,
@@ -70,17 +70,6 @@ export function formatUnknownFlagErrors(
   return lines
 }
 
-export function assertKnownFlags(
-  commandLabel: string,
-  flags: Record<string, string>,
-  knownFlags: ReadonlySet<string>,
-): void {
-  const lines = formatUnknownFlagErrors(commandLabel, Object.keys(flags), knownFlags)
-  if (lines.length === 0) return
-  for (const line of lines) console.error(line)
-  process.exit(1)
-}
-
 function levenshtein(a: string, b: string): number {
   if (a === b) return 0
   if (a.length === 0) return b.length
@@ -97,23 +86,4 @@ function levenshtein(a: string, b: string): number {
     for (let j = 0; j <= b.length; j++) prev[j] = curr[j]
   }
   return prev[b.length]
-}
-
-/**
- * Parse the --skill-mode flag, returning the mode or undefined if not set.
- *
- * Valid values: "inject" | "discover"
- * Exits with error on invalid value.
- * Keep this module small and side-effect free except for the deliberate
- * `process.exit` on validation failure, which is the standard error path
- * used by all other CLI flag handling in src/index.ts.
- */
-export function parseSkillModeFlag(flags: Record<string, string>): SkillMode | undefined {
-  const v = flags["skill-mode"]
-  if (v === undefined) return undefined
-  if (v !== "inject" && v !== "discover") {
-    console.error(`Error: unknown skill mode "${v}". Valid: inject, discover`)
-    process.exit(1)
-  }
-  return v
 }
