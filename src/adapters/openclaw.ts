@@ -12,7 +12,7 @@ import {
   symlinkIfExists,
   type Sandbox,
 } from "../core/adapter-sandbox.ts"
-import { resolveBackendModel, resolveRoute, resolveRouteApiKey, routeProviderName, validateModelIdForRoute } from "../providers/registry.ts"
+import { resolveBackendModel, resolveRoute, resolveRouteApiKeyForConfig, routeProviderName, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseOpenclaw } from "./diagnose-failure.ts"
 import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { runSubprocess } from "../core/subprocess.ts"
@@ -248,23 +248,16 @@ export function renderOpenclawProviderEntries(
       `add it to providers.routes in skvm.config.json.`,
     )
   }
-  // Fail fast on a key that resolves to nothing: the child inherits this
-  // process's env (runSubprocess merges over process.env), so an env var
-  // unset here is unset for openclaw too — a block without a real key can
-  // only fail later inside openclaw with an opaque auth error.
-  const resolvedKey = resolveRouteApiKey(route)
-  if (!resolvedKey) {
-    throw new Error(
-      `openclaw (managed): route "${route.match}" (kind=${route.kind}) has no usable API key` +
-      (route.apiKeyEnv ? ` — env var ${route.apiKeyEnv} is not set` : "") +
-      `; export it or store a key via \`skvm config init\`.`,
-    )
-  }
+  // Throws when a configured apiKeyEnv resolves to nothing (the child
+  // inherits this process's env, so it could never resolve later); a
+  // deliberate `apiKey: ""` (auth-free local endpoint) comes back verbatim
+  // and the block simply omits the field.
+  const resolvedKey = resolveRouteApiKeyForConfig(route, "openclaw (managed)")
   return {
     [activePrefix]: {
       api: route.kind === "anthropic" ? "anthropic-messages" : "openai-completions",
       baseUrl,
-      apiKey: resolvedKey,
+      ...(resolvedKey ? { apiKey: resolvedKey } : {}),
       models: [buildDefaultModelEntry(bareModel)],
     },
   }

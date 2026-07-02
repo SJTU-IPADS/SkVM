@@ -61,4 +61,14 @@ describe("renderOpenclawProviderEntries — block synthesis from a resolved rout
     expect(() => renderOpenclawProviderEntries(route, "anthropic/claude-sonnet-4.6"))
       .toThrow(/SKVM_TEST_OPENCLAW_UNSET_KEY/)
   })
+
+  test("deliberate apiKey:\"\" (auth-free local endpoint) omits the apiKey field", () => {
+    const route: ProviderRoute = {
+      match: "local/*", kind: "openai-compatible",
+      apiKey: "", baseUrl: "http://localhost:8000/v1",
+    }
+    const entries = renderOpenclawProviderEntries(route, "local/qwen3-7b")
+    expect(entries.local).toBeDefined()
+    expect("apiKey" in entries.local!).toBe(false)
+  })
 })

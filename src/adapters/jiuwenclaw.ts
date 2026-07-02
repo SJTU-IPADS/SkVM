@@ -2,7 +2,7 @@ import { mkdir, copyFile, writeFile, unlink } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import net from "node:net"
-import type { AgentAdapter, AdapterConfig, RunResult, SkillBundle } from "../core/types.ts"
+import type { AgentAdapter, AdapterConfig, ProviderRoute, RunResult, SkillBundle } from "../core/types.ts"
 import { RunRecordBuilder, minimalRecord } from "../core/run-record.ts"
 import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { createLogger } from "../core/logger.ts"
@@ -10,7 +10,7 @@ import { getAdapterRepoDir } from "../core/config.ts"
 import { acquireFileLock, releaseFileLock } from "../core/file-lock.ts"
 import { runSubprocess } from "../core/subprocess.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
-import { resolveBackendModel, resolveRoute, resolveRouteApiKey, validateModelIdForRoute } from "../providers/registry.ts"
+import { resolveBackendModel, resolveRoute, resolveRouteApiKeyForConfig, validateModelIdForRoute } from "../providers/registry.ts"
 import { diagnoseJiuwenclaw } from "./diagnose-failure.ts"
 
 const log = createLogger("jiuwenclaw")
@@ -284,6 +284,12 @@ export class JiuwenClawAdapter implements AgentAdapter {
     log.info(`jiuwenclaw sidecar python: ${this.sidecarPython}`)
     log.info(`jiuwenclaw model: ${this.model}`)
 
+    // Fail fast on route/config errors before acquiring the user-global
+    // sidecar lock or touching the user's .env. Resolved once through the
+    // canonical chokepoint; renderJiuwenEnv below reuses it.
+    const route = resolveRoute(this.model)
+    validateModelIdForRoute(this.model, route)
+
     try {
       await mkdir(path.dirname(JIUWEN_LOCK_PATH), { recursive: true })
       log.info(`jiuwenclaw acquiring sidecar lock at ${JIUWEN_LOCK_PATH}`)
@@ -304,7 +310,7 @@ export class JiuwenClawAdapter implements AgentAdapter {
 
       await this.backupEnvFile()
       await mkdir(path.dirname(JIUWEN_ENV_PATH), { recursive: true })
-      await writeFile(JIUWEN_ENV_PATH, renderJiuwenEnv(this.model, this.apiKey), "utf-8")
+      await writeFile(JIUWEN_ENV_PATH, renderJiuwenEnv(route, this.model, this.apiKey), "utf-8")
       this.envWritten = true
       log.info(`jiuwenclaw wrote ${JIUWEN_ENV_PATH} for model=${this.model}`)
 
@@ -688,12 +694,14 @@ export class JiuwenClawAdapter implements AgentAdapter {
  * merging — the same skill × model run on a different machine has to see the
  * same toolset.
  *
- * `API_BASE` / `API_KEY` come from the route that matches the model id (or
- * the OpenRouter default when nothing matches). Anthropic-kind routes can't
- * be driven from this env shape — jiuwenclaw expects an OpenAI-format
- * `/chat/completions` endpoint at `API_BASE`, while Anthropic speaks
- * `/messages`. The route's `baseUrl` is still used if set; downstream calls
- * will surface the protocol mismatch loudly.
+ * `API_BASE` / `API_KEY` come from the caller's resolved route — the same
+ * chokepoint setup() validates against (resolveRoute, incl. the built-in
+ * openrouter/* default). Anthropic-kind routes can't be driven from this env
+ * shape — jiuwenclaw expects an OpenAI-format `/chat/completions` endpoint
+ * at `API_BASE`, while Anthropic speaks `/messages`.
+ *
+ * `apiKeyOverride` is the explicit per-run key from AdapterConfig.apiKey and
+ * wins over the route's own credential when set.
  *
  * `BROWSER_RUNTIME_MCP_ENABLED=0` defensively disables jiuwenclaw's browser
  * runtime / Playwright MCP integration — the stock `.env.template` ships with
@@ -707,10 +715,14 @@ export class JiuwenClawAdapter implements AgentAdapter {
  * developer's local `.env`. The pre-run file is captured in
  * `.env.skvm-backup` and restored on teardown, so the user's credentials are
  * not lost — only suppressed for the duration of the run.
+ *
+ * Exported for tests.
  */
-function renderJiuwenEnv(model: string, apiKey: string | undefined): string {
-  const route = resolveRoute(model)
-  validateModelIdForRoute(model, route)
+export function renderJiuwenEnv(
+  route: ProviderRoute,
+  model: string,
+  apiKeyOverride: string | undefined,
+): string {
   // jiuwenclaw's sidecar .env shape is OpenAI-only — it calls
   // `<API_BASE>/chat/completions` with `Authorization: Bearer`. Anthropic's
   // native API speaks /messages with `x-api-key`, so even with a valid
@@ -725,7 +737,10 @@ function renderJiuwenEnv(model: string, apiKey: string | undefined): string {
       `route, or run this model on a different adapter.`,
     )
   }
-  const resolvedKey = apiKey ?? resolveRouteApiKey(route) ?? ""
+  // Throws when a configured apiKeyEnv resolves to nothing (the sidecar
+  // inherits this process's env, so it could never resolve later); a
+  // deliberate `apiKey: ""` (auth-free local endpoint) passes through.
+  const resolvedKey = apiKeyOverride ?? resolveRouteApiKeyForConfig(route, "jiuwenclaw")
   const baseUrl = route.baseUrl ?? "https://openrouter.ai/api/v1"
   const modelName = resolveBackendModel(model)
   return [

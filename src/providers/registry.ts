@@ -245,13 +245,14 @@ export function globMatch(pattern: string, value: string): boolean {
 
 /**
  * Resolve a route's API key as a plain string. Used by env-var injection
- * (envForRoute) and the OPENCODE_CONFIG_CONTENT builder. Returns null when
- * neither `apiKey` nor `apiKeyEnv` yields a usable value — callers then
- * decide whether absence is a failure (instantiate) or just "no help"
- * (env injection — let the spawn inherit). `instantiate` keeps its own
- * branchy resolver because it must raise ProviderAuthError on missing keys
- * (the jit-optimize infraError classification depends on that exception
- * shape).
+ * (envForRoute) and the headless drivers. Returns null when neither `apiKey`
+ * nor `apiKeyEnv` yields a usable value — callers then decide whether
+ * absence is a failure (instantiate) or just "no help" (env injection — let
+ * the spawn inherit and the tool resolve its own credentials). `instantiate`
+ * keeps its own branchy resolver because it must raise ProviderAuthError on
+ * missing keys (the jit-optimize infraError classification depends on that
+ * exception shape). Adapters that *embed* the key in a synthesized config
+ * use resolveRouteApiKeyForConfig instead.
  */
 export function resolveRouteApiKey(route: ProviderRoute): string | null {
   if (route.apiKey) return route.apiKey
@@ -260,6 +261,38 @@ export function resolveRouteApiKey(route: ProviderRoute): string | null {
     if (val) return val
   }
   return null
+}
+
+/**
+ * Resolve a route's API key for embedding in a synthesized (managed-mode)
+ * adapter config. Unlike resolveRouteApiKey, this distinguishes a
+ * deliberately auth-free endpoint from a missing credential:
+ *
+ *   - `apiKey` set → returned verbatim, including `""` (auth-free local
+ *     endpoints, e.g. vLLM without --api-key). Per the ProviderRouteSchema
+ *     doc, `apiKey` takes precedence over `apiKeyEnv` when both are set.
+ *   - only `apiKeyEnv` set → the env var's value, or a thrown error when it
+ *     is unset: adapter subprocesses inherit this process's environment, so
+ *     a var unset here can never resolve in the child — a config written
+ *     anyway could only fail later inside the tool with an opaque auth error.
+ *
+ * `label` prefixes the error message, e.g. "openclaw (managed)".
+ */
+export function resolveRouteApiKeyForConfig(route: ProviderRoute, label: string): string {
+  if (route.apiKey !== undefined) return route.apiKey
+  if (route.apiKeyEnv) {
+    const val = process.env[route.apiKeyEnv]
+    if (val) return val
+    throw new Error(
+      `${label}: route "${route.match}" (kind=${route.kind}) requires env var ` +
+      `${route.apiKeyEnv}, which is not set; export it or store a key via \`skvm config init\`.`,
+    )
+  }
+  // Unreachable for schema-validated routes (the refine requires apiKey or
+  // apiKeyEnv), but renderers are exported and unit-tested with literals.
+  throw new Error(
+    `${label}: route "${route.match}" (kind=${route.kind}) has neither apiKey nor apiKeyEnv set`,
+  )
 }
 
 /**

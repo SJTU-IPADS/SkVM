@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test"
-import { buildMinimalRecord, parseHermesSession } from "../../src/adapters/hermes.ts"
+import { buildMinimalRecord, parseHermesSession, renderHermesConfig } from "../../src/adapters/hermes.ts"
+import type { ProviderRoute } from "../../src/core/types.ts"
 
 // Regression coverage for docs/skvm/bench-adapter-error-false-positive.md.
 // The full `.run()` method orchestrates real subprocesses; these tests
@@ -107,5 +108,38 @@ describe("hermes: parseHermesSession", () => {
     expect(r.tokens.output).toBe(50)
     expect(r.cost).toBe(0.01)
     expect(r.usageAvailable).toBe(true)
+  })
+})
+
+describe("renderHermesConfig — managed custom-provider synthesis", () => {
+  test("openai-compatible route embeds the resolved key in custom_providers", () => {
+    const route: ProviderRoute = {
+      match: "ipads/*", kind: "openai-compatible",
+      apiKey: "sk-ipads", baseUrl: "https://ipads.example/v1",
+    }
+    const yaml = renderHermesConfig(route, "ipads/glm-5")
+    expect(yaml).toContain('api_key: "sk-ipads"')
+    expect(yaml).toContain('base_url: "https://ipads.example/v1"')
+    expect(yaml).toContain('default: "glm-5"')
+  })
+
+  test("deliberate apiKey:\"\" (auth-free local endpoint) writes an empty api_key", () => {
+    const route: ProviderRoute = {
+      match: "local/*", kind: "openai-compatible",
+      apiKey: "", baseUrl: "http://localhost:8000/v1",
+    }
+    expect(renderHermesConfig(route, "local/qwen3-7b")).toContain('api_key: ""')
+  })
+
+  test("throws when apiKeyEnv names an unset env var", () => {
+    // The hermes child inherits this process's env, so an unset var can never
+    // resolve later — fail at synthesis instead of writing api_key: "" and
+    // letting hermes 401 mid-run.
+    const route: ProviderRoute = {
+      match: "ipads/*", kind: "openai-compatible",
+      apiKeyEnv: "SKVM_TEST_HERMES_UNSET_KEY", baseUrl: "https://ipads.example/v1",
+    }
+    expect(() => renderHermesConfig(route, "ipads/glm-5"))
+      .toThrow(/SKVM_TEST_HERMES_UNSET_KEY/)
   })
 })

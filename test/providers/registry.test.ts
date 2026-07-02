@@ -5,6 +5,7 @@ import {
   createProviderForModel,
   validateModelIdForRoute,
   resolveBackendModel,
+  resolveRouteApiKeyForConfig,
   routeProviderName,
 } from "../../src/providers/registry.ts"
 import { ProviderAuthError } from "../../src/providers/errors.ts"
@@ -138,6 +139,43 @@ describe("resolveBackendModel", () => {
   test("no-op for bare ids", () => {
     expect(resolveBackendModel("gpt-4o")).toBe("gpt-4o")
     expect(resolveBackendModel("")).toBe("")
+  })
+})
+
+describe("resolveRouteApiKeyForConfig", () => {
+  test("returns a stored apiKey verbatim, including the deliberate empty string", () => {
+    const withKey: ProviderRoute = { match: "x/*", kind: "openai-compatible", apiKey: "sk-real", baseUrl: "https://x/v1" }
+    expect(resolveRouteApiKeyForConfig(withKey, "test")).toBe("sk-real")
+    // "" is the documented shape for auth-free local endpoints (vLLM without
+    // --api-key) — it must pass through, not be treated as missing.
+    const authFree: ProviderRoute = { match: "local/*", kind: "openai-compatible", apiKey: "", baseUrl: "http://localhost:8000/v1" }
+    expect(resolveRouteApiKeyForConfig(authFree, "test")).toBe("")
+  })
+
+  test("apiKey takes precedence over apiKeyEnv, matching the schema doc", () => {
+    process.env.SKVM_TEST_CONFIG_KEY = "env-value"
+    try {
+      const both: ProviderRoute = { match: "x/*", kind: "anthropic", apiKey: "", apiKeyEnv: "SKVM_TEST_CONFIG_KEY" }
+      expect(resolveRouteApiKeyForConfig(both, "test")).toBe("")
+    } finally {
+      delete process.env.SKVM_TEST_CONFIG_KEY
+    }
+  })
+
+  test("apiKeyEnv resolves to the env var's value", () => {
+    process.env.SKVM_TEST_CONFIG_KEY = "env-value"
+    try {
+      const route: ProviderRoute = { match: "x/*", kind: "anthropic", apiKeyEnv: "SKVM_TEST_CONFIG_KEY" }
+      expect(resolveRouteApiKeyForConfig(route, "test")).toBe("env-value")
+    } finally {
+      delete process.env.SKVM_TEST_CONFIG_KEY
+    }
+  })
+
+  test("throws naming the env var when apiKeyEnv is unset — never the var's name as a key", () => {
+    const route: ProviderRoute = { match: "x/*", kind: "anthropic", apiKeyEnv: "SKVM_TEST_CONFIG_UNSET_KEY" }
+    expect(() => resolveRouteApiKeyForConfig(route, "myadapter (managed)"))
+      .toThrow(/myadapter \(managed\).*SKVM_TEST_CONFIG_UNSET_KEY/)
   })
 })
 

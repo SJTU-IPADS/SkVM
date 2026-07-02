@@ -36,7 +36,7 @@ import {
 import { createLogger } from "./logger.ts"
 import { isPidAlive } from "./file-lock.ts"
 import type { ProviderRoute } from "./types.ts"
-import { resolveRouteApiKey, routeProviderName } from "../providers/registry.ts"
+import { resolveRouteApiKey, resolveRouteApiKeyForConfig, routeProviderName } from "../providers/registry.ts"
 import { getTmpDir } from "./config.ts"
 import { HEADLESS_AGENT_DEFAULTS } from "./ui-defaults.ts"
 
@@ -240,15 +240,12 @@ export function buildOpenCodeConfigContent(route: ProviderRoute, bareModelId: st
     throw new Error(`buildOpenCodeConfigContent: route ${route.match} is missing baseUrl`)
   }
 
-  // Empty string is intentional: allows auth-free local endpoints (vLLM
-  // without --api-key). opencode will still send the Authorization header
-  // but the server can ignore it.
-  const apiKey = resolveRouteApiKey(route) ?? ""
-  if (!apiKey) {
-    log.warn(
-      `route "${route.match}" has no resolved API key — the opencode subprocess may fail to authenticate.`,
-    )
-  }
+  // A deliberate `apiKey: ""` passes through: auth-free local endpoints
+  // (vLLM without --api-key) — opencode still sends the Authorization header
+  // and the server ignores it. A configured apiKeyEnv that resolves to
+  // nothing throws instead (the subprocess inherits this process's env, so
+  // it could never resolve later).
+  const apiKey = resolveRouteApiKeyForConfig(route, "opencode (managed)")
 
   // Opencode provider id = first `/`-segment of the route's match glob;
   // narrow globs like `openai/gpt-4o-mini` collapse to their prefix `openai`.
