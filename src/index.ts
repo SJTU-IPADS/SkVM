@@ -2,11 +2,11 @@
 
 import "./core/env-bootstrap.ts"
 import { setLogLevel, createLogger, c, shouldUseColor } from "./core/logger.ts"
-import { ALL_ADAPTERS, type AdapterName, createAdapter, isAdapterName } from "./adapters/registry.ts"
+import { ALL_ADAPTERS, type AdapterName, isAdapterName } from "./adapters/registry.ts"
 import { resolveAdapterConfigMode } from "./core/config.ts"
 import { assertKnownFlags, parseSkillModeFlag } from "./core/cli-flags.ts"
 import { runOrExit } from "./cli/flags.ts"
-import { CLI_DEFAULTS, MODEL_DEFAULTS } from "./core/ui-defaults.ts"
+import { CLI_DEFAULTS } from "./core/ui-defaults.ts"
 import { TIMEOUT_DEFAULTS } from "./core/timeouts.ts"
 import pkgJson from "../package.json" with { type: "json" }
 
@@ -110,9 +110,11 @@ Use --help with any command for details.`)
       await runOrExit(RUN_FLAGS, args.slice(1), runRun)
       break
     }
-    case "pipeline":
-      await runPipeline(flags)
+    case "pipeline": {
+      const { PIPELINE_FLAGS, runPipeline } = await import("./cli/pipeline.ts")
+      await runOrExit(PIPELINE_FLAGS, args.slice(1), runPipeline)
       break
+    }
     case "bench":
       await runBenchCmd(flags)
       break
@@ -144,220 +146,6 @@ Use --help with any command for details.`)
   }
 
   process.exit(0)
-}
-
-const PIPELINE_KNOWN_FLAGS: ReadonlySet<string> = new Set([
-  "skill",
-  "model",
-  "adapter",
-  "force-profile",
-  "profile",
-  "pass",
-  "compiler-model",
-  "dry-run",
-  "adapter-config",
-  "timeout-ms",
-])
-
-async function runPipeline(flags: Record<string, string>) {
-  assertKnownFlags("pipeline", flags, PIPELINE_KNOWN_FLAGS)
-  if (flags.help === "true") {
-    console.log(`skvm pipeline - Profile (if needed) then compile a skill for a target model
-
-Usage:
-  skvm pipeline --skill=<path> --model=<id> [options]
-
-Options:
-  --skill=<path>          Path to skill directory or SKILL.md (required)
-  --model=<id>            Target model (required)
-  --adapter=<name>        Harness: ${ALL_ADAPTERS.join(" | ")} (default: ${CLI_DEFAULTS.adapter})
-  --force-profile         Re-profile even if cached
-  --profile=<path>        Use specific TCP file (skip auto-profiling)
-  --pass=<list>           Compiler passes, comma-separated (default: ${CLI_DEFAULTS.compilerPasses.join(",")})
-  --compiler-model=<id>   Compiler model via OpenRouter (default: ${MODEL_DEFAULTS.compiler})
-  --dry-run               Show compilation plan without writing
-  --timeout-ms=<n>        Per-agent-loop ceiling for this pipeline run (ms).
-                          Applies to BOTH the profile stage's per-probe agent
-                          execution AND the compiler agent loop. Each is timed
-                          independently — this is a per-loop ceiling, not a
-                          total wall time.
-                          Default: ${TIMEOUT_DEFAULTS.taskExec} for profile,
-                          ${TIMEOUT_DEFAULTS.compiler} for compiler.`)
-    process.exit(0)
-  }
-
-  let cliPipelineTimeoutMs: number | undefined
-  if (flags["timeout-ms"] !== undefined) {
-    const n = parseInt(flags["timeout-ms"], 10)
-    if (!Number.isFinite(n) || n <= 0) {
-      console.error(`pipeline: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
-      process.exit(1)
-    }
-    cliPipelineTimeoutMs = n
-  }
-
-  const skillPath = flags.skill
-  const model = flags.model
-  if (!skillPath || !model) {
-    console.error("--skill and --model are required")
-    process.exit(1)
-  }
-
-  const harnessStr = flags.adapter ?? CLI_DEFAULTS.adapter
-  if (!isAdapterName(harnessStr)) {
-    console.error(`Invalid adapter: ${harnessStr}. Valid: ${ALL_ADAPTERS.join(", ")}`)
-    process.exit(1)
-  }
-  const harness: AdapterName = harnessStr
-
-  const passes: string[] = flags.pass
-    ? flags.pass.split(",").map((p) => p.trim()).filter(Boolean)
-    : CLI_DEFAULTS.compilerPasses.map(String)
-  const pipelineCompilerModel = flags["compiler-model"] ?? MODEL_DEFAULTS.compiler
-
-  {
-    const { printBanner, describeModelRoute, describeAdapter, shortenPath } = await import("./core/banner.ts")
-    const { SKVM_CACHE, AOT_COMPILE_DIR } = await import("./core/config.ts")
-    printBanner("pipeline", [
-      ["Adapter", describeAdapter(harness)],
-      ["Model", describeModelRoute(model)],
-      ["Compiler", describeModelRoute(pipelineCompilerModel)],
-      ["Skill", skillPath],
-      ["Cache", shortenPath(SKVM_CACHE)],
-      ["Output", shortenPath(AOT_COMPILE_DIR)],
-    ])
-  }
-
-  const { RunSession, shortModel: shortModelName } = await import("./core/run-session.ts")
-  const { getCompileLogDir } = await import("./core/config.ts")
-  const skillName = skillPath.replace(/.*\//, "").replace(/\.md$/, "")
-  const pipelineSession = await RunSession.start({
-    type: "pipeline",
-    tag: `${harness}-${shortModelName(model)}-${skillName}`,
-    logDir: getCompileLogDir(harness, model, skillName),
-    models: [model],
-    harness,
-    skill: skillName,
-  })
-
-  // -------------------------------------------------------------------------
-  // Step 1: Obtain TCP (profile or load from cache)
-  // -------------------------------------------------------------------------
-
-  let tcp: import("./core/types.ts").TCP
-
-  if (flags.profile) {
-    // Explicit TCP file provided
-    console.log(`Loading profile from ${flags.profile}`)
-    const profileData = await Bun.file(flags.profile).json()
-    const { TCPSchema } = await import("./core/types.ts")
-    tcp = TCPSchema.parse(profileData)
-    console.log(`  Loaded profile: ${tcp.model} -- ${tcp.harness}`)
-  } else {
-    // Try cache, then profile if needed
-    const { profile, loadProfile } = await import("./profiler/index.ts")
-    const forceProfile = flags["force-profile"] === "true"
-
-    const cached = forceProfile ? null : await loadProfile(model, harness)
-    if (cached) {
-      console.log(`Using cached profile for ${model} -- ${harness}`)
-      tcp = cached
-    } else {
-      console.log(`No cached profile for ${model} -- ${harness}. Profiling...`)
-
-      // Always-on logging
-      const { getProfileLogDir } = await import("./core/config.ts")
-      const pipelineLogDir = getProfileLogDir(harness, model)
-      const { mkdirSync } = await import("node:fs")
-      mkdirSync(pipelineLogDir, { recursive: true })
-      const logFile = `${pipelineLogDir}/console.log`
-      const convLogDir = pipelineLogDir
-
-      const adapter = createAdapter(harness)
-      const adapterModePipeline = resolveAdapterConfigMode(flags["adapter-config"])
-      tcp = await profile({
-        model,
-        harness,
-        adapter,
-        adapterConfig: {
-          model,
-          maxSteps: 25,
-          // Profile probe default harmonizes with task-exec (120s); previously a
-          // standalone 300s literal. CLI --timeout-ms wins absolutely; see
-          // docs/skvm/2026-05-16-timeout-subsystem.md.
-          timeoutMs: cliPipelineTimeoutMs ?? TIMEOUT_DEFAULTS.taskExec,
-          mode: adapterModePipeline,
-        },
-        force: true,
-        logFile,
-        convLogDir,
-      })
-
-      const { printProfileSummary } = await import("./cli/profile.ts")
-      printProfileSummary(tcp)
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Step 2: Load skill content
-  // -------------------------------------------------------------------------
-
-  const pipelineSkillFile = Bun.file(skillPath.endsWith(".md") ? skillPath : `${skillPath}/SKILL.md`)
-  if (!(await pipelineSkillFile.exists())) {
-    console.error(`Skill not found: ${skillPath}`)
-    process.exit(1)
-  }
-  const skillContent = await pipelineSkillFile.text()
-
-  // -------------------------------------------------------------------------
-  // Step 3: Compile
-  // -------------------------------------------------------------------------
-
-  console.log(`\nCompiling skill for ${model} -- ${harness}...`)
-
-  const { createProviderForModel: createCompilerProvider } = await import("./providers/registry.ts")
-  const provider = createCompilerProvider(pipelineCompilerModel)
-
-  const { dirname: pipelineDirname } = await import("node:path")
-  const pipelineSkillDir = skillPath.endsWith(".md") ? pipelineDirname(skillPath) : skillPath
-
-  const { compileSkill, writeVariant } = await import("./compiler/index.ts")
-  const result = await compileSkill({
-    skillPath,
-    skillDir: pipelineSkillDir,
-    skillContent,
-    tcp,
-    model,
-    harness,
-    passes,
-    dryRun: flags["dry-run"] === "true",
-    timeoutMs: cliPipelineTimeoutMs,
-  }, provider)
-
-  // Print results
-  console.log(`\n=== Pipeline Complete: ${result.skillName} for ${result.model}--${result.harness} ===`)
-  console.log(`Duration: ${(result.durationMs / 1000).toFixed(1)}s`)
-  console.log(`Guard: ${result.guardPassed ? "PASSED" : "FAILED"}`)
-  if (result.guardViolations.length > 0) {
-    for (const v of result.guardViolations) console.log(`  Violation: ${v}`)
-  }
-  const scr = result.artifacts.scr
-  const gaps = result.artifacts.gaps ?? []
-  const deps = result.artifacts.deps ?? []
-  const dag = result.artifacts.dag ?? { steps: [], parallelism: [] }
-  if (scr) console.log(`SCR: ${scr.purposes.length} purposes`)
-  console.log(`Gaps: ${gaps.length}`)
-  console.log(`Dependencies: ${deps.length}`)
-  console.log(`DAG steps: ${dag.steps.length}`)
-  console.log(`Parallelism: ${dag.parallelism.length}`)
-
-  // Write variant
-  if (flags["dry-run"] !== "true") {
-    const dir = await writeVariant(result)
-    console.log(`\nVariant written to: ${dir}`)
-  }
-
-  await pipelineSession.complete(`${gaps.length} gaps, guard=${result.guardPassed ? "pass" : "fail"}`)
 }
 
 async function runBenchCmd(flags: Record<string, string>) {
