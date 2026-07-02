@@ -15,7 +15,7 @@ function makeDef() {
   })
 }
 
-function parseError(def: ReturnType<typeof makeDef>, argv: string[]): UsageError {
+function parseError(def: { parse(argv: string[]): unknown }, argv: string[]): UsageError {
   try {
     def.parse(argv)
   } catch (err) {
@@ -360,6 +360,66 @@ describe("defineFlags — define-time validation", () => {
     expect(() =>
       defineFlags("demo", "s", { m: { kind: "string", required: true, default: "x" } }),
     ).toThrow("defineFlags(demo): --m cannot be both required and have a default")
+  })
+})
+
+describe("defineFlags — float kind", () => {
+  const F = defineFlags("t", "test", {
+    ratio: { kind: "float", min: 0, max: 1, default: 0.95, help: "threshold" },
+  })
+
+  test("parses decimals, integers, and defaults", () => {
+    expect(F.parse(["--ratio=0.5"])).toEqual({ help: false, ratio: 0.5 })
+    expect(F.parse(["--ratio=1"])).toEqual({ help: false, ratio: 1 })
+    expect(F.parse([])).toEqual({ help: false, ratio: 0.95 })
+  })
+
+  test("rejects non-numeric and out-of-range", () => {
+    expect(parseError(F, ["--ratio=abc"]).message).toBe('t: --ratio expects a number, got "abc"')
+    expect(parseError(F, ["--ratio=1.5"]).message).toBe("t: --ratio must be <= 1, got 1.5")
+    expect(parseError(F, ["--ratio=-0.1"]).message).toBe("t: --ratio must be >= 0, got -0.1")
+  })
+
+  test("exponent notation is rejected — plain decimal only, by design", () => {
+    expect(parseError(F, ["--ratio=1e3"]).message).toBe('t: --ratio expects a number, got "1e3"')
+  })
+
+  test("empty value is rejected like int (not defaulted)", () => {
+    expect(parseError(F, ["--ratio="]).message).toBe('t: --ratio expects a number, got ""')
+  })
+
+  test("missing required float flag throws the standard required error", () => {
+    const def = defineFlags("t", "test", { r: { kind: "float", required: true } })
+    expect(parseError(def, []).message).toBe("t: --r is required")
+  })
+
+  test("define-time: default must respect min/max", () => {
+    expect(() => defineFlags("t", "x", { r: { kind: "float", min: 0, default: -1 } })).toThrow(
+      "defineFlags(t): --r default -1 is below min 0",
+    )
+    expect(() => defineFlags("t", "x", { r: { kind: "float", max: 1, default: 2 } })).toThrow(
+      "defineFlags(t): --r default 2 is above max 1",
+    )
+  })
+
+  test("float renders in generated help with default appended", () => {
+    expect(F.help()).toContain("--ratio=<n>")
+    expect(F.help()).toContain("threshold (default: 0.95)")
+  })
+})
+
+describe("defineFlags — int max", () => {
+  const F = defineFlags("t", "test", { port: { kind: "int", min: 1, max: 65535, default: 7878 } })
+
+  test("accepts in-range, rejects above max", () => {
+    expect(F.parse(["--port=65535"])).toEqual({ help: false, port: 65535 })
+    expect(parseError(F, ["--port=65536"]).message).toBe("t: --port must be <= 65535, got 65536")
+  })
+
+  test("define-time: int default above max is rejected", () => {
+    expect(() => defineFlags("t", "x", { p: { kind: "int", max: 10, default: 11 } })).toThrow(
+      "defineFlags(t): --p default 11 is above max 10",
+    )
   })
 })
 

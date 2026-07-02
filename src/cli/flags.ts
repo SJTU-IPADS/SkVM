@@ -14,10 +14,10 @@
  * - Global flags (`--help`, `--verbose`, `--skvm-cache`, `--skvm-data-dir`,
  *   `--tmp-dir`) are always accepted without per-command declaration.
  * - An empty value (`--key=`) on a string/bool flag is treated as "flag not
- *   provided" (the truthiness checks the legacy handlers used). On int/enum
- *   flags it is rejected like any other unparseable value — the legacy
- *   handlers errored on empty `--timeout-ms=` / `--adapter=`, and silently
- *   substituting a default would hide the typo.
+ *   provided" (the truthiness checks the legacy handlers used). On
+ *   int/float/enum flags it is rejected like any other unparseable value —
+ *   the legacy handlers errored on empty `--timeout-ms=` / `--adapter=`, and
+ *   silently substituting a default would hide the typo.
  *
  * `parse()` is pure: it throws `UsageError` instead of printing/exiting, so
  * subcommand handlers are unit-testable without spawning the CLI. The thin
@@ -47,6 +47,21 @@ export interface IntFlag {
   default?: number
   /** Inclusive lower bound. */
   min?: number
+  /** Inclusive upper bound. */
+  max?: number
+  /** Value placeholder in generated help. Default: `<n>`. */
+  placeholder?: string
+  help?: string
+}
+
+export interface FloatFlag {
+  kind: "float"
+  required?: boolean
+  default?: number
+  /** Inclusive lower bound. */
+  min?: number
+  /** Inclusive upper bound. */
+  max?: number
   /** Value placeholder in generated help. Default: `<n>`. */
   placeholder?: string
   help?: string
@@ -78,7 +93,7 @@ export interface AliasFlag {
   aliasOf: string
 }
 
-export type FlagSpec = StringFlag | IntFlag | BoolFlag | EnumFlag | AliasFlag
+export type FlagSpec = StringFlag | IntFlag | FloatFlag | BoolFlag | EnumFlag | AliasFlag
 export type FlagSpecs = Record<string, FlagSpec>
 
 /**
@@ -100,6 +115,7 @@ export interface DefineFlagsOptions {
 type FlagValue<F extends FlagSpec> =
   F extends { kind: "enum"; values: readonly (infer V extends string)[] } ? V
   : F extends { kind: "int" } ? number
+  : F extends { kind: "float" } ? number
   : F extends { kind: "bool" } ? boolean
   : F extends { kind: "string" } ? string
   : never
@@ -180,8 +196,21 @@ export function defineFlags<const S extends FlagSpecs>(
     if (s.kind === "enum" && s.default !== undefined && !s.values.includes(s.default)) {
       throw new Error(`defineFlags(${command}): --${name} default "${s.default}" is not in values`)
     }
-    if (s.kind === "int" && s.default !== undefined && s.min !== undefined && s.default < s.min) {
+    if (
+      (s.kind === "int" || s.kind === "float") &&
+      s.default !== undefined &&
+      s.min !== undefined &&
+      s.default < s.min
+    ) {
       throw new Error(`defineFlags(${command}): --${name} default ${s.default} is below min ${s.min}`)
+    }
+    if (
+      (s.kind === "int" || s.kind === "float") &&
+      s.default !== undefined &&
+      s.max !== undefined &&
+      s.default > s.max
+    ) {
+      throw new Error(`defineFlags(${command}): --${name} default ${s.default} is above max ${s.max}`)
     }
   }
   for (const [name, s] of Object.entries(spec) as Array<[string, FlagSpec]>) {
@@ -258,6 +287,24 @@ export function defineFlags<const S extends FlagSpecs>(
         if (s.min !== undefined && n < s.min) {
           throw usage(`${command}: --${name} must be >= ${s.min}, got ${n}`)
         }
+        if (s.max !== undefined && n > s.max) {
+          throw usage(`${command}: --${name} must be <= ${s.max}, got ${n}`)
+        }
+        return n
+      }
+      case "float": {
+        // Plain decimal notation only — exponent form (1e3) is rejected by
+        // design; CLI flag values should read literally.
+        if (!/^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(value)) {
+          throw usage(`${command}: --${name} expects a number, got "${value}"`)
+        }
+        const n = parseFloat(value)
+        if (s.min !== undefined && n < s.min) {
+          throw usage(`${command}: --${name} must be >= ${s.min}, got ${n}`)
+        }
+        if (s.max !== undefined && n > s.max) {
+          throw usage(`${command}: --${name} must be <= ${s.max}, got ${n}`)
+        }
         return n
       }
       case "enum": {
@@ -306,10 +353,10 @@ export function defineFlags<const S extends FlagSpecs>(
       }
       // Empty value (`--key=`): for string/bool flags it counts as "not
       // provided" (the truthiness semantics of the legacy handlers); for
-      // int/enum flags it falls through to coercion, which rejects "" like
-      // any other unparseable value — the legacy handlers errored on empty
-      // --timeout-ms= / --adapter=, and silently substituting a default
-      // would hide the typo.
+      // int/float/enum flags it falls through to coercion, which rejects ""
+      // like any other unparseable value — the legacy handlers errored on
+      // empty --timeout-ms= / --adapter=, and silently substituting a
+      // default would hide the typo.
       if (value === "" && (s.kind === "string" || s.kind === "bool")) value = undefined
       config[name] = coerce(name, s, value)
     }
@@ -319,9 +366,10 @@ export function defineFlags<const S extends FlagSpecs>(
   return { command, parse, help }
 }
 
-function defaultPlaceholder(s: StringFlag | IntFlag | EnumFlag): string {
+function defaultPlaceholder(s: StringFlag | IntFlag | FloatFlag | EnumFlag): string {
   switch (s.kind) {
     case "int":
+    case "float":
       return "<n>"
     case "enum":
       return `<${s.values.join("|")}>`
