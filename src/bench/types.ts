@@ -304,7 +304,6 @@ export interface BenchRunConfig {
   tcpPath?: string
   resumeSession?: string
   keepWorkDirs: boolean
-  verbose: boolean
   /** Number of concurrent task runs (default 1 = sequential) */
   concurrency?: number
   /** Run LLM-judge evaluations asynchronously in a post-run batch. Default: false. */

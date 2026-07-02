@@ -1,234 +1,43 @@
+/**
+ * Bench mode handlers (domain logic). The CLI surface — flag definitions,
+ * mode dispatch, and all cross-flag validation — lives in `src/cli/bench.ts`;
+ * each handler here receives an already-parsed, typed options object.
+ * Residual environment/source validation stays in the handlers.
+ */
+
 import path from "node:path"
-import type { BenchCondition, BenchRunConfig } from "./types.ts"
-import { BENCH_CONDITIONS, BenchConfigFileSchema, isAotCondition, isValidCondition } from "./types.ts"
-import { runBenchmark, runMultiModelBenchmark, runMultiAdapterBenchmark } from "./orchestrator.ts"
-import { loadTasks } from "./loader.ts"
-import { generateMarkdown } from "./reporter.ts"
+import type { AdapterName } from "../adapters/registry.ts"
+import type { BenchRunConfig } from "./types.ts"
 import {
   analyzeCompareBenchSkill,
   compareBenchSkill,
-  generateCompareBenchSkillMarkdown,
   printCompareBenchSkillReport,
   writeCompareBenchSkillOutputs,
 } from "./compare.ts"
-import { LOGS_DIR, getBenchLogDir, SKVM_CACHE, resolveAdapterConfigMode } from "../core/config.ts"
-import { mkdir, readdir } from "node:fs/promises"
+import { LOGS_DIR } from "../core/config.ts"
+import { readdir } from "node:fs/promises"
 import { runDeferredJudge, readDeferredResults, mergeDeferredResults } from "../framework/deferred-eval.ts"
-import { ALL_ADAPTERS, type AdapterName, isAdapterName } from "../adapters/registry.ts"
-import { CLI_DEFAULTS, MODEL_DEFAULTS } from "../core/ui-defaults.ts"
-import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
-import { assertKnownFlags, parseSkillModeFlag } from "../core/cli-flags.ts"
 
 const HOME = process.env.HOME ?? ""
-
-const BENCH_KNOWN_FLAGS: ReadonlySet<string> = new Set([
-  // Mode selectors
-  "import", "judge", "merge-judge", "list-sessions", "compare", "custom",
-  // Resume / sessions
-  "resume",
-  // Core run knobs
-  "model", "adapter", "tasks", "source", "conditions", "skill-mode",
-  "jit-runs", "timeout-ms", "max-steps", "judge-model", "compiler-model",
-  "profile", "keep-workdirs", "concurrency", "async-judge", "runs-per-task",
-  "adapter-config",
-  // Import mode
-  "path", "exclude", "dry-run",
-  // Judge / merge mode
-  "manifest", "report",
-  // Compare mode
-  "skill-path", "lhs", "rhs", "output-dir", "analyze-model",
-])
-
-export async function runBench(flags: Record<string, string>): Promise<void> {
-  assertKnownFlags("bench", flags, BENCH_KNOWN_FLAGS)
-  if (flags.help) {
-    printHelp()
-    return
-  }
-
-  // Handle --import=<source>
-  if (flags.import) {
-    await handleImport(flags)
-    return
-  }
-
-  // Handle judge subcommand: bun run skvm bench judge --manifest=<dir> --judge-model=<id>
-  if (flags.judge !== undefined) {
-    await handleJudge(flags)
-    return
-  }
-
-  // Handle --merge-judge: merge deferred results into an existing report
-  if (flags["merge-judge"]) {
-    await handleMergeJudge(flags)
-    return
-  }
-
-  // Handle --list-sessions
-  if (flags["list-sessions"] !== undefined) {
-    await handleListSessions()
-    return
-  }
-
-  // Handle --compare skill diff mode
-  if (flags.compare !== undefined) {
-    await handleCompare(flags)
-    return
-  }
-
-  // Parse skill mode early — custom-plan mode (below) needs it too,
-  // otherwise `bench --custom ... --skill-mode=discover` would be
-  // accepted (flag is known) but silently ignored.
-  const skillMode = parseSkillModeFlag(flags)
-
-  // Handle --custom=<file.yaml>: standalone custom plan mode
-  if (flags.custom) {
-    const { executeCustomPlan } = await import("./custom-plan.ts")
-    await executeCustomPlan(flags.custom, flags.resume, resolveAdapterConfigMode(flags["adapter-config"]), skillMode)
-    return
-  }
-
-  // Parse conditions
-  let conditions: BenchCondition[]
-  if (flags.conditions) {
-    conditions = flags.conditions.split(",").map(c => c.trim())
-    for (const c of conditions) {
-      if (!isValidCondition(c)) {
-        console.error(`Error: unknown condition "${c}". Valid: ${BENCH_CONDITIONS.join(", ")}, aot-compiled-p<N> (e.g. aot-compiled-p1, aot-compiled-p12, aot-compiled-p23)`)
-        process.exit(1)
-      }
-    }
-  } else {
-    conditions = [...BENCH_CONDITIONS]
-  }
-
-  const tasks = flags.tasks ? flags.tasks.split(",").map(t => t.trim()) : undefined
-
-  // Parse adapter(s): comma-separated
-  const adapterRaw = (flags.adapter ?? CLI_DEFAULTS.adapter).split(",").map(a => a.trim())
-  for (const a of adapterRaw) {
-    if (!isAdapterName(a)) {
-      console.error(`Error: unknown adapter "${a}". Valid: ${ALL_ADAPTERS.join(", ")}`)
-      process.exit(1)
-    }
-  }
-  const adapters = adapterRaw as AdapterName[]
-
-  let cliTimeoutMs: number | undefined
-  if (flags["timeout-ms"] !== undefined) {
-    const parsed = parseInt(flags["timeout-ms"], 10)
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      console.error(`bench: --timeout-ms must be a positive integer (got "${flags["timeout-ms"]}")`)
-      process.exit(1)
-    }
-    cliTimeoutMs = parsed
-  }
-
-  const baseConfig = {
-    adapter: adapters[0]!,
-    conditions,
-    tasks,
-    skillMode,
-    jitRuns: flags["jit-runs"] ? parseInt(flags["jit-runs"], 10) : CLI_DEFAULTS.jitRuns,
-    timeoutMult: CLI_DEFAULTS.timeoutMult,
-    maxSteps: flags["max-steps"] ? parseInt(flags["max-steps"], 10) : CLI_DEFAULTS.maxSteps,
-    cliTimeoutMs,
-    judgeModel: flags["judge-model"] ?? MODEL_DEFAULTS.judge,
-    compilerModel: flags["compiler-model"],
-    source: flags.source ? flags.source.split(",").map(s => s.trim()) : undefined,
-    tcpPath: flags.profile,
-    resumeSession: flags.resume,
-    keepWorkDirs: flags["keep-workdirs"] === "true",
-    verbose: flags.verbose === "true",
-    concurrency: flags.concurrency ? parseInt(flags.concurrency, 10) : CLI_DEFAULTS.concurrency,
-    asyncJudge: flags["async-judge"] === "true" || flags["async-judge"] === "",
-    runsPerTask: flags["runs-per-task"] ? parseInt(flags["runs-per-task"], 10) : CLI_DEFAULTS.benchRunsPerTask,
-    adapterConfigMode: resolveAdapterConfigMode(flags["adapter-config"]),
-  }
-
-  if (!baseConfig.tcpPath && conditions.some(c => isAotCondition(c))) {
-    console.log("Warning: --profile not set. AOT conditions will be skipped.")
-    console.log("Run: bun run skvm profile --model=<id> to generate a TCP first.\n")
-  }
-
-  // Resolve --resume=latest
-  if (baseConfig.resumeSession === "latest") {
-    const latest = await findLatestIncompleteSession()
-    if (!latest) {
-      console.error("No incomplete sessions found to resume.")
-      process.exit(1)
-    }
-    baseConfig.resumeSession = latest.sessionId
-    console.log(`Resuming latest incomplete session: ${latest.sessionId} (model: ${latest.model})`)
-  }
-
-  // Resolve model(s)
-  let models: string[]
-  if (baseConfig.resumeSession && !flags.model) {
-    // When resuming without explicit --model, use model from the progress file
-    const latest = await findLatestIncompleteSession(baseConfig.resumeSession)
-    if (latest) {
-      models = [latest.model]
-      console.log(`Using model from session: ${latest.model}`)
-    } else {
-      console.error("Error: could not determine model from session. Use --model to specify.")
-      process.exit(1)
-    }
-  } else if (flags.model) {
-    models = flags.model.split(",").map(m => m.trim())
-  } else {
-    console.error("Error: --model is required")
-    process.exit(1)
-  }
-
-  if (adapters.length > 1 && models.length > 1) {
-    console.error("Error: cannot combine multiple adapters with multiple models. Use one axis at a time.")
-    process.exit(1)
-  }
-
-  {
-    const { printBanner, describeModelRoute, describeAdapter, shortenPath } = await import("../core/banner.ts")
-    printBanner("bench", [
-      ["Adapter", adapters.map(a => describeAdapter(a)).join(", ")],
-      ["Model", models.map(m => describeModelRoute(m)).join(", ")],
-      ["Judge", describeModelRoute(baseConfig.judgeModel)],
-      ["Conditions", baseConfig.conditions.join(", ")],
-      ["Cache", shortenPath(SKVM_CACHE)],
-      ["Output", shortenPath(LOGS_DIR) + "/bench"],
-    ])
-  }
-
-  if (adapters.length > 1) {
-    // Multi-adapter mode: single model, multiple adapters
-    await runMultiAdapterBenchmark(adapters, { ...baseConfig, model: models[0]! })
-  } else if (models.length > 1) {
-    // Multi-model mode: single adapter, multiple models
-    await runMultiModelBenchmark(models, baseConfig)
-  } else {
-    // Single adapter, single model
-    const config: BenchRunConfig = { ...baseConfig, model: models[0]! }
-    const report = await runBenchmark(config)
-
-    const mdPath = path.join(getBenchLogDir(report.sessionId), "report.md")
-    await mkdir(path.dirname(mdPath), { recursive: true })
-    await Bun.write(mdPath, generateMarkdown(report))
-    console.log(`Markdown report: ${mdPath}`)
-  }
-}
 
 // ---------------------------------------------------------------------------
 // --import handler
 // ---------------------------------------------------------------------------
 
-async function handleImport(flags: Record<string, string>): Promise<void> {
-  const source = flags.import!
+export async function handleImport(opts: {
+  source: string
+  path?: string
+  exclude?: string
+  dryRun: boolean
+}): Promise<void> {
+  const source = opts.source
 
   if (source.startsWith("pinchbench")) {
-    const pinchbenchDir = flags.path ?? path.join(HOME, "Projects/pinchbench")
+    const pinchbenchDir = opts.path ?? path.join(HOME, "Projects/pinchbench")
 
     // PinchBench-specific exclusions (not from global config)
-    const excludedTasks = flags.exclude
-      ? flags.exclude.split(",").map(s => s.trim())
+    const excludedTasks = opts.exclude
+      ? opts.exclude.split(",").map(s => s.trim())
       : ["task_13_image_gen", "task_22_second_brain"]
 
     console.log(`Importing from PinchBench: ${pinchbenchDir}`)
@@ -250,13 +59,13 @@ async function handleImport(flags: Record<string, string>): Promise<void> {
 
     console.log(`\nTasks written to: skvm-data/tasks/`)
   } else if (source.startsWith("skillsbench")) {
-    const skillsbenchDir = flags.path ?? path.join(HOME, "Projects/skillsbench")
+    const skillsbenchDir = opts.path ?? path.join(HOME, "Projects/skillsbench")
 
-    const excludedTasks = flags.exclude
-      ? flags.exclude.split(",").map(s => s.trim())
+    const excludedTasks = opts.exclude
+      ? opts.exclude.split(",").map(s => s.trim())
       : []
 
-    const dryRun = flags["dry-run"] === "true" || flags["dry-run"] === ""
+    const dryRun = opts.dryRun
 
     console.log(`Importing from SkillsBench: ${skillsbenchDir}`)
     if (dryRun) console.log(`[DRY RUN]`)
@@ -299,7 +108,7 @@ async function handleImport(flags: Record<string, string>): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /** List bench sessions from unified index, falling back to directory scan for legacy sessions. */
-async function handleListSessions(): Promise<void> {
+export async function handleListSessions(): Promise<void> {
   const { readSessions } = await import("../core/run-session.ts")
 
   // Try unified index first
@@ -362,7 +171,7 @@ async function handleListSessions(): Promise<void> {
   }
 }
 
-async function findLatestIncompleteSession(specificId?: string): Promise<{ sessionId: string; model: string } | null> {
+export async function findLatestIncompleteSession(specificId?: string): Promise<{ sessionId: string; model: string } | null> {
   const benchLogsDir = path.join(LOGS_DIR, "bench")
 
   if (specificId) {
@@ -407,16 +216,12 @@ async function findLatestIncompleteSession(specificId?: string): Promise<{ sessi
 // judge subcommand
 // ---------------------------------------------------------------------------
 
-async function handleJudge(flags: Record<string, string>): Promise<void> {
-  const manifestDir = flags.judge || flags.manifest
-  if (!manifestDir) {
-    console.error("Error: --manifest=<dir> is required (directory containing manifest.jsonl)")
-    process.exit(1)
-  }
-
-  const judgeModel = flags["judge-model"] ?? MODEL_DEFAULTS.judge
-
-  const concurrency = flags.concurrency ? parseInt(flags.concurrency, 10) : CLI_DEFAULTS.benchJudgeConcurrency
+export async function handleJudge(opts: {
+  manifestDir: string
+  judgeModel: string
+  concurrency: number
+}): Promise<void> {
+  const { manifestDir, judgeModel, concurrency } = opts
 
   // Create LLM provider via registry (routes the judge model to the right backend)
   const { createProviderForModel } = await import("../providers/registry.ts")
@@ -440,13 +245,11 @@ async function handleJudge(flags: Record<string, string>): Promise<void> {
   console.log(`\nResults written to: ${manifestDir}/results.jsonl`)
 }
 
-async function handleMergeJudge(flags: Record<string, string>): Promise<void> {
-  const resultsDir = flags["merge-judge"]!
-  const reportPath = flags.report
-  if (!reportPath) {
-    console.error("Error: --report=<path> is required (existing bench report JSON)")
-    process.exit(1)
-  }
+export async function handleMergeJudge(opts: {
+  resultsDir: string
+  reportPath: string
+}): Promise<void> {
+  const { resultsDir, reportPath } = opts
 
   // Read report
   const reportRaw = await Bun.file(reportPath).text()
@@ -477,39 +280,16 @@ async function handleMergeJudge(flags: Record<string, string>): Promise<void> {
   console.log(`Merged ${results.length} deferred judge results into: ${reportPath}`)
 }
 
-async function handleCompare(flags: Record<string, string>): Promise<void> {
-  const model = flags.model
-  const adapter = flags.adapter ?? CLI_DEFAULTS.adapter
-  const skillPath = flags["skill-path"]
-  const lhs = flags.lhs
-  const rhs = flags.rhs
-  const outputDir = flags["output-dir"]
-  const analyzeModel = flags["analyze-model"]
-
-  if (!model) {
-    console.error("Error: --model=<id> is required for --compare")
-    process.exit(1)
-  }
-  if (!skillPath) {
-    console.error("Error: --skill-path=<dir> is required for --compare")
-    process.exit(1)
-  }
-  if (!lhs || !rhs) {
-    console.error("Error: --lhs=<condition> and --rhs=<condition> are required for --compare")
-    process.exit(1)
-  }
-  if (!outputDir) {
-    console.error("Error: --output-dir=<dir> is required for --compare")
-    process.exit(1)
-  }
-  if (!isValidCondition(lhs) || !isValidCondition(rhs)) {
-    console.error(`Error: invalid compare conditions. Valid: ${BENCH_CONDITIONS.join(", ")}, aot-p<N>`) 
-    process.exit(1)
-  }
-  if (lhs === rhs) {
-    console.error("Error: --lhs and --rhs must be different")
-    process.exit(1)
-  }
+export async function handleCompare(opts: {
+  model: string
+  adapter: string
+  skillPath: string
+  lhs: string
+  rhs: string
+  outputDir: string
+  analyzeModel?: string
+}): Promise<void> {
+  const { model, adapter, skillPath, lhs, rhs, outputDir, analyzeModel } = opts
 
   let report = await compareBenchSkill({ model, adapter, skillPath, lhs, rhs })
 
@@ -526,95 +306,4 @@ async function handleCompare(flags: Record<string, string>): Promise<void> {
   console.log(`  Report JSON: ${outputs.reportJsonPath}`)
   console.log(`  Report MD:   ${outputs.reportMarkdownPath}`)
   console.log(`  Skill Diff:  ${outputs.skillDiffMarkdownPath}`)
-}
-
-// ---------------------------------------------------------------------------
-// Help
-// ---------------------------------------------------------------------------
-
-function printHelp(): void {
-  console.log(`skvm bench - Run benchmark across skill optimization conditions
-
-Usage:
-  bun run skvm bench [--model=<id>] [options]
-
-Benchmark Options:
-  --model=<id,...>       Target model(s), comma-separated.
-  --adapter=<name,...>   ${ALL_ADAPTERS.join(" | ")} — comma-separated for
-                         multi-adapter mode (default: ${CLI_DEFAULTS.adapter})
-  --tasks=<list>         Comma-separated task IDs (default: all)
-  --source=<name,...>    Filter tasks by origin source(s), comma-separated
-                         (e.g. pinchbench, skillsbench, clawhub)
-  --conditions=<list>    no-skill,original,aot-compiled,jit-optimized,jit-boost,aot-compiled-p<N> (default: all)
-                         AOT pass variants: aot-compiled-p1, aot-compiled-p2, aot-compiled-p3, aot-compiled-p12, aot-compiled-p23, etc.
-  --custom=<file.yaml>   Run a custom bench plan from a YAML file. Defines task-skill
-                         mappings, models, and adapters in nested groups. Bypasses
-                         the standard condition system entirely.
-  --skill-mode=<mode>    inject | discover (default: ${CLI_DEFAULTS.skillMode})
-  --jit-runs=<n>         JIT-boost warm-up runs (default: ${CLI_DEFAULTS.jitRuns})
-  --timeout-ms=<n>       Absolute override for per-task timeout in ms.
-                         When set, wins over task.json's timeoutMs
-                         (which falls back to ${TIMEOUT_DEFAULTS.taskExec}).
-                         Also caps the jit-boost candidate-generation agent
-                         when --conditions includes jit-boost
-                         (default: ${TIMEOUT_DEFAULTS.candidateGen}).
-  --max-steps=<n>        Max agent steps per task (default: ${CLI_DEFAULTS.maxSteps}).
-                         Uniform across tasks; per-task task.maxSteps is not used in bench.
-  --judge-model=<id>     LLM judge model (default: ${MODEL_DEFAULTS.judge})
-  --compiler-model=<id>  Model for AOT compiler (default: ${MODEL_DEFAULTS.compiler})
-  --profile=<path>       TCP JSON path (required for aot conditions)
-  --resume=<session>     Resume an interrupted session (or "latest")
-  --list-sessions        List all bench sessions with status
-  --compare              Compare two conditions for a given model, adapter, and skill path
-  --skill-path=<dir>     Skill directory or SKILL.md path used for --compare
-  --lhs=<condition>      Left-hand condition for --compare
-  --rhs=<condition>      Right-hand condition for --compare
-  --output-dir=<dir>     Required root directory for compare outputs
-  --analyze-model=<id>   Optional OpenRouter model for summarizing the skill differences
-  --concurrency=<n>     Parallel task runs (default: ${CLI_DEFAULTS.concurrency}, sequential).
-                         In multi-model mode, slots are distributed across models.
-  --runs-per-task=<n>    Runs per task-condition pair, averaged to reduce variance (default: ${CLI_DEFAULTS.benchRunsPerTask})
-  --adapter-config=<m>   native | managed (default: defaults.adapterConfigMode in skvm.config.json, else managed).
-                         Native uses your real harness config; managed uses providers.routes only.
-  --keep-workdirs        Don't delete work directories after runs
-  --verbose              Enable debug logging
-
-Async Judge:
-  --async-judge          Run LLM-judge evaluations asynchronously in a post-run batch
-                         (uses --concurrency for parallelism)
-
-  bench judge --manifest=<dir> [--judge-model=<id>] [--concurrency=<n>]
-                         Run async LLM judge from a manifest directory
-  bench --merge-judge=<results-dir> --report=<path>
-                         Merge async judge results into an existing report
-
-Task Management:
-  --import=<source>      Import tasks from an external source.
-                         Sources: pinchbench, skillsbench
-  --path=<dir>           Path for import source (default: ~/Projects/<source>)
-  --dry-run              Show what would be imported without writing
-
-Examples:
-  # Import tasks from PinchBench
-  bun run skvm bench --import=pinchbench --path=~/Projects/pinchbench
-
-  # Import tasks and skills from SkillsBench
-  bun run skvm bench --import=skillsbench --path=~/Projects/skillsbench
-
-  # Run specific models (comma-separated; each <id> is <provider>/<model-id>)
-  bun run skvm bench --model=<id1>,<id2>
-
-  # Single model quick test
-  bun run skvm bench --model=<id> \\
-    --tasks=task_00_sanity,task_09_files --conditions=no-skill,original
-
-  # Run a custom bench plan (YAML-defined task-skill-model matrix)
-  bun run skvm bench --custom=bench-plan.yaml`)
-
-  console.log(`
-  # Compare original vs aot-compiled-p1 for one skill directory
-  bun run skvm bench --compare --model=<id> \
-    --adapter=bare-agent --skill-path=skvm-data/skills/calendar \
-    --lhs=original --rhs=aot-compiled-p1 --output-dir=compare-runs \
-    --analyze-model=${MODEL_DEFAULTS.judge}`)
 }

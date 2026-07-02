@@ -115,9 +115,11 @@ Use --help with any command for details.`)
       await runOrExit(PIPELINE_FLAGS, args.slice(1), runPipeline)
       break
     }
-    case "bench":
-      await runBenchCmd(flags)
+    case "bench": {
+      const { BENCH_FLAGS, runBench } = await import("./cli/bench.ts")
+      await runOrExit(BENCH_FLAGS, args.slice(1), runBench)
       break
+    }
     case "jit-optimize":
       await runJitOptimize(flags)
       break
@@ -146,11 +148,6 @@ Use --help with any command for details.`)
   }
 
   process.exit(0)
-}
-
-async function runBenchCmd(flags: Record<string, string>) {
-  const { runBench } = await import("./bench/index.ts")
-  await runBench(flags)
 }
 
 // ---------------------------------------------------------------------------

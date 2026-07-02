@@ -532,7 +532,6 @@ export async function executeCustomPlan(
       timeoutMult: CLI_DEFAULTS.timeoutMult,
       maxSteps: CLI_DEFAULTS.maxSteps,
       keepWorkDirs: false,
-      verbose: false,
     }
     const report = generateReport(sessionId, config, taskReports)
     reports.push(report)
