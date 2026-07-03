@@ -213,19 +213,12 @@ describe("buildTaskSource", () => {
     }
   })
 
-  test("log: pairs --failures with --logs positionally (legacy failuresPath quirk pinned)", () => {
-    // Legacy quirk preserved verbatim: the CLI sets `failuresPath`, but
-    // ExecutionLogInput declares `criteriaPath` — the engine never reads
-    // failuresPath. Behavior-preserving move; fixing it is out of scope
-    // here (follow-up issue to be filed).
-    // (JSON round-trip because the runtime shape deliberately diverges from
-    // the declared TaskSource type, which typed toEqual would reject.)
-    const source = buildTaskSource(parse(["--task-source=log", "--logs=a,b", "--failures=x,y"]))
-    expect(JSON.parse(JSON.stringify(source))).toEqual({
+  test("log: pairs --failures with --logs positionally as criteriaPath (fixed per #76)", () => {
+    expect(buildTaskSource(parse(["--task-source=log", "--logs=a,b", "--failures=x,y"]))).toEqual({
       kind: "execution-log",
       logs: [
-        { path: "a", failuresPath: "x" },
-        { path: "b", failuresPath: "y" },
+        { path: "a", criteriaPath: "x" },
+        { path: "b", criteriaPath: "y" },
       ],
     })
   })
@@ -360,8 +353,8 @@ Options:
   --test-tasks=<id|path,...>    Held-out test tasks (real only). If omitted, --tasks is used as
                                 both train and test (fallback for small task lists).
   --logs=<path,...>             Conversation log files, comma-separated (log only, required)
-  --failures=<path,...>         Per-log failure JSON files, same order (log only, optional;
-                                currently not consumed by the log analyzer; fix tracked as a follow-up)
+  --failures=<path,...>         Per-log failure JSON files, same order (log only, optional).
+                                Each file holds EvidenceCriterion[] evidence for its log.
   --optimizer-model=<id>        Optimizer LLM model, shaped as <provider>/<model-id> (required)
   --target-model=<id>           Target model being optimized for (required for every source;
                                 for log it is the storage key of the proposal)

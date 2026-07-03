@@ -26,6 +26,7 @@ import { CLI_DEFAULTS } from "../core/ui-defaults.ts"
 import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
 import { createLogger, c } from "../core/logger.ts"
 import type {
+  ExecutionLogInput,
   JitOptimizeConfig as JitOptimizeEngineConfig,
   JitOptimizeResult,
   TaskSource,
@@ -49,7 +50,7 @@ export const JIT_OPTIMIZE_FLAGS = defineFlags(
     tasks: { kind: "string", placeholder: "<id|path,...>", help: "Train tasks — IDs or task.json paths (real only, required)" },
     "test-tasks": { kind: "string", placeholder: "<id|path,...>", help: "Held-out test tasks (real only). If omitted, --tasks is used as\nboth train and test (fallback for small task lists)." },
     logs: { kind: "string", placeholder: "<path,...>", help: "Conversation log files, comma-separated (log only, required)" },
-    failures: { kind: "string", placeholder: "<path,...>", help: "Per-log failure JSON files, same order (log only, optional;\ncurrently not consumed by the log analyzer; fix tracked as a follow-up)" },
+    failures: { kind: "string", placeholder: "<path,...>", help: "Per-log failure JSON files, same order (log only, optional).\nEach file holds EvidenceCriterion[] evidence for its log." },
     // Target & optimizer
     "optimizer-model": { kind: "string", placeholder: "<id>", help: "Optimizer LLM model, shaped as <provider>/<model-id> (required)" },
     "compiler-model": { aliasOf: "optimizer-model" },
@@ -343,12 +344,12 @@ export function buildTaskSource(config: JitOptimizeConfig): TaskSource {
     }
     return {
       kind: "execution-log",
-      // Legacy quirk preserved verbatim: `failuresPath` is not a declared
-      // field of ExecutionLogInput (which reads `criteriaPath`), so the
-      // engine never sees the --failures files. Behavior-preserving move;
-      // fixing the field name is out of scope for the flags migration
-      // (follow-up issue to be filed).
-      logs: logs.map((p, i) => ({ path: p, failuresPath: failures[i] })),
+      // criteriaPath: per-log EvidenceCriterion[] JSON — consumed by task-source.ts (#76).
+      // Explicit callback return type (rather than letting `.map()` infer it)
+      // is load-bearing: without it, TS does not excess-property-check the
+      // literal against ExecutionLogInput, so a future field-name typo here
+      // would again compile clean and silently drop data (#76).
+      logs: logs.map((p, i): ExecutionLogInput => ({ path: p, criteriaPath: failures[i] })),
     }
   }
   throw new UsageError(`jit-optimize: unknown --task-source "${kind}" (expected synthetic | real | log)`, JIT_OPTIMIZE_FLAGS.help)

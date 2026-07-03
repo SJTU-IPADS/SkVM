@@ -222,7 +222,7 @@ skvm jit-optimize \
 
 Log-specific flags:
 - `--logs=<path,...>` — **required.** Conversation log files, comma-separated.
-- `--failures=<path,...>` — optional. Per-log failure JSON files, same order as `--logs`.
+- `--failures=<path,...>` — optional. Per-log failure JSON files, same order as `--logs`. Each file holds `EvidenceCriterion[]` evidence for its log (structured per-criterion scores the log alone doesn't carry).
 
 Log source does not rerun tasks, so `--rounds`, `--runs-per-task`, `--convergence`, `--baseline`, `--tasks`, `--test-tasks`, and `--synthetic-count` are all forbidden with it. `--target-model` is still required — it's the storage key identifying which model the logs came from.
 
