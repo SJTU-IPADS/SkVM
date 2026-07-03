@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test"
-import { BENCH_FLAGS, runBench } from "../../src/cli/bench.ts"
+import { BENCH_FLAGS, runBench, resolveManifestDir } from "../../src/cli/bench.ts"
 import { UsageError } from "../../src/cli/flags.ts"
 import { ALL_ADAPTERS } from "../../src/adapters/registry.ts"
 import { BENCH_CONDITIONS } from "../../src/bench/types.ts"
@@ -175,21 +175,37 @@ describe("runBench — cross-flag rules", () => {
     )
   })
 
-  // Judge-mode quirk, preserved from the legacy handler: a bare `--judge`
-  // parses as the string "true" (both in the legacy parseFlags and in the
-  // flag layer), and `config.judge || config.manifest` gives --judge
-  // precedence — so bare `--judge` dispatches with manifestDir "true"
-  // instead of erroring, exactly like the legacy CLI. The "--manifest is
-  // required" guard is therefore unreachable from real argv; it is kept as
-  // a tripwire should the layer's bare-flag semantics ever change.
-  test('--judge quirk: bare --judge parses as the string "true"', () => {
-    const config = BENCH_FLAGS.parse(["--judge"])
-    if (config.help) throw new Error("unexpected help")
-    expect(config.judge).toBe("true")
+  // Judge-mode precedence (#77): a bare `--judge` parses as the string
+  // "true" (flag layer's bare-flag rule), which used to be taken literally
+  // as the manifest directory. `resolveManifestDir` now treats a bare
+  // --judge as "mode selected, no directory named" and defers to
+  // --manifest; an explicit --judge=<dir> still wins outright.
+  test("bare --judge with no --manifest: the now-reachable guard fires", async () => {
+    expect((await runError(["--judge"])).message).toBe(
+      "bench: --manifest=<dir> is required (directory containing manifest.jsonl)",
+    )
   })
 
   test("--judge= (empty value) does not select judge mode; falls through to matrix mode", async () => {
     expect((await runErrorQuiet(["--judge="])).message).toBe("bench: --model is required")
+  })
+
+  describe("resolveManifestDir", () => {
+    test("bare --judge (\"true\") defers to --manifest", () => {
+      expect(resolveManifestDir("true", "/m")).toBe("/m")
+    })
+
+    test("explicit --judge=<dir> wins over --manifest", () => {
+      expect(resolveManifestDir("/j", "/m")).toBe("/j")
+    })
+
+    test("explicit --judge=<dir> with no --manifest", () => {
+      expect(resolveManifestDir("/j", undefined)).toBe("/j")
+    })
+
+    test("bare --judge with no --manifest: unresolved (caller's guard fires)", () => {
+      expect(resolveManifestDir("true", undefined)).toBeUndefined()
+    })
   })
 
   test("--merge-judge requires --report", async () => {
@@ -236,7 +252,7 @@ Usage:
 
 Options:
   --import=<source>              Import tasks from an external source. Sources: pinchbench, skillsbench
-  --judge=<dir>                  Run async LLM judge from a manifest directory
+  --judge=<dir>                  Run async LLM judge from a manifest directory (or pass it via --manifest)
   --merge-judge=<results-dir>    Merge async judge results into an existing report (requires --report)
   --list-sessions                List all bench sessions with status
   --compare                      Compare two conditions for a given model, adapter, and skill path
@@ -276,7 +292,7 @@ Options:
   --path=<dir>                   Path for import source (default: ~/Projects/<source>)
   --exclude=<list>               Comma-separated task IDs to exclude on import
   --dry-run                      Show what would be imported without writing
-  --manifest=<dir>               Manifest directory for judge mode (currently superseded by --judge=<dir>; precedence fix tracked as a follow-up)
+  --manifest=<dir>               Manifest directory for judge mode (used when --judge is passed bare)
   --report=<path>                Existing bench report JSON for --merge-judge
   --skill-path=<dir>             Skill directory or SKILL.md path used for --compare
   --lhs=<condition>              Left-hand condition for --compare

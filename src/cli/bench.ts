@@ -24,7 +24,7 @@ export const BENCH_FLAGS = defineFlags(
   {
     // Mode selectors
     import: { kind: "string", placeholder: "<source>", help: "Import tasks from an external source. Sources: pinchbench, skillsbench" },
-    judge: { kind: "string", placeholder: "<dir>", help: "Run async LLM judge from a manifest directory" },
+    judge: { kind: "string", placeholder: "<dir>", help: "Run async LLM judge from a manifest directory (or pass it via --manifest)" },
     "merge-judge": { kind: "string", placeholder: "<results-dir>", help: "Merge async judge results into an existing report (requires --report)" },
     "list-sessions": { kind: "bool", help: "List all bench sessions with status" },
     compare: { kind: "bool", help: "Compare two conditions for a given model, adapter, and skill path" },
@@ -84,7 +84,7 @@ when --conditions includes jit-boost
     exclude: { kind: "string", placeholder: "<list>", help: "Comma-separated task IDs to exclude on import" },
     "dry-run": { kind: "bool", help: "Show what would be imported without writing" },
     // Judge / merge mode
-    manifest: { kind: "string", placeholder: "<dir>", help: "Manifest directory for judge mode (currently superseded by --judge=<dir>; precedence fix tracked as a follow-up)" },
+    manifest: { kind: "string", placeholder: "<dir>", help: "Manifest directory for judge mode (used when --judge is passed bare)" },
     report: { kind: "string", placeholder: "<path>", help: "Existing bench report JSON for --merge-judge" },
     // Compare mode
     "skill-path": { kind: "string", placeholder: "<dir>", help: "Skill directory or SKILL.md path used for --compare" },
@@ -118,6 +118,20 @@ when --conditions includes jit-boost
 
 export type BenchConfig = ConfigOf<typeof BENCH_FLAGS>
 
+/**
+ * Bare `--judge` selects judge mode but names no directory — the flag layer
+ * parses a bare flag as the string "true", which is not a real path, so we
+ * defer to --manifest instead. An explicit `--judge=<dir>` always wins.
+ *
+ * Edge case: `--judge=true` (an explicit value that happens to be the
+ * string "true") is indistinguishable from bare `--judge` and also defers
+ * to --manifest. A manifest directory literally named "true" must be
+ * passed via --manifest=true rather than --judge=true.
+ */
+export function resolveManifestDir(judge: string | undefined, manifest: string | undefined): string | undefined {
+  return (judge !== undefined && judge !== "true" ? judge : undefined) ?? manifest
+}
+
 export async function runBench(config: BenchConfig): Promise<void> {
   // Handle --import=<source>
   if (config.import !== undefined) {
@@ -131,14 +145,11 @@ export async function runBench(config: BenchConfig): Promise<void> {
   }
 
   // Handle --judge=<dir>: async LLM judge from a manifest directory.
-  // Legacy quirk preserved: `--judge` wins over `--manifest`, and a bare
-  // `--judge` parses as the string "true" — do not fix the precedence.
+  // A bare --judge defers to --manifest for the directory (see
+  // resolveManifestDir); an explicit --judge=<dir> wins outright.
   if (config.judge !== undefined) {
-    const manifestDir = config.judge || config.manifest
+    const manifestDir = resolveManifestDir(config.judge, config.manifest)
     if (!manifestDir) {
-      // Unreachable from argv: a bare or valued --judge is always a truthy
-      // string here, and `--judge=` deselects the mode entirely. Kept as a
-      // tripwire in case the layer's bare-flag semantics ever change.
       throw new UsageError("bench: --manifest=<dir> is required (directory containing manifest.jsonl)", BENCH_FLAGS.help)
     }
     const { handleJudge } = await import("../bench/index.ts")

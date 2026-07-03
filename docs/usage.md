@@ -146,7 +146,7 @@ skvm bench --model=<id> --conditions=no-skill,original,aot,jit-boost --tasks=<ta
 skvm bench --model=<id> --async-judge
 
 # Run the deferred judge later
-skvm bench judge --manifest=<dir> --judge-model=<id> --concurrency=4
+skvm bench --judge --manifest=<dir> --judge-model=<id> --concurrency=4
 ```
 
 Condition families:
