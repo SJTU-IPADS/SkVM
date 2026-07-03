@@ -1,9 +1,10 @@
 import { describe, test, expect } from "bun:test"
-import { PIPELINE_FLAGS } from "../../src/cli/pipeline.ts"
+import { PIPELINE_FLAGS, runPipeline } from "../../src/cli/pipeline.ts"
 import { UsageError } from "../../src/cli/flags.ts"
 import { ALL_ADAPTERS } from "../../src/adapters/registry.ts"
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "../../src/core/ui-defaults.ts"
 import { TIMEOUT_DEFAULTS } from "../../src/core/timeouts.ts"
+import { readSessions } from "../../src/core/run-session.ts"
 
 function parseError(argv: string[]): UsageError {
   try {
@@ -13,6 +14,18 @@ function parseError(argv: string[]): UsageError {
     return err as UsageError
   }
   throw new Error(`expected parse(${JSON.stringify(argv)}) to throw UsageError`)
+}
+
+async function runError(argv: string[]): Promise<UsageError> {
+  const config = PIPELINE_FLAGS.parse(argv)
+  if (config.help) throw new Error("unexpected help")
+  try {
+    await runPipeline(config)
+  } catch (err) {
+    expect(err).toBeInstanceOf(UsageError)
+    return err as UsageError
+  }
+  throw new Error(`expected runPipeline(${JSON.stringify(argv)}) to throw UsageError`)
 }
 
 describe("PIPELINE_FLAGS.parse", () => {
@@ -74,6 +87,24 @@ describe("PIPELINE_FLAGS.parse", () => {
 
   test("generated help documents --adapter-config (fixes help drift)", () => {
     expect(PIPELINE_FLAGS.help()).toContain("--adapter-config")
+  })
+})
+
+describe("runPipeline — skill validation happens before any side effect (#78)", () => {
+  test("nonexistent --skill throws UsageError before RunSession.start (directory form)", async () => {
+    const before = await readSessions({ type: "pipeline" })
+    const err = await runError(["--skill=/nonexistent/skill", "--model=x/y"])
+    expect(err.message).toBe("pipeline: skill not found: /nonexistent/skill")
+    const after = await readSessions({ type: "pipeline" })
+    expect(after.length).toBe(before.length)
+  })
+
+  test("nonexistent --skill throws UsageError before RunSession.start (.md form)", async () => {
+    const before = await readSessions({ type: "pipeline" })
+    const err = await runError(["--skill=/nonexistent/SKILL.md", "--model=x/y"])
+    expect(err.message).toBe("pipeline: skill not found: /nonexistent/SKILL.md")
+    const after = await readSessions({ type: "pipeline" })
+    expect(after.length).toBe(before.length)
   })
 })
 
