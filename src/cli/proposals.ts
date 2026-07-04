@@ -123,6 +123,23 @@ export function routeProposals(rawArgs: string[]): ProposalsRoute {
   }
 }
 
+/**
+ * list/report/serve take no positional — a stray one (e.g. `serve 8080`,
+ * where the user meant `--port=8080`) used to be silently ignored (legacy
+ * parity); it is now a usage error. Id-taking subs keep ignoring EXTRA
+ * positionals beyond their `<id>` (the router only extracts the first).
+ * Called before parseOrExit so, like unknown flags, a stray positional beats
+ * --help (the layer's errors-beat-help convention).
+ */
+function rejectStrayPositional(
+  route: Extract<ProposalsRoute, { kind: "sub" }>,
+  buildHelp: () => string,
+): void {
+  if (route.id !== undefined) {
+    throw new UsageError(`proposals ${route.sub}: unexpected argument "${route.id}"`, buildHelp)
+  }
+}
+
 export async function runProposals(rawArgs: string[]): Promise<void> {
   const route = routeProposals(rawArgs)
   if (route.kind === "overview") {
@@ -135,11 +152,17 @@ export async function runProposals(rawArgs: string[]): Promise<void> {
   }
   try {
     switch (route.sub) {
-      case "list":   return await runProposalsList(parseOrExit(PROPOSALS_LIST_FLAGS, route.argv))
+      case "list":
+        rejectStrayPositional(route, PROPOSALS_LIST_FLAGS.help)
+        return await runProposalsList(parseOrExit(PROPOSALS_LIST_FLAGS, route.argv))
       case "show":   return await runProposalsShow(parseOrExit(PROPOSALS_SHOW_FLAGS, route.argv), route.id)
       case "diff":   return await runProposalsDiff(parseOrExit(PROPOSALS_DIFF_FLAGS, route.argv), route.id)
-      case "report": return await runProposalsReport(parseOrExit(PROPOSALS_REPORT_FLAGS, route.argv))
-      case "serve":  return await runProposalsServe(parseOrExit(PROPOSALS_SERVE_FLAGS, route.argv))
+      case "report":
+        rejectStrayPositional(route, PROPOSALS_REPORT_FLAGS.help)
+        return await runProposalsReport(parseOrExit(PROPOSALS_REPORT_FLAGS, route.argv))
+      case "serve":
+        rejectStrayPositional(route, PROPOSALS_SERVE_FLAGS.help)
+        return await runProposalsServe(parseOrExit(PROPOSALS_SERVE_FLAGS, route.argv))
       case "accept": return await runProposalsAccept(parseOrExit(PROPOSALS_ACCEPT_FLAGS, route.argv), route.id)
       case "reject": return await runProposalsReject(parseOrExit(PROPOSALS_REJECT_FLAGS, route.argv), route.id)
       case "cancel": return await runProposalsCancel(parseOrExit(PROPOSALS_CANCEL_FLAGS, route.argv), route.id)

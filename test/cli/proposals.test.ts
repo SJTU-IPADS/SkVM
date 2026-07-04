@@ -9,6 +9,7 @@ import {
   PROPOSALS_REJECT_FLAGS,
   PROPOSALS_CANCEL_FLAGS,
   routeProposals,
+  runProposals,
   runProposalsList,
   runProposalsShow,
   runProposalsDiff,
@@ -230,6 +231,59 @@ describe("routeProposals", () => {
       id: "xyz",
       argv: ["--round=2", "xyz"],
     })
+  })
+})
+
+describe("no-id subs reject stray positionals", () => {
+  /** Run runProposals with process.exit / console.error captured. */
+  async function captureRunExit(argv: string[]): Promise<{ exitCode: number | null; stderr: string }> {
+    const captured = { exitCode: null as number | null, stderr: "" }
+    const origExit = process.exit
+    const origErr = console.error
+    process.exit = ((code?: number) => {
+      captured.exitCode = code ?? 0
+      throw new Error("__exit__")
+    }) as typeof process.exit
+    console.error = (...a: unknown[]) => {
+      captured.stderr += a.join(" ") + "\n"
+    }
+    try {
+      await expect(runProposals(argv)).rejects.toThrow("__exit__")
+    } finally {
+      process.exit = origExit
+      console.error = origErr
+    }
+    return captured
+  }
+
+  // list/report/serve take no positional <id> — a stray one used to be
+  // silently ignored (legacy parity); now it is a loud usage error through
+  // the same exitOnUsageError path as every other UsageError.
+  test("serve rejects a stray positional", async () => {
+    const { exitCode, stderr } = await captureRunExit(["serve", "8080"])
+    expect(exitCode).toBe(1)
+    expect(stderr).toBe('proposals serve: unexpected argument "8080"\n')
+  })
+
+  test("list rejects a stray positional", async () => {
+    const { exitCode, stderr } = await captureRunExit(["list", "foo"])
+    expect(exitCode).toBe(1)
+    expect(stderr).toBe('proposals list: unexpected argument "foo"\n')
+  })
+
+  test("report rejects a stray positional", async () => {
+    const { exitCode, stderr } = await captureRunExit(["report", "x"])
+    expect(exitCode).toBe(1)
+    expect(stderr).toBe('proposals report: unexpected argument "x"\n')
+  })
+
+  test("id-taking subs still accept their positional id", async () => {
+    // cancel with a nonexistent id must get PAST positional handling and
+    // reach the handler's environment-state check (missing run-status.json)
+    // — proof the positional was consumed as the id, not rejected as stray.
+    const { exitCode, stderr } = await captureRunExit(["cancel", "no-such-id"])
+    expect(exitCode).toBe(1)
+    expect(stderr).toBe("cancel: no-such-id has no run-status.json (not a detached run)\n")
   })
 })
 

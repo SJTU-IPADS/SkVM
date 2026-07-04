@@ -8,12 +8,12 @@
  * - `--model` is required, but only after the `--list` short-circuit, so it
  *   cannot be `required: true` at the layer.
  * - `--adapter` is comma-separated multi-value, so it stays `kind: "string"`
- *   and each entry is validated against the adapter registry here (with the
- *   layer's standard enum wording).
+ *   and each entry is validated against the adapter registry via
+ *   `parseEnumListFlag` (the layer's standard enum wording).
  */
 
-import { defineFlags, UsageError, type ConfigOf } from "./flags.ts"
-import { ALL_ADAPTERS, type AdapterName, createAdapter, isAdapterName } from "../adapters/registry.ts"
+import { defineFlags, parseEnumListFlag, UsageError, type ConfigOf } from "./flags.ts"
+import { ALL_ADAPTERS, type AdapterName, createAdapter } from "../adapters/registry.ts"
 import { resolveAdapterConfigMode } from "../core/config.ts"
 import { AdapterConfigModeSchema, type TCP } from "../core/types.ts"
 import { CLI_DEFAULTS } from "../core/ui-defaults.ts"
@@ -124,16 +124,7 @@ export async function runProfile(config: ProfileConfig): Promise<void> {
   // Resolve adapters: unified --adapter flag, comma-separated
   let adapters: AdapterName[]
   if (config.adapter) {
-    const raw = config.adapter.split(",").map(s => s.trim())
-    for (const a of raw) {
-      if (!isAdapterName(a)) {
-        throw new UsageError(
-          `profile: invalid --adapter "${a}". Valid: ${ALL_ADAPTERS.join(", ")}`,
-          PROFILE_FLAGS.help,
-        )
-      }
-    }
-    adapters = raw as AdapterName[]
+    adapters = parseEnumListFlag("profile", "adapter", config.adapter, ALL_ADAPTERS, PROFILE_FLAGS.help)
   } else if (config.batch) {
     adapters = [...ALL_ADAPTERS]
   } else {

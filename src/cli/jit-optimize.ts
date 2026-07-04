@@ -64,7 +64,7 @@ export const JIT_OPTIMIZE_FLAGS = defineFlags(
     rounds: { kind: "int", min: 1, help: "Max optimization rounds (default: 1 for log, 3 otherwise)" },
     "runs-per-task": { kind: "int", min: 1, help: `Runs per task per round (default: ${CLI_DEFAULTS.jitOptimizeRunsPerTask}; forbidden for log)` },
     "task-concurrency": { kind: "int", min: 1, help: `Max parallel in-flight task runs per round (default: ${CLI_DEFAULTS.jitOptimizeTaskConcurrency};\nforbidden for log). Train + test share the same limiter.` },
-    convergence: { kind: "float", min: 0, max: 1, placeholder: "<0-1>", help: "Early-exit threshold on primary score (default: 0.95; forbidden for log)" },
+    convergence: { kind: "float", min: 0, max: 1, placeholder: "<0-1>", help: `Early-exit threshold on primary score (default: ${CLI_DEFAULTS.jitOptimizeConvergence}; forbidden for log)` },
     baseline: { kind: "bool", help: "Run no-skill/original conditions for comparison (forbidden for log)" },
     // Delivery
     "no-keep-all-rounds": { kind: "bool", help: "Keep only the best round's folder (default: keep all)" },
@@ -141,7 +141,7 @@ export async function runJitOptimize(config: JitOptimizeConfig): Promise<void> {
   // explicitly to opt out.
   const runsPerTask = config["runs-per-task"] ?? CLI_DEFAULTS.jitOptimizeRunsPerTask
   const taskConcurrency = config["task-concurrency"] ?? CLI_DEFAULTS.jitOptimizeTaskConcurrency
-  const convergence = config.convergence ?? 0.95
+  const convergence = config.convergence ?? CLI_DEFAULTS.jitOptimizeConvergence
   const baseline = config.baseline
   const keepAllRounds = !config["no-keep-all-rounds"]
   const autoApply = config["auto-apply"]

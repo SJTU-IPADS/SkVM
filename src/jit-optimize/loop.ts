@@ -63,7 +63,7 @@ import { isProviderError } from "../providers/errors.ts"
 import { isHeadlessAgentError } from "../core/headless-agent/index.ts"
 import { getHeadlessAgentConfig, getTmpDir } from "../core/config.ts"
 import { type AdapterName, createAdapter } from "../adapters/registry.ts"
-import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
+import { CLI_DEFAULTS, TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
 import { resolveOptimizerTimeout } from "../core/timeouts.ts"
 import { resolveTaskRuntime } from "../core/task-runtime.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
@@ -186,7 +186,7 @@ export async function runLoop(
   const rounds = config.loop?.rounds ?? 1
   const runsPerTask = config.loop?.runsPerTask ?? 1
   const requestedTaskConcurrency = Math.max(1, config.loop?.taskConcurrency ?? 1)
-  const convergenceThreshold = config.loop?.convergence ?? 0.95
+  const convergenceThreshold = config.loop?.convergence ?? CLI_DEFAULTS.jitOptimizeConvergence
   const minImprovement = config.loop?.minImprovement ?? DEFAULT_MIN_IMPROVEMENT
   const perTaskRegressionTolerance =
     config.loop?.perTaskRegressionTolerance ?? DEFAULT_PER_TASK_REGRESSION_TOLERANCE

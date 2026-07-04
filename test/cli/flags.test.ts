@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test"
-import { defineFlags, parseOrExit, runOrExit, UsageError } from "../../src/cli/flags.ts"
+import { defineFlags, parseEnumListFlag, parseOrExit, runOrExit, UsageError } from "../../src/cli/flags.ts"
 
 const ADAPTERS = ["bare-agent", "opencode", "pi"] as const
 
@@ -444,6 +444,49 @@ describe("defineFlags — int max", () => {
   test("define-time: int default above max is rejected", () => {
     expect(() => defineFlags("t", "x", { p: { kind: "int", max: 10, default: 11 } })).toThrow(
       "defineFlags(t): --p default 11 is above max 10",
+    )
+  })
+})
+
+describe("parseEnumListFlag", () => {
+  const buildHelp = () => "GENERATED HELP"
+
+  function listError(raw: string): UsageError {
+    try {
+      parseEnumListFlag("demo", "adapter", raw, ADAPTERS, buildHelp)
+    } catch (err) {
+      expect(err).toBeInstanceOf(UsageError)
+      return err as UsageError
+    }
+    throw new Error(`expected parseEnumListFlag(${JSON.stringify(raw)}) to throw UsageError`)
+  }
+
+  test("valid comma-separated list returns the typed entries in order", () => {
+    expect(parseEnumListFlag("demo", "adapter", "pi,opencode", ADAPTERS, buildHelp)).toEqual([
+      "pi",
+      "opencode",
+    ])
+    expect(parseEnumListFlag("demo", "adapter", "bare-agent", ADAPTERS, buildHelp)).toEqual([
+      "bare-agent",
+    ])
+  })
+
+  test("whitespace around entries is trimmed", () => {
+    expect(parseEnumListFlag("demo", "adapter", " pi , opencode ", ADAPTERS, buildHelp)).toEqual([
+      "pi",
+      "opencode",
+    ])
+  })
+
+  test("first invalid entry throws with the layer's standard enum wording", () => {
+    const err = listError("pi,bogus,alsobad")
+    expect(err.message).toBe('demo: invalid --adapter "bogus". Valid: bare-agent, opencode, pi')
+    expect(err.help).toBe("GENERATED HELP")
+  })
+
+  test("an empty entry (trailing comma) is rejected, not silently dropped", () => {
+    expect(listError("pi,").message).toBe(
+      'demo: invalid --adapter "". Valid: bare-agent, opencode, pi',
     )
   })
 })

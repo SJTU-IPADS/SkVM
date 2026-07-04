@@ -5,8 +5,8 @@
  * short-circuits before they are needed — same shape as profile's `--list`.
  */
 
-import { defineFlags, UsageError, type ConfigOf } from "./flags.ts"
-import { ALL_ADAPTERS, isAdapterName } from "../adapters/registry.ts"
+import { defineFlags, parseEnumListFlag, UsageError, type ConfigOf } from "./flags.ts"
+import { ALL_ADAPTERS } from "../adapters/registry.ts"
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "../core/ui-defaults.ts"
 import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
 import { createProgressSpinner, spinnerLog } from "../core/spinner.ts"
@@ -59,18 +59,12 @@ export async function runCompile(config: CompileConfig): Promise<void> {
 
   const skillInputs = config.skill.split(",").map(s => s.trim())
   const models = config.model.split(",").map(m => m.trim())
-  const adapters = (config.adapter ?? CLI_DEFAULTS.adapter).split(",").map(a => a.trim())
+  const adapters = parseEnumListFlag("aot-compile", "adapter", config.adapter ?? CLI_DEFAULTS.adapter, ALL_ADAPTERS, COMPILE_FLAGS.help)
   const passes: string[] = config.pass
     ? config.pass.split(",").map((p) => p.trim()).filter(Boolean)
     : CLI_DEFAULTS.compilerPasses.map(String)
   const concurrency = config.concurrency
   const dryRun = config["dry-run"]
-
-  for (const a of adapters) {
-    if (!isAdapterName(a)) {
-      throw new UsageError(`aot-compile: invalid --adapter "${a}". Valid: ${ALL_ADAPTERS.join(", ")}`, COMPILE_FLAGS.help)
-    }
-  }
 
   // --profile is a pure flag-shape check (no I/O) — validated up front,
   // before skill resolution and the banner, alongside the other cross-flag

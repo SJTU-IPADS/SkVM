@@ -313,7 +313,7 @@ export function defineFlags<const S extends FlagSpecs>(
       }
       case "enum": {
         if (!s.values.includes(value)) {
-          throw usage(`${command}: invalid --${name} "${value}". Valid: ${s.values.join(", ")}`)
+          throw usage(invalidEnumMessage(command, name, value, s.values))
         }
         return value
       }
@@ -380,6 +380,37 @@ function defaultPlaceholder(s: StringFlag | IntFlag | FloatFlag | EnumFlag): str
     case "string":
       return "<value>"
   }
+}
+
+/** The layer's one enum-rejection wording, shared by coerce() and parseEnumListFlag. */
+function invalidEnumMessage(command: string, name: string, value: string, values: readonly string[]): string {
+  return `${command}: invalid --${name} "${value}". Valid: ${values.join(", ")}`
+}
+
+// ---------------------------------------------------------------------------
+// Comma-separated multi-enum values
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a comma-separated multi-enum flag value (e.g. `--adapter=pi,opencode`).
+ * The single-value enum kind can't express comma lists, so handlers parse them;
+ * this owns the split/trim + per-entry validation with the layer's standard
+ * enum wording. Throws UsageError naming the first invalid entry.
+ */
+export function parseEnumListFlag<V extends string>(
+  command: string,
+  flag: string,
+  raw: string,
+  values: readonly V[],
+  buildHelp: () => string,
+): V[] {
+  const entries = raw.split(",").map((s) => s.trim())
+  for (const entry of entries) {
+    if (!(values as readonly string[]).includes(entry)) {
+      throw new UsageError(invalidEnumMessage(command, flag, entry, values), buildHelp)
+    }
+  }
+  return entries as V[]
 }
 
 // ---------------------------------------------------------------------------

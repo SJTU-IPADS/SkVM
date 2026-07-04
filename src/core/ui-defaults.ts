@@ -60,6 +60,7 @@ export const CLI_DEFAULTS = {
   // jit-optimize knobs (intentionally different from bench)
   jitOptimizeRunsPerTask: 2,
   jitOptimizeTaskConcurrency: 1,
+  jitOptimizeConvergence: 0.95,
   syntheticTrainCount: 2,
   syntheticTestCount: 1,
   // AOT-compile / pipeline — default runs only rewrite-skill (pass 1).

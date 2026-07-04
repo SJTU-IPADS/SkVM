@@ -163,15 +163,15 @@ describe("runBench — cross-flag rules", () => {
     )
   })
 
-  test("each comma-separated condition is validated", async () => {
+  test("each comma-separated condition is validated (layer's invalid-flag wording)", async () => {
     expect((await runError(["--model=a/b", "--conditions=bogus"])).message).toStartWith(
-      'bench: unknown condition "bogus". Valid: ',
+      'bench: invalid --conditions "bogus". Valid: ',
     )
   })
 
-  test("each comma-separated adapter is validated", async () => {
+  test("each comma-separated adapter is validated (layer's invalid-flag wording)", async () => {
     expect((await runError(["--model=a/b", "--adapter=bogus"])).message).toBe(
-      `bench: unknown adapter "bogus". Valid: ${ALL_ADAPTERS.join(", ")}`,
+      `bench: invalid --adapter "bogus". Valid: ${ALL_ADAPTERS.join(", ")}`,
     )
   })
 
@@ -188,6 +188,14 @@ describe("runBench — cross-flag rules", () => {
 
   test("--judge= (empty value) does not select judge mode; falls through to matrix mode", async () => {
     expect((await runErrorQuiet(["--judge="])).message).toBe("bench: --model is required")
+  })
+
+  test("--judge with a nonexistent manifest dir errors instead of judging 0 entries", async () => {
+    // Pre-side-effect existence check: a typo'd path used to print
+    // "Judged 0 entries" and exit 0, indistinguishable from success.
+    expect((await runError(["--judge=/no/such/dir"])).message).toBe(
+      "bench: no manifest.jsonl found in /no/such/dir",
+    )
   })
 
   describe("resolveManifestDir", () => {

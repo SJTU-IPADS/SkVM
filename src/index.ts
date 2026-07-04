@@ -83,9 +83,6 @@ Use --help with any command for details.`)
       await runOrExit(PROFILE_FLAGS, args.slice(1), runProfile)
       break
     }
-    case "test":
-      console.log("test command not yet implemented")
-      break
     case "aot-compile": {
       const { COMPILE_FLAGS, runCompile } = await import("./cli/aot-compile.ts")
       await runOrExit(COMPILE_FLAGS, args.slice(1), runCompile)
@@ -122,9 +119,8 @@ Use --help with any command for details.`)
       break
     }
     case "logs": {
-      const { parseOrExit } = await import("./cli/flags.ts")
       const { LOGS_FLAGS, runLogs } = await import("./cli/logs.ts")
-      await runLogs(parseOrExit(LOGS_FLAGS, args.slice(1)))
+      await runOrExit(LOGS_FLAGS, args.slice(1), runLogs)
       break
     }
     case "config": {

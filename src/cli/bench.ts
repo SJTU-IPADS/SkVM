@@ -9,8 +9,8 @@
 
 import path from "node:path"
 import { mkdir } from "node:fs/promises"
-import { defineFlags, UsageError, type ConfigOf } from "./flags.ts"
-import { ALL_ADAPTERS, isAdapterName, type AdapterName } from "../adapters/registry.ts"
+import { defineFlags, parseEnumListFlag, UsageError, type ConfigOf } from "./flags.ts"
+import { ALL_ADAPTERS } from "../adapters/registry.ts"
 import { resolveAdapterConfigMode } from "../core/config.ts"
 import { AdapterConfigModeSchema } from "../core/types.ts"
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "../core/ui-defaults.ts"
@@ -152,6 +152,13 @@ export async function runBench(config: BenchConfig): Promise<void> {
     if (!manifestDir) {
       throw new UsageError("bench: --manifest=<dir> is required (directory containing manifest.jsonl)", BENCH_FLAGS.help)
     }
+    // A typo'd directory used to sail through runDeferredJudge as an empty
+    // manifest and print "Judged 0 entries" (exit 0) — indistinguishable
+    // from success. Check before any side effects; handleMergeJudge already
+    // errors on zero results, so this restores consistency.
+    if (!(await Bun.file(path.join(manifestDir, "manifest.jsonl")).exists())) {
+      throw new UsageError(`bench: no manifest.jsonl found in ${manifestDir}`, BENCH_FLAGS.help)
+    }
     const { handleJudge } = await import("../bench/index.ts")
     return handleJudge({
       manifestDir,
@@ -228,7 +235,7 @@ export async function runBench(config: BenchConfig): Promise<void> {
     for (const c of conditions) {
       if (!isValidCondition(c)) {
         throw new UsageError(
-          `bench: unknown condition "${c}". Valid: ${BENCH_CONDITIONS.join(", ")}, aot-compiled-p<N> (e.g. aot-compiled-p1, aot-compiled-p12, aot-compiled-p23)`,
+          `bench: invalid --conditions "${c}". Valid: ${BENCH_CONDITIONS.join(", ")}, aot-compiled-p<N> (e.g. aot-compiled-p1, aot-compiled-p12, aot-compiled-p23)`,
           BENCH_FLAGS.help,
         )
       }
@@ -240,13 +247,7 @@ export async function runBench(config: BenchConfig): Promise<void> {
   const tasks = config.tasks ? config.tasks.split(",").map(t => t.trim()) : undefined
 
   // Parse adapter(s): comma-separated
-  const adapterRaw = (config.adapter ?? CLI_DEFAULTS.adapter).split(",").map(a => a.trim())
-  for (const a of adapterRaw) {
-    if (!isAdapterName(a)) {
-      throw new UsageError(`bench: unknown adapter "${a}". Valid: ${ALL_ADAPTERS.join(", ")}`, BENCH_FLAGS.help)
-    }
-  }
-  const adapters = adapterRaw as AdapterName[]
+  const adapters = parseEnumListFlag("bench", "adapter", config.adapter ?? CLI_DEFAULTS.adapter, ALL_ADAPTERS, BENCH_FLAGS.help)
 
   const cliTimeoutMs = config["timeout-ms"]
 

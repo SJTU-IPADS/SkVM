@@ -140,7 +140,7 @@ skvm bench --model=<id> --adapter=bare-agent
 skvm bench --model=<id1>,<id2> --concurrency=4
 
 # Specific conditions and tasks
-skvm bench --model=<id> --conditions=no-skill,original,aot,jit-boost --tasks=<task1>,<task2>
+skvm bench --model=<id> --conditions=no-skill,original,aot-compiled,jit-boost --tasks=<task1>,<task2>
 
 # Defer LLM-judge evaluation (write an async-judge manifest)
 skvm bench --model=<id> --async-judge
