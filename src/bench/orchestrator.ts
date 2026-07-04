@@ -579,75 +579,89 @@ export async function runBenchmark(config: BenchRunConfig): Promise<BenchReport>
     })
   }
 
-  // SIGINT handler
-  const sigintHandler = () => {
-    console.log(`\n\nBenchmark interrupted.`)
-    console.log(`Resume with: bun run skvm bench --resume=${ctx.sessionId} --model=${config.model}`)
-    process.exit(130)
-  }
-  process.on("SIGINT", sigintHandler)
-
-  const concurrency = config.concurrency ?? 1
-  log.info(`Work items: ${workItems.length} (concurrency=${concurrency})`)
-  const benchProgress = createProgressSpinner("Benchmarking", workItems.length)
-
-  if (workItems.length === 0) {
-    if (ctx.tasks.length === 0) {
-      log.error("No tasks found. Import tasks first: bun run skvm bench --import=pinchbench")
+  try {
+    // SIGINT handler
+    const sigintHandler = () => {
+      console.log(`\n\nBenchmark interrupted.`)
+      console.log(`Resume with: bun run skvm bench --resume=${ctx.sessionId} --model=${config.model}`)
+      process.exit(130)
     }
+    process.on("SIGINT", sigintHandler)
+
+    const concurrency = config.concurrency ?? 1
+    log.info(`Work items: ${workItems.length} (concurrency=${concurrency})`)
+    const benchProgress = createProgressSpinner("Benchmarking", workItems.length)
+
+    if (workItems.length === 0) {
+      if (ctx.tasks.length === 0) {
+        log.error("No tasks found. Import tasks first: bun run skvm bench --import=pinchbench")
+      }
+      process.removeListener("SIGINT", sigintHandler)
+      const report = await finalizeBenchReport(ctx)
+      await session?.complete(`${report.tasks.length} tasks`)
+      return report
+    }
+
+    const withProgressLock = createAsyncMutex()
+    await runScheduled({
+      concurrency,
+      items: workItems,
+      createRunner: async (adapterName, model) => {
+        const adapter = createAdapter(adapterName as AdapterName, ctx.providerFactory)
+        await adapter.setup({ ...ctx.adapterConfig, model })
+        return {
+          adapter,
+          teardown: async () => adapter.teardown(),
+        } satisfies BenchRunner
+      },
+      execute: async (runner: BenchRunner, item) => {
+        let result: ConditionResult
+        try {
+          result = await executeBenchItem(runner.adapter, item.payload, ctx)
+        } catch (err) {
+          log.error(`[${item.payload.condition}] ${item.payload.task.id} error: ${err}`)
+          result = {
+            condition: item.payload.condition,
+            score: 0, pass: false, evalDetails: [],
+            tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            cost: 0, durationMs: 0, llmDurationMs: 0, steps: 0,
+            error: String(err),
+          }
+        }
+
+        const runTag = item.payload.runIndex != null && (config.runsPerTask ?? 1) > 1
+          ? ` run=${item.payload.runIndex + 1}/${config.runsPerTask}`
+          : ""
+        log.info(`[${item.payload.condition}] ${item.payload.task.id}:${runTag} score=${result.score.toFixed(2)} ${result.pass ? "PASS" : "FAIL"}`)
+
+        await withProgressLock(async () => {
+          if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
+          ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
+          ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
+          benchProgress.tick(`Benchmarked ${workItems.length} runs`)
+          await saveProgress(ctx.progress)
+        })
+      },
+    })
+
+    benchProgress.stop()
     process.removeListener("SIGINT", sigintHandler)
     const report = await finalizeBenchReport(ctx)
     await session?.complete(`${report.tasks.length} tasks`)
     return report
+  } catch (err) {
+    // Mark the session failed, then rethrow: bench errors propagate to
+    // runBench's caller, where UsageError exits cleanly via runOrExit;
+    // anything else hits the top-level crash handler (stack trace to
+    // stderr, exit 1). On --resume there is no session object to mark
+    // (the original entry already exists), hence the optional chain. Note
+    // that on --resume neither complete() nor fail() ever updates the
+    // original index entry — it stays in whatever state the interrupted run
+    // left it; re-marking it would need a RunSession.rehydrate(id) API,
+    // tracked as a follow-up.
+    await session?.fail(err instanceof Error ? err.message : String(err))
+    throw err
   }
-
-  const withProgressLock = createAsyncMutex()
-  await runScheduled({
-    concurrency,
-    items: workItems,
-    createRunner: async (adapterName, model) => {
-      const adapter = createAdapter(adapterName as AdapterName, ctx.providerFactory)
-      await adapter.setup({ ...ctx.adapterConfig, model })
-      return {
-        adapter,
-        teardown: async () => adapter.teardown(),
-      } satisfies BenchRunner
-    },
-    execute: async (runner: BenchRunner, item) => {
-      let result: ConditionResult
-      try {
-        result = await executeBenchItem(runner.adapter, item.payload, ctx)
-      } catch (err) {
-        log.error(`[${item.payload.condition}] ${item.payload.task.id} error: ${err}`)
-        result = {
-          condition: item.payload.condition,
-          score: 0, pass: false, evalDetails: [],
-          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          cost: 0, durationMs: 0, llmDurationMs: 0, steps: 0,
-          error: String(err),
-        }
-      }
-
-      const runTag = item.payload.runIndex != null && (config.runsPerTask ?? 1) > 1
-        ? ` run=${item.payload.runIndex + 1}/${config.runsPerTask}`
-        : ""
-      log.info(`[${item.payload.condition}] ${item.payload.task.id}:${runTag} score=${result.score.toFixed(2)} ${result.pass ? "PASS" : "FAIL"}`)
-
-      await withProgressLock(async () => {
-        if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
-        ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
-        ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
-        benchProgress.tick(`Benchmarked ${workItems.length} runs`)
-        await saveProgress(ctx.progress)
-      })
-    },
-  })
-
-  benchProgress.stop()
-  process.removeListener("SIGINT", sigintHandler)
-  const report = await finalizeBenchReport(ctx)
-  await session?.complete(`${report.tasks.length} tasks`)
-  return report
 }
 
 // ---------------------------------------------------------------------------
@@ -674,138 +688,147 @@ export async function runMultiModelBenchmark(
     conditions: baseConfig.conditions,
   })
 
-  log.info(`=== Multi-Model SkVM Benchmark ===`)
-  log.info(`Session: ${sessionId}`)
-  log.info(`Models: ${models.length} (${models.join(", ")})`)
-  log.info(`Concurrency: ${totalConcurrency}`)
+  try {
+    log.info(`=== Multi-Model SkVM Benchmark ===`)
+    log.info(`Session: ${sessionId}`)
+    log.info(`Models: ${models.length} (${models.join(", ")})`)
+    log.info(`Concurrency: ${totalConcurrency}`)
 
-  // Write session metadata
-  await mkdir(multiLogDir, { recursive: true })
-  await Bun.write(path.join(multiLogDir, "metadata.json"), JSON.stringify({
-    sessionId,
-    type: "multi-model",
-    models,
-    adapter: baseConfig.adapter,
-    conditions: baseConfig.conditions,
-    tasks: baseConfig.tasks ?? null,
-    source: baseConfig.source ?? null,
-    concurrency: totalConcurrency,
-    jitRuns: baseConfig.jitRuns,
-    maxSteps: baseConfig.maxSteps,
-    timeoutMult: baseConfig.timeoutMult,
-    judgeModel: baseConfig.judgeModel ?? null,
-    compilerModel: baseConfig.compilerModel ?? null,
-    asyncJudge: baseConfig.asyncJudge ?? false,
-    startedAt,
-  }, null, 2))
+    // Write session metadata
+    await mkdir(multiLogDir, { recursive: true })
+    await Bun.write(path.join(multiLogDir, "metadata.json"), JSON.stringify({
+      sessionId,
+      type: "multi-model",
+      models,
+      adapter: baseConfig.adapter,
+      conditions: baseConfig.conditions,
+      tasks: baseConfig.tasks ?? null,
+      source: baseConfig.source ?? null,
+      concurrency: totalConcurrency,
+      jitRuns: baseConfig.jitRuns,
+      maxSteps: baseConfig.maxSteps,
+      timeoutMult: baseConfig.timeoutMult,
+      judgeModel: baseConfig.judgeModel ?? null,
+      compilerModel: baseConfig.compilerModel ?? null,
+      asyncJudge: baseConfig.asyncJudge ?? false,
+      startedAt,
+    }, null, 2))
 
-  // Prepare each model's session and collect all work items
-  const sessions = new Map<string, BenchSessionContext>()
-  const allItems: WorkItem<BenchWorkPayload>[] = []
+    // Prepare each model's session and collect all work items
+    const sessions = new Map<string, BenchSessionContext>()
+    const allItems: WorkItem<BenchWorkPayload>[] = []
 
-  for (const model of models) {
-    log.info(`Preparing session for model: ${model}`)
-    const { workItems, ctx } = await prepareBenchSession({ ...baseConfig, model })
-    sessions.set(model, ctx)
-    allItems.push(...workItems)
-  }
-
-  log.info(`Total work items: ${allItems.length} across ${models.length} models (concurrency=${totalConcurrency})`)
-
-  // Single dispatch — scheduler distributes by adapter, then models sequentially,
-  // with work-stealing when one model finishes faster
-  const withProgressLock = createAsyncMutex()
-  const mmProgress = createProgressSpinner(`Benchmarking ${models.length} models`, allItems.length)
-
-  await runScheduled({
-    concurrency: totalConcurrency,
-    items: allItems,
-    createRunner: async (adapterName, model) => {
-      const ctx = sessions.get(model)!
-      const adapter = createAdapter(adapterName as AdapterName, ctx.providerFactory)
-      await adapter.setup({ ...ctx.adapterConfig, model })
-      return {
-        adapter,
-        teardown: async () => adapter.teardown(),
-      } satisfies BenchRunner
-    },
-    execute: async (runner: BenchRunner, item) => {
-      const ctx = sessions.get(item.model)!
-      let result: ConditionResult
-      try {
-        result = await executeBenchItem(runner.adapter, item.payload, ctx)
-      } catch (err) {
-        log.error(`[${item.payload.condition}] ${item.payload.task.id} error: ${err}`)
-        result = {
-          condition: item.payload.condition,
-          score: 0, pass: false, evalDetails: [],
-          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          cost: 0, durationMs: 0, llmDurationMs: 0, steps: 0,
-          error: String(err),
-        }
-      }
-
-      const runTag = item.payload.runIndex != null && (baseConfig.runsPerTask ?? 1) > 1
-        ? ` run=${item.payload.runIndex + 1}/${baseConfig.runsPerTask}`
-        : ""
-      log.info(`[${item.model}] [${item.payload.condition}] ${item.payload.task.id}:${runTag} score=${result.score.toFixed(2)} ${result.pass ? "PASS" : "FAIL"}`)
-
-      await withProgressLock(async () => {
-        if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
-        ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
-        ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
-        mmProgress.tick(`Benchmarked ${allItems.length} runs across ${models.length} models`)
-        await saveProgress(ctx.progress)
-      })
-    },
-  })
-  mmProgress.stop()
-
-  // Finalize each model's report
-  const reports: BenchReport[] = []
-  for (const model of models) {
-    try {
-      reports.push(await finalizeBenchReport(sessions.get(model)!))
-    } catch (err) {
-      log.error(`Model ${model} finalize failed: ${err}`)
-      reports.push({
-        sessionId: `${sessionId}-${safeModelName(model)}`,
-        model,
-        adapter: baseConfig.adapter,
-        timestamp: new Date().toISOString(),
-        tasks: [],
-        summary: {
-          taskCount: 0, perCondition: {}, perCategory: {},
-          delta: { originalVsBaseline: null, aotVsOriginal: null, jitVsAot: null },
-        },
-      })
+    for (const model of models) {
+      log.info(`Preparing session for model: ${model}`)
+      const { workItems, ctx } = await prepareBenchSession({ ...baseConfig, model })
+      sessions.set(model, ctx)
+      allItems.push(...workItems)
     }
+
+    log.info(`Total work items: ${allItems.length} across ${models.length} models (concurrency=${totalConcurrency})`)
+
+    // Single dispatch — scheduler distributes by adapter, then models sequentially,
+    // with work-stealing when one model finishes faster
+    const withProgressLock = createAsyncMutex()
+    const mmProgress = createProgressSpinner(`Benchmarking ${models.length} models`, allItems.length)
+
+    await runScheduled({
+      concurrency: totalConcurrency,
+      items: allItems,
+      createRunner: async (adapterName, model) => {
+        const ctx = sessions.get(model)!
+        const adapter = createAdapter(adapterName as AdapterName, ctx.providerFactory)
+        await adapter.setup({ ...ctx.adapterConfig, model })
+        return {
+          adapter,
+          teardown: async () => adapter.teardown(),
+        } satisfies BenchRunner
+      },
+      execute: async (runner: BenchRunner, item) => {
+        const ctx = sessions.get(item.model)!
+        let result: ConditionResult
+        try {
+          result = await executeBenchItem(runner.adapter, item.payload, ctx)
+        } catch (err) {
+          log.error(`[${item.payload.condition}] ${item.payload.task.id} error: ${err}`)
+          result = {
+            condition: item.payload.condition,
+            score: 0, pass: false, evalDetails: [],
+            tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            cost: 0, durationMs: 0, llmDurationMs: 0, steps: 0,
+            error: String(err),
+          }
+        }
+
+        const runTag = item.payload.runIndex != null && (baseConfig.runsPerTask ?? 1) > 1
+          ? ` run=${item.payload.runIndex + 1}/${baseConfig.runsPerTask}`
+          : ""
+        log.info(`[${item.model}] [${item.payload.condition}] ${item.payload.task.id}:${runTag} score=${result.score.toFixed(2)} ${result.pass ? "PASS" : "FAIL"}`)
+
+        await withProgressLock(async () => {
+          if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
+          ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
+          ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
+          mmProgress.tick(`Benchmarked ${allItems.length} runs across ${models.length} models`)
+          await saveProgress(ctx.progress)
+        })
+      },
+    })
+    mmProgress.stop()
+
+    // Finalize each model's report
+    const reports: BenchReport[] = []
+    for (const model of models) {
+      try {
+        reports.push(await finalizeBenchReport(sessions.get(model)!))
+      } catch (err) {
+        log.error(`Model ${model} finalize failed: ${err}`)
+        reports.push({
+          sessionId: `${sessionId}-${safeModelName(model)}`,
+          model,
+          adapter: baseConfig.adapter,
+          timestamp: new Date().toISOString(),
+          tasks: [],
+          summary: {
+            taskCount: 0, perCondition: {}, perCategory: {},
+            delta: { originalVsBaseline: null, aotVsOriginal: null, jitVsAot: null },
+          },
+        })
+      }
+    }
+
+    const comparison = buildComparison(reports)
+
+    const multiReport: MultiModelReport = {
+      sessionId,
+      timestamp: startedAt,
+      completedAt: new Date().toISOString(),
+      models,
+      reports,
+      comparison,
+    }
+
+    printMultiModelSummary(multiReport)
+
+    // Save to logs/bench/{sessionId}/ (dir already created for metadata above)
+    const reportPath = path.join(multiLogDir, "report.json")
+    await Bun.write(reportPath, JSON.stringify(multiReport, null, 2))
+    log.info(`\nMulti-model report: ${reportPath}`)
+
+    const mdPath = path.join(multiLogDir, "report.md")
+    await Bun.write(mdPath, generateMultiModelMarkdown(multiReport))
+    log.info(`Markdown report: ${mdPath}`)
+
+    await session.complete(`${models.length} models, ${reports.reduce((n, r) => n + r.tasks.length, 0)} tasks`)
+    return multiReport
+  } catch (err) {
+    // Mark the session failed, then rethrow: bench errors propagate to
+    // runBench's caller, where UsageError exits cleanly via runOrExit;
+    // anything else hits the top-level crash handler (stack trace to
+    // stderr, exit 1).
+    await session.fail(err instanceof Error ? err.message : String(err))
+    throw err
   }
-
-  const comparison = buildComparison(reports)
-
-  const multiReport: MultiModelReport = {
-    sessionId,
-    timestamp: startedAt,
-    completedAt: new Date().toISOString(),
-    models,
-    reports,
-    comparison,
-  }
-
-  printMultiModelSummary(multiReport)
-
-  // Save to logs/bench/{sessionId}/ (dir already created for metadata above)
-  const reportPath = path.join(multiLogDir, "report.json")
-  await Bun.write(reportPath, JSON.stringify(multiReport, null, 2))
-  log.info(`\nMulti-model report: ${reportPath}`)
-
-  const mdPath = path.join(multiLogDir, "report.md")
-  await Bun.write(mdPath, generateMultiModelMarkdown(multiReport))
-  log.info(`Markdown report: ${mdPath}`)
-
-  await session.complete(`${models.length} models, ${reports.reduce((n, r) => n + r.tasks.length, 0)} tasks`)
-  return multiReport
 }
 
 function buildComparison(reports: BenchReport[]): MultiModelReport["comparison"] {
@@ -895,139 +918,148 @@ export async function runMultiAdapterBenchmark(
     conditions: baseConfig.conditions,
   })
 
-  log.info(`=== Multi-Adapter SkVM Benchmark ===`)
-  log.info(`Session: ${sessionId}`)
-  log.info(`Model: ${baseConfig.model}`)
-  log.info(`Adapters: ${adapters.length} (${adapters.join(", ")})`)
-  log.info(`Concurrency: ${totalConcurrency}`)
+  try {
+    log.info(`=== Multi-Adapter SkVM Benchmark ===`)
+    log.info(`Session: ${sessionId}`)
+    log.info(`Model: ${baseConfig.model}`)
+    log.info(`Adapters: ${adapters.length} (${adapters.join(", ")})`)
+    log.info(`Concurrency: ${totalConcurrency}`)
 
-  // Write session metadata
-  await mkdir(multiLogDir, { recursive: true })
-  await Bun.write(path.join(multiLogDir, "metadata.json"), JSON.stringify({
-    sessionId,
-    type: "multi-adapter",
-    model: baseConfig.model,
-    adapters,
-    conditions: baseConfig.conditions,
-    tasks: baseConfig.tasks ?? null,
-    source: baseConfig.source ?? null,
-    concurrency: totalConcurrency,
-    jitRuns: baseConfig.jitRuns,
-    maxSteps: baseConfig.maxSteps,
-    timeoutMult: baseConfig.timeoutMult,
-    judgeModel: baseConfig.judgeModel ?? null,
-    compilerModel: baseConfig.compilerModel ?? null,
-    asyncJudge: baseConfig.asyncJudge ?? false,
-    startedAt,
-  }, null, 2))
+    // Write session metadata
+    await mkdir(multiLogDir, { recursive: true })
+    await Bun.write(path.join(multiLogDir, "metadata.json"), JSON.stringify({
+      sessionId,
+      type: "multi-adapter",
+      model: baseConfig.model,
+      adapters,
+      conditions: baseConfig.conditions,
+      tasks: baseConfig.tasks ?? null,
+      source: baseConfig.source ?? null,
+      concurrency: totalConcurrency,
+      jitRuns: baseConfig.jitRuns,
+      maxSteps: baseConfig.maxSteps,
+      timeoutMult: baseConfig.timeoutMult,
+      judgeModel: baseConfig.judgeModel ?? null,
+      compilerModel: baseConfig.compilerModel ?? null,
+      asyncJudge: baseConfig.asyncJudge ?? false,
+      startedAt,
+    }, null, 2))
 
-  // Prepare each adapter's session and collect all work items
-  const sessionKey = (adapter: string) => `${adapter}::${baseConfig.model}`
-  const sessions = new Map<string, BenchSessionContext>()
-  const allItems: WorkItem<BenchWorkPayload>[] = []
+    // Prepare each adapter's session and collect all work items
+    const sessionKey = (adapter: string) => `${adapter}::${baseConfig.model}`
+    const sessions = new Map<string, BenchSessionContext>()
+    const allItems: WorkItem<BenchWorkPayload>[] = []
 
-  for (const adapter of adapters) {
-    log.info(`Preparing session for adapter: ${adapter}`)
-    const { workItems, ctx } = await prepareBenchSession({ ...baseConfig, adapter })
-    sessions.set(sessionKey(adapter), ctx)
-    allItems.push(...workItems)
-  }
-
-  log.info(`Total work items: ${allItems.length} across ${adapters.length} adapters (concurrency=${totalConcurrency})`)
-
-  const withProgressLock = createAsyncMutex()
-  const maProgress = createProgressSpinner(`Benchmarking ${adapters.length} adapters`, allItems.length)
-
-  await runScheduled({
-    concurrency: totalConcurrency,
-    items: allItems,
-    createRunner: async (adapterName, model) => {
-      const ctx = sessions.get(sessionKey(adapterName))!
-      const adapter = createAdapter(adapterName as AdapterName, ctx.providerFactory)
-      await adapter.setup({ ...ctx.adapterConfig, model })
-      return {
-        adapter,
-        teardown: async () => adapter.teardown(),
-      } satisfies BenchRunner
-    },
-    execute: async (runner: BenchRunner, item) => {
-      const ctx = sessions.get(sessionKey(item.adapter))!
-      let result: ConditionResult
-      try {
-        result = await executeBenchItem(runner.adapter, item.payload, ctx)
-      } catch (err) {
-        log.error(`[${item.payload.condition}] ${item.payload.task.id} error: ${err}`)
-        result = {
-          condition: item.payload.condition,
-          score: 0, pass: false, evalDetails: [],
-          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          cost: 0, durationMs: 0, llmDurationMs: 0, steps: 0,
-          error: String(err),
-        }
-      }
-
-      const runTag = item.payload.runIndex != null && (baseConfig.runsPerTask ?? 1) > 1
-        ? ` run=${item.payload.runIndex + 1}/${baseConfig.runsPerTask}`
-        : ""
-      log.info(`[${item.adapter}] [${item.payload.condition}] ${item.payload.task.id}:${runTag} score=${result.score.toFixed(2)} ${result.pass ? "PASS" : "FAIL"}`)
-
-      await withProgressLock(async () => {
-        if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
-        ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
-        ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
-        maProgress.tick(`Benchmarked ${allItems.length} runs across ${adapters.length} adapters`)
-        await saveProgress(ctx.progress)
-      })
-    },
-  })
-  maProgress.stop()
-
-  // Finalize each adapter's report
-  const reports: BenchReport[] = []
-  for (const adapter of adapters) {
-    try {
-      reports.push(await finalizeBenchReport(sessions.get(sessionKey(adapter))!))
-    } catch (err) {
-      log.error(`Adapter ${adapter} finalize failed: ${err}`)
-      reports.push({
-        sessionId: `${sessionId}-${adapter}`,
-        model: baseConfig.model,
-        adapter,
-        timestamp: new Date().toISOString(),
-        tasks: [],
-        summary: {
-          taskCount: 0, perCondition: {}, perCategory: {},
-          delta: { originalVsBaseline: null, aotVsOriginal: null, jitVsAot: null },
-        },
-      })
+    for (const adapter of adapters) {
+      log.info(`Preparing session for adapter: ${adapter}`)
+      const { workItems, ctx } = await prepareBenchSession({ ...baseConfig, adapter })
+      sessions.set(sessionKey(adapter), ctx)
+      allItems.push(...workItems)
     }
+
+    log.info(`Total work items: ${allItems.length} across ${adapters.length} adapters (concurrency=${totalConcurrency})`)
+
+    const withProgressLock = createAsyncMutex()
+    const maProgress = createProgressSpinner(`Benchmarking ${adapters.length} adapters`, allItems.length)
+
+    await runScheduled({
+      concurrency: totalConcurrency,
+      items: allItems,
+      createRunner: async (adapterName, model) => {
+        const ctx = sessions.get(sessionKey(adapterName))!
+        const adapter = createAdapter(adapterName as AdapterName, ctx.providerFactory)
+        await adapter.setup({ ...ctx.adapterConfig, model })
+        return {
+          adapter,
+          teardown: async () => adapter.teardown(),
+        } satisfies BenchRunner
+      },
+      execute: async (runner: BenchRunner, item) => {
+        const ctx = sessions.get(sessionKey(item.adapter))!
+        let result: ConditionResult
+        try {
+          result = await executeBenchItem(runner.adapter, item.payload, ctx)
+        } catch (err) {
+          log.error(`[${item.payload.condition}] ${item.payload.task.id} error: ${err}`)
+          result = {
+            condition: item.payload.condition,
+            score: 0, pass: false, evalDetails: [],
+            tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            cost: 0, durationMs: 0, llmDurationMs: 0, steps: 0,
+            error: String(err),
+          }
+        }
+
+        const runTag = item.payload.runIndex != null && (baseConfig.runsPerTask ?? 1) > 1
+          ? ` run=${item.payload.runIndex + 1}/${baseConfig.runsPerTask}`
+          : ""
+        log.info(`[${item.adapter}] [${item.payload.condition}] ${item.payload.task.id}:${runTag} score=${result.score.toFixed(2)} ${result.pass ? "PASS" : "FAIL"}`)
+
+        await withProgressLock(async () => {
+          if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
+          ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
+          ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
+          maProgress.tick(`Benchmarked ${allItems.length} runs across ${adapters.length} adapters`)
+          await saveProgress(ctx.progress)
+        })
+      },
+    })
+    maProgress.stop()
+
+    // Finalize each adapter's report
+    const reports: BenchReport[] = []
+    for (const adapter of adapters) {
+      try {
+        reports.push(await finalizeBenchReport(sessions.get(sessionKey(adapter))!))
+      } catch (err) {
+        log.error(`Adapter ${adapter} finalize failed: ${err}`)
+        reports.push({
+          sessionId: `${sessionId}-${adapter}`,
+          model: baseConfig.model,
+          adapter,
+          timestamp: new Date().toISOString(),
+          tasks: [],
+          summary: {
+            taskCount: 0, perCondition: {}, perCategory: {},
+            delta: { originalVsBaseline: null, aotVsOriginal: null, jitVsAot: null },
+          },
+        })
+      }
+    }
+
+    const comparison = buildAdapterComparison(reports)
+
+    const multiReport: MultiAdapterReport = {
+      sessionId,
+      timestamp: startedAt,
+      completedAt: new Date().toISOString(),
+      model: baseConfig.model,
+      adapters,
+      reports,
+      comparison,
+    }
+
+    printMultiAdapterSummary(multiReport)
+
+    // Save to logs/bench/{sessionId}/ (dir already created for metadata above)
+    const reportPath = path.join(multiLogDir, "report.json")
+    await Bun.write(reportPath, JSON.stringify(multiReport, null, 2))
+    log.info(`\nMulti-adapter report: ${reportPath}`)
+
+    const mdPath = path.join(multiLogDir, "report.md")
+    await Bun.write(mdPath, generateMultiAdapterMarkdown(multiReport))
+    log.info(`Markdown report: ${mdPath}`)
+
+    await session.complete(`${adapters.length} adapters, ${reports.reduce((n, r) => n + r.tasks.length, 0)} tasks`)
+    return multiReport
+  } catch (err) {
+    // Mark the session failed, then rethrow: bench errors propagate to
+    // runBench's caller, where UsageError exits cleanly via runOrExit;
+    // anything else hits the top-level crash handler (stack trace to
+    // stderr, exit 1).
+    await session.fail(err instanceof Error ? err.message : String(err))
+    throw err
   }
-
-  const comparison = buildAdapterComparison(reports)
-
-  const multiReport: MultiAdapterReport = {
-    sessionId,
-    timestamp: startedAt,
-    completedAt: new Date().toISOString(),
-    model: baseConfig.model,
-    adapters,
-    reports,
-    comparison,
-  }
-
-  printMultiAdapterSummary(multiReport)
-
-  // Save to logs/bench/{sessionId}/ (dir already created for metadata above)
-  const reportPath = path.join(multiLogDir, "report.json")
-  await Bun.write(reportPath, JSON.stringify(multiReport, null, 2))
-  log.info(`\nMulti-adapter report: ${reportPath}`)
-
-  const mdPath = path.join(multiLogDir, "report.md")
-  await Bun.write(mdPath, generateMultiAdapterMarkdown(multiReport))
-  log.info(`Markdown report: ${mdPath}`)
-
-  await session.complete(`${adapters.length} adapters, ${reports.reduce((n, r) => n + r.tasks.length, 0)} tasks`)
-  return multiReport
 }
 
 function buildAdapterComparison(reports: BenchReport[]): MultiAdapterReport["comparison"] {

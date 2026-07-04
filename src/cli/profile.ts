@@ -203,77 +203,91 @@ export async function runProfile(config: ProfileConfig): Promise<void> {
     harness: harnessNames.join(","),
   })
 
-  if (jobs.length === 1) {
-    // Single job: use the original profile() function directly
-    const job = jobs[0]!
-    const profileLogDir = getProfileLogDir(job.harness, job.model)
-    mkdirSync(profileLogDir, { recursive: true })
+  try {
+    if (jobs.length === 1) {
+      // Single job: use the original profile() function directly
+      const job = jobs[0]!
+      const profileLogDir = getProfileLogDir(job.harness, job.model)
+      mkdirSync(profileLogDir, { recursive: true })
 
-    try {
-      const adapter = createAdapter(job.harness)
-      const tcp = await profile({
-        model: job.model,
-        harness: job.harness,
-        adapter,
-        adapterConfig: { model: job.model, maxSteps: 25, timeoutMs: probeTimeoutMs, mode: adapterMode },
-        primitives,
-        skip,
-        instances,
-        force,
-        logFile: `${profileLogDir}/console.log`,
-        convLogDir: profileLogDir,
-        concurrency,
-        adapterFactory: concurrency > 1 ? async () => {
-          const a = createAdapter(job.harness)
-          await a.setup({ model: job.model, maxSteps: 25, timeoutMs: probeTimeoutMs, mode: adapterMode })
-          return a
-        } : undefined,
-      })
+      try {
+        const adapter = createAdapter(job.harness)
+        const tcp = await profile({
+          model: job.model,
+          harness: job.harness,
+          adapter,
+          adapterConfig: { model: job.model, maxSteps: 25, timeoutMs: probeTimeoutMs, mode: adapterMode },
+          primitives,
+          skip,
+          instances,
+          force,
+          logFile: `${profileLogDir}/console.log`,
+          convLogDir: profileLogDir,
+          concurrency,
+          adapterFactory: concurrency > 1 ? async () => {
+            const a = createAdapter(job.harness)
+            await a.setup({ model: job.model, maxSteps: 25, timeoutMs: probeTimeoutMs, mode: adapterMode })
+            return a
+          } : undefined,
+        })
+        printProfileSummary(tcp)
+        await session.complete(`${job.model} profiled`)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(c.red(`${job.model} -- ${job.harness}: FAILED: ${msg}`))
+        await session.fail(msg)
+        // Non-zero exit on failure (repo scriptability rule); see #83.
+        process.exit(1)
+      }
+      return
+    }
+
+    // Multi-job: use unified scheduler with work-stealing
+    const { results, failures } = await profileMulti({
+      jobs,
+      createAdapter: (harness) => createAdapter(harness as AdapterName),
+      primitives,
+      instances,
+      force,
+      concurrency,
+      adapterMode,
+      timeoutMs: probeTimeoutMs,
+      logDirFactory: (harness, model) => {
+        const dir = getProfileLogDir(harness, model)
+        mkdirSync(dir, { recursive: true })
+        return dir
+      },
+    })
+
+    for (const [, { tcp }] of results) {
       printProfileSummary(tcp)
-      await session.complete(`${job.model} profiled`)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.error(c.red(`${job.model} -- ${job.harness}: FAILED: ${msg}`))
-      await session.fail(msg)
     }
-    return
-  }
 
-  // Multi-job: use unified scheduler with work-stealing
-  const { results, failures } = await profileMulti({
-    jobs,
-    createAdapter: (harness) => createAdapter(harness as AdapterName),
-    primitives,
-    instances,
-    force,
-    concurrency,
-    adapterMode,
-    timeoutMs: probeTimeoutMs,
-    logDirFactory: (harness, model) => {
-      const dir = getProfileLogDir(harness, model)
-      mkdirSync(dir, { recursive: true })
-      return dir
-    },
-  })
+    // Summary (this path only runs with ≥2 jobs — single jobs returned above)
+    console.log(`\n=== Profile Summary ===`)
+    console.log(`Total: ${total}, Completed: ${results.size}, Skipped: ${skipped}, Failed: ${failures.length}`)
 
-  for (const [, { tcp }] of results) {
-    printProfileSummary(tcp)
-  }
-
-  // Summary (this path only runs with ≥2 jobs — single jobs returned above)
-  console.log(`\n=== Profile Summary ===`)
-  console.log(`Total: ${total}, Completed: ${results.size}, Skipped: ${skipped}, Failed: ${failures.length}`)
-
-  if (failures.length > 0) {
-    console.log(`\nFailures:`)
-    for (const f of failures) {
-      console.log(`  ${f.model} -- ${f.harness}: ${f.error}`)
+    if (failures.length > 0) {
+      console.log(`\nFailures:`)
+      for (const f of failures) {
+        console.log(`  ${f.model} -- ${f.harness}: ${f.error}`)
+      }
     }
-  }
 
-  if (failures.length > 0) {
-    await session.fail(`${failures.length}/${jobs.length} failed`)
-  } else {
-    await session.complete(`${results.size} models profiled`)
+    if (failures.length > 0) {
+      await session.fail(`${failures.length}/${jobs.length} failed`)
+      // Non-zero exit on failure (repo scriptability rule); see #83.
+      process.exit(1)
+    } else {
+      await session.complete(`${results.size} models profiled`)
+    }
+  } catch (err) {
+    // Mark the session failed, then rethrow: UsageError exits cleanly via
+    // runOrExit; anything else propagates to the top-level crash handler
+    // (stack trace to stderr, exit 1). The per-path failure handlers above
+    // exit(1) directly; this catches what escapes them (e.g. profileMulti
+    // rethrowing an adapter-setup error out of the scheduler).
+    await session.fail(err instanceof Error ? err.message : String(err))
+    throw err
   }
 }

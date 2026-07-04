@@ -144,6 +144,68 @@ describe("runCompile — cross-flag rules", () => {
   })
 })
 
+describe("runCompile — RunSession lifecycle on post-start failure (#83)", () => {
+  test("unroutable --compiler-model marks the session failed, not running", async () => {
+    const { mkdtempSync } = await import("node:fs")
+    const { tmpdir } = await import("node:os")
+    const path = await import("node:path")
+    const { readSessions } = await import("../../src/core/run-session.ts")
+
+    // Minimal loadable skill
+    const skillDir = mkdtempSync(path.join(tmpdir(), "skvm-aot-session-fail-"))
+    await Bun.write(path.join(skillDir, "SKILL.md"), "# minimal skill\n")
+
+    // Minimal TCPSchema-valid profile, passed via --profile so runCompile
+    // reaches provider creation without a cached profile.
+    const profileDir = mkdtempSync(path.join(tmpdir(), "skvm-aot-session-fail-tcp-"))
+    const profilePath = path.join(profileDir, "tcp.json")
+    await Bun.write(profilePath, JSON.stringify({
+      version: "1.0",
+      model: "x/y",
+      harness: "bare-agent",
+      profiledAt: new Date().toISOString(),
+      capabilities: {},
+      details: [],
+      cost: {
+        totalUsd: 0,
+        totalTokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        durationMs: 0,
+      },
+      isPartial: false,
+    }))
+
+    const config = COMPILE_FLAGS.parse([
+      `--skill=${skillDir}`, "--model=x/y", `--profile=${profilePath}`,
+      "--compiler-model=bogus/nope",
+    ])
+    if (config.help) throw new Error("unexpected help")
+
+    // createProviderForModel(--compiler-model) runs AFTER RunSession.start;
+    // an unroutable id throws there. Pre-#83 this escaped the function and
+    // left the session dangling as "running".
+    const before = await readSessions({ type: "aot-compile" })
+    const beforeIds = new Set(before.map((e) => e.id))
+    const origLog = console.log
+    console.log = () => {}
+    let thrown: unknown
+    try {
+      await runCompile(config)
+    } catch (err) {
+      thrown = err
+    } finally {
+      console.log = origLog
+    }
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as Error).message).toContain('No providers.routes entry matches model id "bogus/nope"')
+
+    const after = await readSessions({ type: "aot-compile" })
+    const created = after.filter((e) => !beforeIds.has(e.id))
+    expect(created.length).toBe(1)
+    expect(created[0]!.status).toBe("failed")
+    expect(created[0]!.error).toContain("bogus/nope")
+  })
+})
+
 describe("COMPILE_FLAGS.help — generated", () => {
   test("matches the canonical layout (usage block + options, no epilogue)", () => {
     expect(COMPILE_FLAGS.help()).toBe(

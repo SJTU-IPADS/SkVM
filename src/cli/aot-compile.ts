@@ -180,86 +180,98 @@ export async function runCompile(config: CompileConfig): Promise<void> {
     skill: skillNames,
   })
 
-  // ---------------------------------------------------------------------------
-  // Create shared provider and run jobs
-  // ---------------------------------------------------------------------------
-  const { createProviderForModel } = await import("../providers/registry.ts")
-  const provider = createProviderForModel(compilerModel)
-  const { compileSkill, writeVariant } = await import("../compiler/index.ts")
-  const { createSlotPool } = await import("../core/concurrency.ts")
+  try {
+    // -------------------------------------------------------------------------
+    // Create shared provider and run jobs
+    // -------------------------------------------------------------------------
+    const { createProviderForModel } = await import("../providers/registry.ts")
+    const provider = createProviderForModel(compilerModel)
+    const { compileSkill, writeVariant } = await import("../compiler/index.ts")
+    const { createSlotPool } = await import("../core/concurrency.ts")
 
-  type JobResult = { skill: string; model: string; adapter: string; gaps: number; guard: boolean; durationMs: number; error?: string }
-  const results: JobResult[] = []
-  let completed = 0
-  const isMultiJob = jobs.length > 1
+    type JobResult = { skill: string; model: string; adapter: string; gaps: number; guard: boolean; durationMs: number; error?: string }
+    const results: JobResult[] = []
+    let completed = 0
+    const isMultiJob = jobs.length > 1
 
-  const pool = createSlotPool(concurrency)
-  const compileProgress = isMultiJob
-    ? createProgressSpinner("Compiling", jobs.length)
-    : { tick() {}, stop() {} }
+    const pool = createSlotPool(concurrency)
+    const compileProgress = isMultiJob
+      ? createProgressSpinner("Compiling", jobs.length)
+      : { tick() {}, stop() {} }
 
-  await Promise.allSettled(jobs.map(async (job) => {
-    const slot = await pool.acquire()
-    try {
-      const label = `${job.skill.name} × ${job.model} × ${job.adapter}`
-      const result = await compileSkill({
-        skillPath: job.skill.skillPath,
-        skillDir: job.skill.skillDir,
-        skillContent: job.skill.skillContent,
-        tcp: job.tcp,
-        model: job.model,
-        harness: job.adapter,
-        passes,
-        dryRun,
-        timeoutMs: cliCompilerTimeoutMs,
-      }, provider, { showSpinner: !isMultiJob })
+    await Promise.allSettled(jobs.map(async (job) => {
+      const slot = await pool.acquire()
+      try {
+        const label = `${job.skill.name} × ${job.model} × ${job.adapter}`
+        const result = await compileSkill({
+          skillPath: job.skill.skillPath,
+          skillDir: job.skill.skillDir,
+          skillContent: job.skill.skillContent,
+          tcp: job.tcp,
+          model: job.model,
+          harness: job.adapter,
+          passes,
+          dryRun,
+          timeoutMs: cliCompilerTimeoutMs,
+        }, provider, { showSpinner: !isMultiJob })
 
-      if (!dryRun) {
-        await writeVariant(result)
+        if (!dryRun) {
+          await writeVariant(result)
+        }
+
+        completed++
+        const guardStr = result.guardPassed ? "PASS" : "FAIL"
+        const gapCount = result.artifacts.gaps?.length ?? 0
+        spinnerLog(`  [${completed}/${jobs.length}] ${label}: ${gapCount} gaps, guard=${guardStr}, ${(result.durationMs / 1000).toFixed(1)}s`)
+        compileProgress.tick(`Compiled ${jobs.length} job(s)`)
+
+        results.push({
+          skill: job.skill.name, model: job.model, adapter: job.adapter,
+          gaps: gapCount, guard: result.guardPassed, durationMs: result.durationMs,
+        })
+      } catch (err) {
+        completed++
+        const msg = err instanceof Error ? err.message : String(err)
+        spinnerLog(c.red(`  [${completed}/${jobs.length}] ${job.skill.name} × ${job.model} × ${job.adapter}: FAILED: ${msg.slice(0, 200)}`))
+        compileProgress.tick()
+        results.push({
+          skill: job.skill.name, model: job.model, adapter: job.adapter,
+          gaps: 0, guard: false, durationMs: 0, error: msg,
+        })
+      } finally {
+        pool.release(slot)
       }
+    }))
+    compileProgress.stop()
 
-      completed++
-      const guardStr = result.guardPassed ? "PASS" : "FAIL"
-      const gapCount = result.artifacts.gaps?.length ?? 0
-      spinnerLog(`  [${completed}/${jobs.length}] ${label}: ${gapCount} gaps, guard=${guardStr}, ${(result.durationMs / 1000).toFixed(1)}s`)
-      compileProgress.tick(`Compiled ${jobs.length} job(s)`)
-
-      results.push({
-        skill: job.skill.name, model: job.model, adapter: job.adapter,
-        gaps: gapCount, guard: result.guardPassed, durationMs: result.durationMs,
-      })
-    } catch (err) {
-      completed++
-      const msg = err instanceof Error ? err.message : String(err)
-      spinnerLog(c.red(`  [${completed}/${jobs.length}] ${job.skill.name} × ${job.model} × ${job.adapter}: FAILED: ${msg.slice(0, 200)}`))
-      compileProgress.tick()
-      results.push({
-        skill: job.skill.name, model: job.model, adapter: job.adapter,
-        gaps: 0, guard: false, durationMs: 0, error: msg,
-      })
-    } finally {
-      pool.release(slot)
+    // -------------------------------------------------------------------------
+    // Summary
+    // -------------------------------------------------------------------------
+    const compileFailures = results.filter(r => r.error)
+    if (jobs.length > 1) {
+      const guardFails = results.filter(r => !r.error && !r.guard)
+      console.log(`\n=== Compile Summary ===`)
+      console.log(`Total: ${jobs.length}, Completed: ${results.length - compileFailures.length}, Failed: ${compileFailures.length}, Guard failures: ${guardFails.length}`)
+      if (compileFailures.length > 0) {
+        console.log(`\nFailures:`)
+        for (const f of compileFailures) console.log(`  ${f.skill} × ${f.model} × ${f.adapter}: ${f.error!.slice(0, 150)}`)
+      }
     }
-  }))
-  compileProgress.stop()
 
-  // ---------------------------------------------------------------------------
-  // Summary
-  // ---------------------------------------------------------------------------
-  const compileFailures = results.filter(r => r.error)
-  if (jobs.length > 1) {
-    const guardFails = results.filter(r => !r.error && !r.guard)
-    console.log(`\n=== Compile Summary ===`)
-    console.log(`Total: ${jobs.length}, Completed: ${results.length - compileFailures.length}, Failed: ${compileFailures.length}, Guard failures: ${guardFails.length}`)
     if (compileFailures.length > 0) {
-      console.log(`\nFailures:`)
-      for (const f of compileFailures) console.log(`  ${f.skill} × ${f.model} × ${f.adapter}: ${f.error!.slice(0, 150)}`)
+      await compileSession.fail(`${compileFailures.length}/${jobs.length} failed`)
+      // Non-zero exit on failure (repo scriptability rule); see #83. Explicit
+      // process.exit(1) mirrors run.ts; this branch is the end of the run, so
+      // nothing after it needs to execute.
+      process.exit(1)
+    } else {
+      await compileSession.complete(`${jobs.length} job(s) compiled`)
     }
-  }
-
-  if (compileFailures.length > 0) {
-    await compileSession.fail(`${compileFailures.length}/${jobs.length} failed`)
-  } else {
-    await compileSession.complete(`${jobs.length} job(s) compiled`)
+  } catch (err) {
+    // Mark the session failed, then rethrow: UsageError exits cleanly via
+    // runOrExit; anything else propagates to the top-level crash handler
+    // (stack trace to stderr, exit 1).
+    await compileSession.fail(err instanceof Error ? err.message : String(err))
+    throw err
   }
 }
