@@ -308,6 +308,165 @@ describe("runScheduled", () => {
   })
 
   // ---------------------------------------------------------------------------
+  // Runner creation failure (#86)
+  // ---------------------------------------------------------------------------
+
+  test("createRunner failure drains that queue via onError; other queues execute; promise resolves", async () => {
+    const errors: Array<{ payload: string; error: string }> = []
+    const completed: string[] = []
+
+    const items: WorkItem<string>[] = [
+      { adapter: "a", model: "bad", payload: "bad-1" },
+      { adapter: "a", model: "bad", payload: "bad-2" },
+      { adapter: "a", model: "good", payload: "good-1" },
+      { adapter: "a", model: "good", payload: "good-2" },
+    ]
+
+    await runScheduled({
+      concurrency: 2,
+      items,
+      createRunner: async (_adapter, model) => {
+        if (model === "bad") throw new Error("no runner for bad")
+        return {}
+      },
+      execute: async (_runner, item) => { completed.push(item.payload) },
+      onError: (item, err) => {
+        errors.push({ payload: item.payload, error: (err as Error).message })
+      },
+    })
+
+    // All items of the dead queue reported with the setup error
+    expect(errors.map((e) => e.payload).sort()).toEqual(["bad-1", "bad-2"])
+    expect(errors.every((e) => e.error === "no runner for bad")).toBe(true)
+    // Other queue unaffected
+    expect(completed.sort()).toEqual(["good-1", "good-2"])
+  })
+
+  test("createRunner failure without onError rejects (fail-fast preserved)", async () => {
+    const items: WorkItem<number>[] = [{ adapter: "a", model: "m", payload: 1 }]
+
+    await expect(
+      runScheduled({
+        concurrency: 1,
+        items,
+        createRunner: async () => { throw new Error("setup boom") },
+        execute: async () => {},
+      }),
+    ).rejects.toThrow("setup boom")
+  })
+
+  test("async onError is awaited for runner-creation failures", async () => {
+    const recorded: string[] = []
+    const items: WorkItem<string>[] = [
+      { adapter: "a", model: "bad", payload: "b1" },
+      { adapter: "a", model: "bad", payload: "b2" },
+    ]
+
+    await runScheduled({
+      concurrency: 1,
+      items,
+      createRunner: async () => { throw new Error("nope") },
+      execute: async () => {},
+      onError: async (item) => {
+        await new Promise((r) => setTimeout(r, 5))
+        recorded.push(item.payload)
+      },
+    })
+
+    // Both entries present after runScheduled resolves — scheduler awaited onError
+    expect(recorded.sort()).toEqual(["b1", "b2"])
+  })
+
+  test("async onError is awaited for execute failures", async () => {
+    const recorded: number[] = []
+    const items: WorkItem<number>[] = [1, 2, 3].map((n) => ({
+      adapter: "a", model: "m", payload: n,
+    }))
+
+    await runScheduled({
+      concurrency: 1,
+      items,
+      createRunner: async () => ({}),
+      execute: async (_runner, item) => {
+        if (item.payload !== 2) throw new Error(`fail on ${item.payload}`)
+      },
+      onError: async (item) => {
+        await new Promise((r) => setTimeout(r, 5))
+        recorded.push(item.payload)
+      },
+    })
+
+    expect(recorded.sort()).toEqual([1, 3])
+  })
+
+  test("a throwing onError rejects the whole run", async () => {
+    const items: WorkItem<string>[] = [
+      { adapter: "a", model: "m", payload: "t1" },
+      { adapter: "a", model: "m", payload: "t2" },
+    ]
+
+    await expect(
+      runScheduled({
+        concurrency: 1,
+        items,
+        createRunner: async () => { throw new Error("setup boom") },
+        execute: async () => {},
+        onError: async () => { throw new Error("handler boom") },
+      }),
+    ).rejects.toThrow("handler boom")
+  })
+
+  test("teardown failure does not kill scheduling; all queues complete", async () => {
+    const completed: string[] = []
+
+    const items: WorkItem<string>[] = [
+      // Model switch within adapter "a" hits the runner-switch teardown site;
+      // cross-group steal to adapter "b" hits the group-drained teardown site.
+      { adapter: "a", model: "m1", payload: "t1" },
+      { adapter: "a", model: "m2", payload: "t2" },
+      { adapter: "b", model: "m1", payload: "t3" },
+    ]
+
+    await runScheduled({
+      concurrency: 1,
+      items,
+      createRunner: async () => ({
+        teardown: async () => { throw new Error("teardown boom") },
+      }),
+      execute: async (_runner, item) => { completed.push(item.payload) },
+    })
+
+    expect(completed.sort()).toEqual(["t1", "t2", "t3"])
+  })
+
+  test("worker whose queue's runner fails steals and completes another queue", async () => {
+    const errors: string[] = []
+    const completed: string[] = []
+
+    const items: WorkItem<string>[] = [
+      // Single worker (concurrency=1) starts on the "bad" queue
+      { adapter: "a", model: "bad", payload: "bad-1" },
+      { adapter: "a", model: "bad", payload: "bad-2" },
+      { adapter: "a", model: "good", payload: "good-1" },
+      { adapter: "a", model: "good", payload: "good-2" },
+    ]
+
+    await runScheduled({
+      concurrency: 1,
+      items,
+      createRunner: async (_adapter, model) => {
+        if (model === "bad") throw new Error("bad runner")
+        return {}
+      },
+      execute: async (_runner, item) => { completed.push(item.payload) },
+      onError: (item) => { errors.push(item.payload) },
+    })
+
+    expect(errors).toEqual(["bad-1", "bad-2"])
+    expect(completed).toEqual(["good-1", "good-2"])
+  })
+
+  // ---------------------------------------------------------------------------
   // Runner lifecycle
   // ---------------------------------------------------------------------------
 

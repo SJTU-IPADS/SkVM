@@ -2,6 +2,10 @@
  * Shared concurrency primitives used by profiler and bench orchestrator.
  */
 
+import { createLogger } from "./logger.ts"
+
+const log = createLogger("scheduler")
+
 /**
  * Generic async pool: acquire / release with waiters queue.
  * Bounds concurrency by limiting how many items can be checked out simultaneously.
@@ -80,8 +84,14 @@ export interface SchedulerOpts<T, R extends RunnerHandle = RunnerHandle> {
   execute: (runner: R, item: WorkItem<T>) => Promise<void>
   /** Optional callback when a work item completes (for progress reporting) */
   onComplete?: (item: WorkItem<T>) => void
-  /** Optional callback when a work item fails (item continues to next) */
-  onError?: (item: WorkItem<T>, error: unknown) => void
+  /**
+   * Optional callback when a work item fails (item continues to next).
+   * Called for execute failures AND for every item of a queue whose runner
+   * could not be created. Awaited by the scheduler, so it may persist
+   * failure records asynchronously. Without it, failures rethrow (fail-fast).
+   * A throwing/rejecting onError rejects the whole run.
+   */
+  onError?: (item: WorkItem<T>, error: unknown) => void | Promise<void>
 }
 
 /**
@@ -211,12 +221,24 @@ async function schedulerWorker<T, R extends RunnerHandle>(
   createRunner: (adapter: string, model: string) => Promise<R>,
   execute: (runner: R, item: WorkItem<T>) => Promise<void>,
   onComplete?: (item: WorkItem<T>) => void,
-  onError?: (item: WorkItem<T>, error: unknown) => void,
+  onError?: (item: WorkItem<T>, error: unknown) => void | Promise<void>,
 ): Promise<void> {
   let currentGroup = initialGroup
   let runner: R | null = null
   let runnerAdapter = ""
   let runnerModel = ""
+
+  // Cleanup failure must not kill scheduling or detach this worker — the
+  // runner is being discarded anyway, so warn and continue (#86).
+  const discardRunner = async () => {
+    if (!runner) return
+    try {
+      await runner.teardown?.()
+    } catch (err) {
+      log.warn(`runner teardown failed for ${runnerAdapter}/${runnerModel} (discarding anyway): ${err}`)
+    }
+    runner = null
+  }
 
   // Start with assigned model queue
   let mq: { model: string; queue: WorkItem<T>[] } | undefined =
@@ -231,7 +253,7 @@ async function schedulerWorker<T, R extends RunnerHandle>(
 
     if (!mq) {
       // Adapter group fully drained — cross-group steal
-      if (runner) { await runner.teardown?.(); runner = null }
+      await discardRunner()
       const target = groupWithMostRemaining(allGroups)
       if (!target) break // all work done
       currentGroup = target
@@ -241,8 +263,26 @@ async function schedulerWorker<T, R extends RunnerHandle>(
 
     // Create or switch runner if adapter/model changed
     if (!runner || runnerAdapter !== currentGroup.adapter || runnerModel !== mq.model) {
-      if (runner) await runner.teardown?.()
-      runner = await createRunner(currentGroup.adapter, mq.model)
+      await discardRunner()
+      try {
+        runner = await createRunner(currentGroup.adapter, mq.model)
+      } catch (err) {
+        if (!onError) throw err // fail-fast contract preserved for callers without onError
+        // Runner creation failed — this queue cannot execute at all. Drain it,
+        // reporting each remaining item as failed, then steal other work.
+        // Sibling workers and queues are unaffected (#86).
+        runner = null
+        runnerAdapter = ""
+        runnerModel = ""
+        // Another worker hitting the same failure may drain concurrently while
+        // this onError awaits — safe: shift() hands each item to exactly one.
+        while (mq.queue.length > 0) {
+          const item = mq.queue.shift()!
+          await onError(item, err)
+        }
+        mq = undefined
+        continue
+      }
       runnerAdapter = currentGroup.adapter
       runnerModel = mq.model
     }
@@ -254,7 +294,7 @@ async function schedulerWorker<T, R extends RunnerHandle>(
         await execute(runner, item)
         onComplete?.(item)
       } catch (err) {
-        if (onError) onError(item, err)
+        if (onError) await onError(item, err)
         else throw err
       }
     }

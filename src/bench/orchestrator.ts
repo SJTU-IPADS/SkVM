@@ -642,6 +642,25 @@ export async function runBenchmark(config: BenchRunConfig): Promise<BenchReport>
           await saveProgress(ctx.progress)
         })
       },
+      onError: async (item, err) => {
+        // Runner creation failed for this item's queue — record the same
+        // score-0 error result the execute catch above produces (#86).
+        log.error(`[${item.payload.condition}] ${item.payload.task.id} runner setup failed: ${err}`)
+        const result: ConditionResult = {
+          condition: item.payload.condition,
+          score: 0, pass: false, evalDetails: [],
+          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          cost: 0, durationMs: 0, llmDurationMs: 0, steps: 0,
+          error: String(err),
+        }
+        await withProgressLock(async () => {
+          if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
+          ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
+          ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
+          benchProgress.tick(`Benchmarked ${workItems.length} runs`)
+          await saveProgress(ctx.progress)
+        })
+      },
     })
 
     benchProgress.stop()
@@ -765,6 +784,26 @@ export async function runMultiModelBenchmark(
           : ""
         log.info(`[${item.model}] [${item.payload.condition}] ${item.payload.task.id}:${runTag} score=${result.score.toFixed(2)} ${result.pass ? "PASS" : "FAIL"}`)
 
+        await withProgressLock(async () => {
+          if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
+          ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
+          ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
+          mmProgress.tick(`Benchmarked ${allItems.length} runs across ${models.length} models`)
+          await saveProgress(ctx.progress)
+        })
+      },
+      onError: async (item, err) => {
+        // Runner creation failed for this item's queue — record the same
+        // score-0 error result the execute catch above produces (#86).
+        const ctx = sessions.get(item.model)!
+        log.error(`[${item.payload.condition}] ${item.payload.task.id} runner setup failed: ${err}`)
+        const result: ConditionResult = {
+          condition: item.payload.condition,
+          score: 0, pass: false, evalDetails: [],
+          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          cost: 0, durationMs: 0, llmDurationMs: 0, steps: 0,
+          error: String(err),
+        }
         await withProgressLock(async () => {
           if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
           ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
@@ -995,6 +1034,26 @@ export async function runMultiAdapterBenchmark(
           : ""
         log.info(`[${item.adapter}] [${item.payload.condition}] ${item.payload.task.id}:${runTag} score=${result.score.toFixed(2)} ${result.pass ? "PASS" : "FAIL"}`)
 
+        await withProgressLock(async () => {
+          if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
+          ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
+          ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
+          maProgress.tick(`Benchmarked ${allItems.length} runs across ${adapters.length} adapters`)
+          await saveProgress(ctx.progress)
+        })
+      },
+      onError: async (item, err) => {
+        // Runner creation failed for this item's queue — record the same
+        // score-0 error result the execute catch above produces (#86).
+        const ctx = sessions.get(sessionKey(item.adapter))!
+        log.error(`[${item.payload.condition}] ${item.payload.task.id} runner setup failed: ${err}`)
+        const result: ConditionResult = {
+          condition: item.payload.condition,
+          score: 0, pass: false, evalDetails: [],
+          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          cost: 0, durationMs: 0, llmDurationMs: 0, steps: 0,
+          error: String(err),
+        }
         await withProgressLock(async () => {
           if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
           ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
