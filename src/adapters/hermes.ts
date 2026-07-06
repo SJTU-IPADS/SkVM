@@ -17,6 +17,7 @@ import {
   symlinkIfExists,
   type Sandbox,
 } from "../core/adapter-sandbox.ts"
+import { startContainer, execInContainer } from "../core/docker-run.ts"
 
 const log = createLogger("hermes")
 
@@ -218,13 +219,27 @@ export class HermesAdapter implements AgentAdapter {
   private extraCliArgs: string[] = []
   private sandbox: Sandbox | undefined
   private hermesHome: string | undefined
+  /** Cached SDK env overlay (API keys) from setup. Container mode uses this
+   * to seed the container's env. */
+  private routeEnv: Record<string, string> = {}
+  /** Cached managed-mode config.yaml body. Container mode writes this into
+   * the container-side HERMES_HOME (a workDir-mounted dir). `null` in native
+   * mode; container-mode setup rejects native anyway. */
+  private managedConfigYaml: string | null = null
+  /** Cached managed-mode .env body (KEY="value" lines derived from route).
+   * `null` when the route has no auth (e.g. auth-free local endpoints). */
+  private managedEnvFile: string | null = null
 
   async setup(config: AdapterConfig): Promise<void> {
     this.model = config.model
     this.maxSteps = config.maxSteps ?? TASK_FILE_DEFAULTS.maxSteps
     this.timeoutMs = config.timeoutMs ?? TASK_FILE_DEFAULTS.timeoutMs
     this.repoDir = getAdapterRepoDir("hermes")
-    this.cmdPrefix = await resolveHermesCmd()
+    // Host CLI is resolved lazily in runOnHost() — container-only runs
+    // (task.tbDockerImage set + adapter not forced host-mode) don't need
+    // hermes installed on the host. See runOnHost() prologue for the
+    // deferred resolveHermesCmd() call.
+    this.cmdPrefix = []
     this.mode = config.mode ?? "managed"
 
     const settings = getAdapterSettings("hermes")
@@ -269,11 +284,23 @@ export class HermesAdapter implements AgentAdapter {
       const route = resolveRoute(this.model)
       const yamlDoc = renderHermesConfig(route, this.model)
       await Bun.write(path.join(root, "config.yaml"), yamlDoc)
+      this.managedConfigYaml = yamlDoc
       const envFile = renderHermesEnv(this.model)
-      if (envFile) await Bun.write(path.join(root, ".env"), envFile)
+      if (envFile) {
+        await Bun.write(path.join(root, ".env"), envFile)
+        this.managedEnvFile = envFile
+      }
     }
 
-    log.info(`hermes command: ${this.cmdPrefix.join(" ")}`)
+    // Cache route env for container mode. Failing here in managed mode is
+    // fatal (already validated above via resolveRoute); in native mode it can
+    // be empty (auth comes from copied .env).
+    try {
+      this.routeEnv = envForRoute(this.model)
+    } catch {
+      this.routeEnv = {}
+    }
+
     log.info(`hermes model: ${this.model} (mode=${this.mode}, HERMES_HOME=${root})`)
   }
 
@@ -284,7 +311,34 @@ export class HermesAdapter implements AgentAdapter {
     taskId?: string
     convLog?: import("../core/conversation-logger.ts").ConversationLog
     timeoutMs?: number
+    /** Terminal-Bench image — when set (and SKVM_HERMES_HOST_MODE is not),
+     * hermes runs inside skvm-hermes-runtime with workDir bind-mounted at
+     * /app so model-generated shell commands (find /, grep -r, etc.)
+     * execute in a clean Ubuntu root rather than the Windows Git-Bash host.
+     * Mirrors pi's / claude-code's / opencode's containerized branches. */
+    tbDockerImage?: string
   }): Promise<RunResult> {
+    if (task.tbDockerImage && !process.env.SKVM_HERMES_HOST_MODE) {
+      return this.runInContainer(task)
+    }
+    return this.runOnHost(task)
+  }
+
+  private async runOnHost(task: {
+    prompt: string
+    workDir: string
+    skill?: SkillBundle
+    taskId?: string
+    convLog?: import("../core/conversation-logger.ts").ConversationLog
+    timeoutMs?: number
+  }): Promise<RunResult> {
+    // Lazy host CLI resolution — deferred from setup() so container-only
+    // callers (task.tbDockerImage set) don't need hermes on the host.
+    if (this.cmdPrefix.length === 0) {
+      this.cmdPrefix = await resolveHermesCmd()
+      log.info(`hermes command: ${this.cmdPrefix.join(" ")}`)
+    }
+
     let skillLoaded: boolean | undefined
     let prompt = `IMPORTANT: Do not ask clarifying questions. Proceed directly with implementation. Execute all steps immediately without waiting for user input.\n\n`
 
@@ -500,6 +554,254 @@ export class HermesAdapter implements AgentAdapter {
     })
 
     return builder.finish({ workDir: task.workDir, durationMs, skillLoaded, ...verdict })
+  }
+
+  /**
+   * Container-mode hermes: launch skvm-hermes-runtime with workDir bind-
+   * mounted at /app, then two `docker exec` calls on the same container —
+   * one for `hermes chat`, one for `hermes sessions export` — because
+   * hermes's session state lives in a SQLite DB under HERMES_HOME. Both
+   * execs must land on the same running container.
+   *
+   * Native mode is not yet supported for container path (bench always uses
+   * managed mode). Attempting native → clear error.
+   *
+   * Config plumbing: managed-mode setup() cached config.yaml + .env; we
+   * materialise them under workDir/.hermes-sandbox and point HERMES_HOME
+   * at the corresponding container-side path so hermes reads managed
+   * config the same way the host branch does.
+   */
+  private async runInContainer(task: {
+    prompt: string
+    workDir: string
+    skill?: SkillBundle
+    taskId?: string
+    convLog?: import("../core/conversation-logger.ts").ConversationLog
+    timeoutMs?: number
+    tbDockerImage?: string
+  }): Promise<RunResult> {
+    if (this.mode === "native") {
+      throw new Error(
+        "hermes (container mode): native adapter-config is not supported " +
+        "inside containers yet — the host ~/.hermes directory is not " +
+        "mounted. Switch to --adapter-config=managed, or set " +
+        "SKVM_HERMES_HOST_MODE=1 to run on the host.",
+      )
+    }
+    if (!this.managedConfigYaml) {
+      throw new Error(
+        "hermes (container mode): managed setup did not produce a config " +
+        "yaml — the route may be unsupported. Check `skvm config show`.",
+      )
+    }
+
+    // HERMES_HOME sandbox lives inside workDir so the container sees it via
+    // the mount. Sessions SQLite / logs / etc. all end up here — retained
+    // in the workDir after cleanup (useful for post-mortem, wiped by bench
+    // when keepWorkDir=false).
+    const sandboxRel = ".hermes-sandbox"
+    const hostSandbox = path.join(task.workDir, sandboxRel)
+    const containerSandbox = `/app/${sandboxRel}`
+    await mkdir(path.join(hostSandbox, "sessions"), { recursive: true })
+    await Bun.write(path.join(hostSandbox, "config.yaml"), this.managedConfigYaml)
+    if (this.managedEnvFile) {
+      await Bun.write(path.join(hostSandbox, ".env"), this.managedEnvFile)
+    }
+
+    let skillLoaded: boolean | undefined
+    let prompt = `IMPORTANT: Do not ask clarifying questions. Proceed directly with implementation. Execute all steps immediately without waiting for user input.\n\n`
+
+    if (task.skill?.mode === "inject") {
+      prompt += task.skill.content + "\n\n---\n\n"
+      skillLoaded = false
+    } else if (task.skill?.mode === "discover") {
+      const skillName = task.skill.meta.name
+      const skillDir = path.join(hostSandbox, "skills", skillName)
+      await mkdir(skillDir, { recursive: true })
+      await Bun.write(path.join(skillDir, "SKILL.md"), task.skill.content)
+      skillLoaded = false
+    }
+    prompt += task.prompt
+
+    const startMs = performance.now()
+    const timeoutMs = task.timeoutMs ?? this.timeoutMs
+
+    const env: Record<string, string> = {
+      ...this.routeEnv,
+      HERMES_HOME: containerSandbox,
+    }
+
+    const container = await startContainer({
+      image: "skvm-hermes-runtime:latest",
+      mounts: [{ host: task.workDir, container: "/app", mode: "rw" }],
+      env,
+      workDir: "/app",
+      // Lifetime > task timeout + slack for the sessions-export second exec.
+      lifetimeMs: timeoutMs + 60_000,
+    })
+
+    try {
+      const chatCmd = [
+        "hermes",
+        "chat",
+        "-Q",
+        "-q", prompt,
+        "-m", resolveBackendModel(this.model),
+        "-t", "terminal,file",
+        "--max-turns", String(this.maxSteps),
+        "--yolo",
+        "--source", "tool",
+        ...this.extraCliArgs,
+      ]
+      if (task.skill?.mode === "discover") {
+        chatCmd.push("-s", task.skill.meta.name)
+      }
+
+      log.info(`hermes (container): image=skvm-hermes-runtime:latest container=${container.name} model=${this.model}`)
+
+      // First exec: `hermes chat`. Stream stdout to disk when convLog is set
+      // (long transcripts are memory-heavy — see the pi streaming fix).
+      const convLogPath = task.convLog?.filePath
+      const chatResult = await execInContainer({
+        cmd: chatCmd,
+        container,
+        cwd: "/app",
+        timeoutMs,
+        stdoutSink: convLogPath,
+      })
+
+      let stdout = chatResult.stdout
+      if (convLogPath && !stdout) {
+        try {
+          stdout = await Bun.file(convLogPath).text()
+        } catch (err) {
+          log.warn(`Failed to read hermes chat stdout from ${convLogPath}: ${err}`)
+        }
+      }
+      const { stderr, exitCode, timedOut } = chatResult
+
+      const durationMs = performance.now() - startMs
+
+      if (exitCode !== 0 && stderr) {
+        log.warn(`hermes (container) exited with code ${exitCode}: ${stderr.slice(0, 2000)}`)
+      }
+
+      // Save conv log (raw stdout). Overwritten with export JSON later if
+      // export succeeds.
+      const saveConvLog = async (logContent: string) => {
+        if (!task.convLog) return
+        try {
+          const destDir = path.dirname(task.convLog.filePath)
+          await mkdir(destDir, { recursive: true })
+          await Bun.write(task.convLog.filePath, logContent)
+        } catch (err) {
+          log.warn(`Failed to save hermes conv log: ${err}`)
+        }
+      }
+
+      const sessionIdMatch = stdout.match(/\nsession_id:\s*(\S+)\s*$/)
+      const sessionId = sessionIdMatch?.[1]
+
+      if (!sessionId) {
+        if (timedOut || exitCode !== 0) {
+          log.warn(`Could not extract session_id (container) — timedOut=${timedOut}, exitCode=${exitCode}`)
+        } else {
+          log.debug("Hermes container session_id trailer missing — reduced telemetry")
+        }
+        await saveConvLog(stdout)
+        const verdict = await subprocessVerdict({
+          label: "hermes",
+          timeoutLabel: "hermes chat",
+          timedOut,
+          exitCode,
+          timeoutMs,
+          stderr,
+          diagnose: () => diagnoseHermes({
+            sandboxRoot: hostSandbox,
+            sessionId,
+            stdout,
+            stderr,
+            exitCode,
+          }),
+          warn: (msg) => log.warn(msg),
+        })
+        return buildMinimalRecord(stdout).finish({
+          workDir: task.workDir,
+          durationMs,
+          ...verdict,
+          statusDetail: verdict.statusDetail
+            ?? "hermes (container) exited cleanly but session_id trailer missing — telemetry unavailable, workDir scored as-is",
+        })
+      }
+
+      log.debug(`Hermes container session_id: ${sessionId}`)
+
+      // Second exec: `hermes sessions export`, same container so the SQLite
+      // DB under HERMES_HOME is intact. Cap at 30s (mirrors host branch).
+      const exportResult = await execInContainer({
+        cmd: [
+          "hermes", "sessions", "export", "-",
+          "--session-id", sessionId,
+        ],
+        container,
+        cwd: "/app",
+        timeoutMs: 30_000,
+      })
+
+      let builder: RunRecordBuilder
+      if (exportResult.exitCode === 0 && exportResult.stdout.trim()) {
+        try {
+          const sessionData = JSON.parse(exportResult.stdout.trim()) as HermesSessionExport
+          builder = parseHermesSession(sessionData)
+        } catch (err) {
+          log.warn(`Failed to parse hermes container session export: ${err}`)
+          builder = buildMinimalRecord(stdout,
+            `hermes sessions export returned invalid JSON: ${String(err).slice(0, 200)}`)
+        }
+      } else {
+        log.warn(`hermes container sessions export failed: ${exportResult.stderr.slice(0, 200)}`)
+        builder = buildMinimalRecord(stdout,
+          `hermes sessions export exited ${exportResult.exitCode} — telemetry unavailable`)
+      }
+
+      await saveConvLog(exportResult.exitCode === 0 ? exportResult.stdout : stdout)
+
+      if (task.skill && skillLoaded === false) {
+        const skillSnippet = task.skill.content.replace(/^#.*\n/m, "").trim().slice(0, 60)
+        if (task.skill.mode === "inject" && builder.stepCount > 0) {
+          skillLoaded = true
+        }
+        if (!skillLoaded && skillSnippet.length > 20) {
+          for (const step of builder.stepsSoFar) {
+            if (step.text?.includes(skillSnippet)) {
+              skillLoaded = true
+              break
+            }
+          }
+        }
+      }
+
+      const verdict = await subprocessVerdict({
+        label: "hermes",
+        timeoutLabel: "hermes chat",
+        timedOut,
+        exitCode,
+        timeoutMs,
+        stderr,
+        diagnose: () => diagnoseHermes({
+          sandboxRoot: hostSandbox,
+          sessionId,
+          stdout,
+          stderr,
+          exitCode,
+        }),
+        warn: (msg) => log.warn(msg),
+      })
+
+      return builder.finish({ workDir: task.workDir, durationMs, skillLoaded, ...verdict })
+    } finally {
+      await container.cleanup()
+    }
   }
 
   async teardown(): Promise<void> {
