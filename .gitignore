@@ -21,6 +21,29 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .env.test.local
 .env.production.local
 .env.local
+*.env
+
+# scratch / experiment artifacts (harbor jobs, env files, smoke runs)
+temp/
+
+# local Playwright MCP session artifacts
+.playwright-mcp/
+
+# generated planning exports
+plan/**/*.pdf
+plan/**/*_tmp.html
+
+# terminal-bench local inputs/outputs
+# Keep SkVM glue code tracked (src/bench/importers/terminalbench.ts,
+# src/bench/evaluators/tb-grade.ts, CLI/tests/docs), but do not track the
+# external Terminal-Bench checkout, imported task skills, or generated runs.
+/terminal-bench-2-1/
+/tb2.1-skills/
+/bench-results/
+/benchmark-results/
+
+# terminal-bench repo clone (independent git repo, 3rd-party, large)
+terminal-bench-2-1/
 
 # caches
 .eslintcache

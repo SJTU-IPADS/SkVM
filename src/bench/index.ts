@@ -28,6 +28,7 @@ export async function handleImport(opts: {
   source: string
   path?: string
   exclude?: string
+  tasks?: string
   dryRun: boolean
 }): Promise<void> {
   const source = opts.source
@@ -98,19 +99,19 @@ export async function handleImport(opts: {
     console.log(`\nTasks written to: skvm-data/tasks/`)
     console.log(`Skills written to: skvm-data/skills/`)
   } else if (source.startsWith("terminalbench")) {
-    const tbRepoDir = flags.path
+    const tbRepoDir = opts.path
     if (!tbRepoDir) {
       console.error("Error: --path=<terminal-bench-2.1 repo> is required for terminalbench import")
       process.exit(1)
     }
 
-    const excludedTasks = flags.exclude
-      ? flags.exclude.split(",").map(s => s.trim())
+    const excludedTasks = opts.exclude
+      ? opts.exclude.split(",").map((s: string) => s.trim())
       : []
 
     // Optional --tasks=<name1,name2> filter (path-B minimum: import one task).
-    const tasksFilter = flags.tasks
-      ? flags.tasks.split(",").map(s => s.trim())
+    const tasksFilter = opts.tasks
+      ? opts.tasks.split(",").map((s: string) => s.trim())
       : undefined
 
     console.log(`Importing from Terminal-Bench 2.1: ${tbRepoDir}`)
