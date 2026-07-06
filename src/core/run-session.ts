@@ -132,6 +132,31 @@ export class RunSession {
     return safe ? `${ts}-${type}-${safe}` : `${ts}-${type}`
   }
 
+  /**
+   * Rebind to an existing session from the sessions index, so a resumed run
+   * can append terminal entries for the original id. Before this existed,
+   * resumed runs had no session object (private constructor), so neither
+   * complete() nor fail() ever fired — the original entry stayed in whatever
+   * state the interrupted run left it, forever (#87).
+   *
+   * Semantics: appends a NEW entry for the same id, exactly like a live
+   * session; the last-wins dedup in readSessions() makes it the visible
+   * state. The fields a terminal entry carries from start() time (type,
+   * startedAt, logDir) are sourced from the stored entry, so startedAt keeps
+   * the original run's start time. Returns null when the id is not in the
+   * index (e.g. legacy sessions predating it).
+   */
+  static async rehydrate(id: string): Promise<RunSession | null> {
+    const entry = (await readSessions()).find((e) => e.id === id)
+    if (!entry) return null
+    // logDir is stored cache-relative (see toRelativePath); resolve it back
+    // to absolute so the instance behaves exactly like a live session.
+    const logDir = path.isAbsolute(entry.logDir)
+      ? entry.logDir
+      : path.join(SKVM_CACHE, entry.logDir)
+    return new RunSession(entry.id, entry.type, entry.startedAt, logDir)
+  }
+
   /** Create a new session and register it in sessions.jsonl with status=running. */
   static async start(opts: RunSessionOptions): Promise<RunSession> {
     const id = RunSession.generateId(opts.type, opts.tag)

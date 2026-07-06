@@ -22,7 +22,7 @@ import { getBenchLogDir, safeModelName } from "../core/config.ts"
 import { hasUsageTelemetry } from "../core/run-record.ts"
 import { createProviderForModel } from "../providers/registry.ts"
 import { createLogger } from "../core/logger.ts"
-import { createProgressSpinner } from "../core/spinner.ts"
+import { createProgressSpinner, type ProgressSpinner } from "../core/spinner.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { createAsyncMutex, runScheduled, type WorkItem, type RunnerHandle } from "../core/concurrency.ts"
 import { RunSession, shortModel } from "../core/run-session.ts"
@@ -565,9 +565,14 @@ async function finalizeBenchReport(ctx: BenchSessionContext): Promise<BenchRepor
 export async function runBenchmark(config: BenchRunConfig): Promise<BenchReport> {
   const { workItems, ctx } = await prepareBenchSession(config)
 
-  // Register session (skip if resuming — original session already registered)
+  // Register a new session, or on --resume rehydrate the original one so
+  // terminal entries land on the same id. Rehydrate returns null when the
+  // id is missing from the index (e.g. legacy sessions predating it) — the
+  // optional chains below make that a no-op, matching pre-#87 behavior.
   let session: RunSession | undefined
-  if (!config.resumeSession) {
+  if (config.resumeSession) {
+    session = (await RunSession.rehydrate(config.resumeSession)) ?? undefined
+  } else {
     const conditionTag = [...config.conditions].sort().join("+")
     session = await RunSession.start({
       type: "bench",
@@ -579,24 +584,23 @@ export async function runBenchmark(config: BenchRunConfig): Promise<BenchReport>
     })
   }
 
+  // SIGINT handler
+  const sigintHandler = () => {
+    console.log(`\n\nBenchmark interrupted.`)
+    console.log(`Resume with: bun run skvm bench --resume=${ctx.sessionId} --model=${config.model}`)
+    process.exit(130)
+  }
+  process.on("SIGINT", sigintHandler)
+
+  const concurrency = config.concurrency ?? 1
+  log.info(`Work items: ${workItems.length} (concurrency=${concurrency})`)
+  const benchProgress = createProgressSpinner("Benchmarking", workItems.length)
+
   try {
-    // SIGINT handler
-    const sigintHandler = () => {
-      console.log(`\n\nBenchmark interrupted.`)
-      console.log(`Resume with: bun run skvm bench --resume=${ctx.sessionId} --model=${config.model}`)
-      process.exit(130)
-    }
-    process.on("SIGINT", sigintHandler)
-
-    const concurrency = config.concurrency ?? 1
-    log.info(`Work items: ${workItems.length} (concurrency=${concurrency})`)
-    const benchProgress = createProgressSpinner("Benchmarking", workItems.length)
-
     if (workItems.length === 0) {
       if (ctx.tasks.length === 0) {
         log.error("No tasks found. Import tasks first: bun run skvm bench --import=pinchbench")
       }
-      process.removeListener("SIGINT", sigintHandler)
       const report = await finalizeBenchReport(ctx)
       await session?.complete(`${report.tasks.length} tasks`)
       return report
@@ -663,8 +667,6 @@ export async function runBenchmark(config: BenchRunConfig): Promise<BenchReport>
       },
     })
 
-    benchProgress.stop()
-    process.removeListener("SIGINT", sigintHandler)
     const report = await finalizeBenchReport(ctx)
     await session?.complete(`${report.tasks.length} tasks`)
     return report
@@ -672,14 +674,20 @@ export async function runBenchmark(config: BenchRunConfig): Promise<BenchReport>
     // Mark the session failed, then rethrow: bench errors propagate to
     // runBench's caller, where UsageError exits cleanly via runOrExit;
     // anything else hits the top-level crash handler (stack trace to
-    // stderr, exit 1). On --resume there is no session object to mark
-    // (the original entry already exists), hence the optional chain. Note
-    // that on --resume neither complete() nor fail() ever updates the
-    // original index entry — it stays in whatever state the interrupted run
-    // left it; re-marking it would need a RunSession.rehydrate(id) API,
-    // tracked as a follow-up.
+    // stderr, exit 1). On --resume the session is rehydrated above, so
+    // fail()/complete() now update the original index entry; the optional
+    // chain only covers rehydrate returning null for unindexed sessions.
     await session?.fail(err instanceof Error ? err.message : String(err))
     throw err
+  } finally {
+    // Release on every path (#87): the spinner auto-stops on its final tick
+    // and stop() is idempotent, so this is a no-op after a full run — it
+    // exists for the error paths, which previously leaked both handlers.
+    // The SIGINT handler now deliberately stays installed through report
+    // finalization, so Ctrl-C while the report is being written still prints
+    // the resume hint — accurate there, since progress is fully saved.
+    benchProgress.stop()
+    process.removeListener("SIGINT", sigintHandler)
   }
 }
 
@@ -707,6 +715,7 @@ export async function runMultiModelBenchmark(
     conditions: baseConfig.conditions,
   })
 
+  let mmProgress: ProgressSpinner | undefined
   try {
     log.info(`=== Multi-Model SkVM Benchmark ===`)
     log.info(`Session: ${sessionId}`)
@@ -749,7 +758,7 @@ export async function runMultiModelBenchmark(
     // Single dispatch — scheduler distributes by adapter, then models sequentially,
     // with work-stealing when one model finishes faster
     const withProgressLock = createAsyncMutex()
-    const mmProgress = createProgressSpinner(`Benchmarking ${models.length} models`, allItems.length)
+    mmProgress = createProgressSpinner(`Benchmarking ${models.length} models`, allItems.length)
 
     await runScheduled({
       concurrency: totalConcurrency,
@@ -788,7 +797,7 @@ export async function runMultiModelBenchmark(
           if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
           ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
           ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
-          mmProgress.tick(`Benchmarked ${allItems.length} runs across ${models.length} models`)
+          mmProgress?.tick(`Benchmarked ${allItems.length} runs across ${models.length} models`)
           await saveProgress(ctx.progress)
         })
       },
@@ -808,12 +817,11 @@ export async function runMultiModelBenchmark(
           if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
           ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
           ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
-          mmProgress.tick(`Benchmarked ${allItems.length} runs across ${models.length} models`)
+          mmProgress?.tick(`Benchmarked ${allItems.length} runs across ${models.length} models`)
           await saveProgress(ctx.progress)
         })
       },
     })
-    mmProgress.stop()
 
     // Finalize each model's report
     const reports: BenchReport[] = []
@@ -867,6 +875,11 @@ export async function runMultiModelBenchmark(
     // stderr, exit 1).
     await session.fail(err instanceof Error ? err.message : String(err))
     throw err
+  } finally {
+    // Release on every path (#87): auto-stopped on the final tick and stop()
+    // is idempotent, so this only matters for the error paths, which
+    // previously leaked the spinner.
+    mmProgress?.stop()
   }
 }
 
@@ -957,6 +970,7 @@ export async function runMultiAdapterBenchmark(
     conditions: baseConfig.conditions,
   })
 
+  let maProgress: ProgressSpinner | undefined
   try {
     log.info(`=== Multi-Adapter SkVM Benchmark ===`)
     log.info(`Session: ${sessionId}`)
@@ -999,7 +1013,7 @@ export async function runMultiAdapterBenchmark(
     log.info(`Total work items: ${allItems.length} across ${adapters.length} adapters (concurrency=${totalConcurrency})`)
 
     const withProgressLock = createAsyncMutex()
-    const maProgress = createProgressSpinner(`Benchmarking ${adapters.length} adapters`, allItems.length)
+    maProgress = createProgressSpinner(`Benchmarking ${adapters.length} adapters`, allItems.length)
 
     await runScheduled({
       concurrency: totalConcurrency,
@@ -1038,7 +1052,7 @@ export async function runMultiAdapterBenchmark(
           if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
           ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
           ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
-          maProgress.tick(`Benchmarked ${allItems.length} runs across ${adapters.length} adapters`)
+          maProgress?.tick(`Benchmarked ${allItems.length} runs across ${adapters.length} adapters`)
           await saveProgress(ctx.progress)
         })
       },
@@ -1058,12 +1072,11 @@ export async function runMultiAdapterBenchmark(
           if (!ctx.taskResultsMap.has(item.payload.task.id)) ctx.taskResultsMap.set(item.payload.task.id, [])
           ctx.taskResultsMap.get(item.payload.task.id)!.push(result)
           ctx.progress.entries.push({ taskId: item.payload.task.id, condition: item.payload.condition, result })
-          maProgress.tick(`Benchmarked ${allItems.length} runs across ${adapters.length} adapters`)
+          maProgress?.tick(`Benchmarked ${allItems.length} runs across ${adapters.length} adapters`)
           await saveProgress(ctx.progress)
         })
       },
     })
-    maProgress.stop()
 
     // Finalize each adapter's report
     const reports: BenchReport[] = []
@@ -1118,6 +1131,11 @@ export async function runMultiAdapterBenchmark(
     // stderr, exit 1).
     await session.fail(err instanceof Error ? err.message : String(err))
     throw err
+  } finally {
+    // Release on every path (#87): auto-stopped on the final tick and stop()
+    // is idempotent, so this only matters for the error paths, which
+    // previously leaked the spinner.
+    maProgress?.stop()
   }
 }
 
