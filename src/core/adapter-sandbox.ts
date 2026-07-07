@@ -358,10 +358,12 @@ export function buildClaudeCodeSettingsContent(route: ProviderRoute, bareModelId
  *
  * Codex speaks the OpenAI wire protocol, so managed mode supports
  * `openai-compatible` and `openrouter` routes; `anthropic` is rejected (Codex
- * can't reach it — use native mode for Codex's own ChatGPT/API-key auth). The
- * generated provider carries `env_key`, and the adapter injects the matching
- * value at spawn time via `envForRoute()` (`OPENAI_API_KEY` /
- * `OPENROUTER_API_KEY`).
+ * can't reach it — use native mode for Codex's own ChatGPT/API-key auth). For
+ * authenticated routes, the generated provider carries `env_key`, and the
+ * adapter injects the matching value at spawn time via `envForRoute()`
+ * (`OPENAI_API_KEY` / `OPENROUTER_API_KEY`). Deliberately auth-free local
+ * routes (`apiKey: ""`) omit `env_key`, which tells Codex the provider does
+ * not require authentication.
  *
  * `wire_api = "chat"` (Chat Completions) is the broadly-compatible default:
  * OpenAI-compatible gateways (vLLM, OpenRouter, DeepSeek, LM Studio) all speak
@@ -390,26 +392,19 @@ export function buildCodexConfigContent(route: ProviderRoute, bareModelId: strin
     envKey = "OPENAI_API_KEY"
   }
 
-  // Warn (don't throw): an auth-free local endpoint is legitimate, but a route
-  // whose key can't resolve will fail to authenticate once Codex runs.
-  const apiKey = resolveRouteApiKey(route)
-  if (!apiKey) {
-    log.warn(
-      `route "${route.match}" has no resolved API key — the codex subprocess will fail to authenticate ` +
-      `unless ${envKey} is already set in the parent environment.`,
-    )
+  const apiKey = resolveRouteApiKeyForConfig(route, "codex (managed)")
+  const provider: Record<string, unknown> = {
+    name: "skvm-managed",
+    base_url: baseUrl,
+    wire_api: "chat",
   }
+  if (apiKey !== "") provider.env_key = envKey
 
   const config = {
     model: bareModelId,
     model_provider: "skvm",
     model_providers: {
-      skvm: {
-        name: "skvm-managed",
-        base_url: baseUrl,
-        env_key: envKey,
-        wire_api: "chat",
-      },
+      skvm: provider,
     },
   }
   return stringifyTOML(config)

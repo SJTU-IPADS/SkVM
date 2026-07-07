@@ -21,14 +21,16 @@ in the order above.
 
 ## Codex
 
-1. User-scoped:     `$CODEX_HOME/skills/<name>/`  (default `~/.codex/skills/<name>/`)
+1. Project-scoped:  `./.agents/skills/<name>/`
+2. Parent-scoped:   `../.agents/skills/<name>/`  (repeat upward to repo root)
+3. User-scoped:     `$HOME/.agents/skills/<name>/`
 
-Source of truth: `src/adapters/codex.ts` writes discover-mode skills to
-`<sandbox CODEX_HOME>/skills/<name>/SKILL.md`, which is the user-scoped
-location Codex's own loader reads (confirmed against Codex CLI 0.142.3). The
-sandbox copy is a per-run bench artifact; the persistent path a user's own
-Codex reads is `$CODEX_HOME/skills/<name>/` (defaults to `~/.codex/skills/`).
-Codex has no documented project-scoped location in this version.
+Source of truth: Codex skill-loader documentation. Codex scans
+`.agents/skills` from the current working directory upward to the repo root,
+then user skills under `$HOME/.agents/skills`. `CODEX_HOME` controls Codex
+state such as config/auth/logs, but it is not the documented user skill root.
+`src/adapters/codex.ts` therefore writes discover-mode bench skills to the
+run workDir's `.agents/skills/<name>/SKILL.md`.
 
 ## opencode
 

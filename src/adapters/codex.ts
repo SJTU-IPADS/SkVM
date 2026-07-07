@@ -368,11 +368,10 @@ export function detectSkillInject(events: CodexEvent[], snippet: string): boolea
 }
 
 /**
- * Codex loads a skill by shelling out to read its SKILL.md
- * (`bash -lc "sed -n '1,220p' <CODEX_HOME>/skills/<name>/SKILL.md"`), so the
- * reliable discover signal is a command_execution whose command references the
- * skill's SKILL.md path (or the `skills/<name>/` segment). The model also
- * tends to name the skill in its narration, which we accept as a fallback.
+ * Codex loads a skill by shelling out to read its SKILL.md, so the reliable
+ * discover signal is a command_execution whose command references the skill's
+ * SKILL.md path (or the `skills/<name>/` segment). The model also tends to name
+ * the skill in its narration, which we accept as a fallback.
  */
 export function detectSkillDiscover(events: CodexEvent[], skillName: string): boolean {
   const skillSegment = `skills/${skillName}/`
@@ -387,6 +386,11 @@ export function detectSkillDiscover(events: CodexEvent[], skillName: string): bo
     if ((it.type === "agent_message" || it.type === "reasoning") && mentionsSkill(it.text)) return true
   }
   return false
+}
+
+/** Repo-scoped skill location Codex scans from the run cwd. */
+export function resolveCodexDiscoverSkillDir(workDir: string, skillName: string): string {
+  return path.join(workDir, ".agents", "skills", skillName)
 }
 
 // ---------------------------------------------------------------------------
@@ -474,9 +478,8 @@ export class CodexAdapter implements AgentAdapter {
       copyFileIfExists(path.join(userHome, "auth.json"), path.join(root, "auth.json"))
       copyFileIfExists(path.join(userHome, "config.toml"), path.join(root, "config.toml"))
       copyFileIfExists(path.join(userHome, "AGENTS.md"), path.join(root, "AGENTS.md"))
-      // Deliberately NOT symlinking the user's skills/ — bench runs load exactly
-      // the one skill under test into the sandbox (discover mode writes there),
-      // and the user's personal library would be noise. See run().
+      // Deliberately NOT symlinking any user skill library — bench discover
+      // mode stages the one skill under test into the run workDir. See run().
     } else {
       const configToml = buildCodexConfigContent(route!, resolveBackendModel(this.model))
       await Bun.write(path.join(root, "config.toml"), configToml)
@@ -496,11 +499,6 @@ export class CodexAdapter implements AgentAdapter {
   }): Promise<RunResult> {
     let skillLoaded: boolean | undefined
 
-    // Reset the sandbox skills dir each run so exactly the current skill (if any)
-    // is discoverable — no stale skill leaks across sequential tasks.
-    const skillsRoot = path.join(this.sandbox!.root, "skills")
-    await rm(skillsRoot, { recursive: true, force: true })
-
     if (task.skill) {
       skillLoaded = false
       if (task.skill.mode === "inject") {
@@ -513,9 +511,11 @@ export class CodexAdapter implements AgentAdapter {
         const injected = injectedAgentsDoc(task.skill.content)
         await Bun.write(agentsPath, existing ? `${existing}\n\n${injected}` : injected)
       } else {
-        // Discover: Codex reads user-scoped skills from $CODEX_HOME/skills/.
-        // We control the sandbox CODEX_HOME, so this works in both modes.
-        const skillDir = path.join(skillsRoot, task.skill.meta.name)
+        // Discover: Codex scans repo-scoped skills under .agents/skills from
+        // the run cwd up to the repo root. Stage the current skill in the
+        // disposable workDir instead of touching the user's skill library.
+        const skillDir = resolveCodexDiscoverSkillDir(task.workDir, task.skill.meta.name)
+        await rm(skillDir, { recursive: true, force: true })
         await mkdir(skillDir, { recursive: true })
         const frontmatter = `---\nname: ${task.skill.meta.name}\ndescription: ${task.skill.meta.description}\n---\n\n`
         await Bun.write(path.join(skillDir, "SKILL.md"), frontmatter + task.skill.content)

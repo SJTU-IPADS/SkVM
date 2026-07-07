@@ -7,11 +7,13 @@ import {
   isTransientCodexError,
   detectSkillInject,
   detectSkillDiscover,
+  resolveCodexDiscoverSkillDir,
   resolveUserCodexHome,
   CodexAdapter,
   type CodexEvent,
 } from "../../src/adapters/codex.ts"
 import { buildCodexConfigContent } from "../../src/core/adapter-sandbox.ts"
+import { estimateCost } from "../../src/core/cost.ts"
 import type { ProviderRoute } from "../../src/core/types.ts"
 
 describe("parseCodexJSONL", () => {
@@ -229,7 +231,7 @@ describe("detectSkillDiscover", () => {
     const events: CodexEvent[] = [
       {
         type: "item.completed",
-        item: { type: "command_execution", command: "/usr/bin/bash -lc \"sed -n '1,220p' /tmp/ch/skills/greeting-helper/SKILL.md\"" },
+        item: { type: "command_execution", command: "/usr/bin/bash -lc \"sed -n '1,220p' /tmp/ch/.agents/skills/greeting-helper/SKILL.md\"" },
       },
     ]
     expect(detectSkillDiscover(events, "greeting-helper")).toBe(true)
@@ -248,6 +250,13 @@ describe("detectSkillDiscover", () => {
       { type: "item.completed", item: { type: "agent_message", text: "done" } },
     ]
     expect(detectSkillDiscover(events, "greeting-helper")).toBe(false)
+  })
+})
+
+describe("resolveCodexDiscoverSkillDir", () => {
+  test("stages discover skills under the repo-scoped .agents/skills directory", () => {
+    expect(resolveCodexDiscoverSkillDir("/tmp/work", "greeting-helper"))
+      .toBe("/tmp/work/.agents/skills/greeting-helper")
   })
 })
 
@@ -292,6 +301,24 @@ describe("buildCodexConfigContent", () => {
     expect(cfg.model_providers.skvm.base_url).toBe("https://openrouter.ai/api/v1")
   })
 
+  test("auth-free local route omits env_key", () => {
+    const toml = buildCodexConfigContent(mkRoute({ apiKey: "" }), "local-model")
+    const cfg = parseTOML(toml) as any
+    expect(cfg.model_providers.skvm.base_url).toBe("https://api.example.com/v1")
+    expect(cfg.model_providers.skvm.env_key).toBeUndefined()
+  })
+
+  test("env-backed route throws early when the env var is missing", () => {
+    const prev = process.env.SKVM_MISSING_CODEX_KEY
+    delete process.env.SKVM_MISSING_CODEX_KEY
+    try {
+      expect(() => buildCodexConfigContent(mkRoute({ apiKey: undefined, apiKeyEnv: "SKVM_MISSING_CODEX_KEY" }), "x"))
+        .toThrow(/SKVM_MISSING_CODEX_KEY/)
+    } finally {
+      if (prev !== undefined) process.env.SKVM_MISSING_CODEX_KEY = prev
+    }
+  })
+
   test("rejects anthropic routes", () => {
     expect(() => buildCodexConfigContent(mkRoute({ match: "anthropic/*", kind: "anthropic", baseUrl: undefined }), "x"))
       .toThrow(/anthropic/)
@@ -299,5 +326,13 @@ describe("buildCodexConfigContent", () => {
 
   test("throws when openai-compatible route is missing baseUrl", () => {
     expect(() => buildCodexConfigContent(mkRoute({ baseUrl: undefined }), "x")).toThrow(/baseUrl/)
+  })
+})
+
+describe("Codex cost coverage", () => {
+  test("estimates current recommended Codex model costs", () => {
+    const tokens = { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 }
+    expect(estimateCost("openai/gpt-5.5", tokens)).toBeCloseTo(35)
+    expect(estimateCost("openai/gpt-5.4-mini", tokens)).toBeCloseTo(5.25)
   })
 })
