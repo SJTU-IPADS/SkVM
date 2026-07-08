@@ -203,6 +203,18 @@ export const RunResultSchema = z.object({
   durationMs: z.number(),
   llmDurationMs: z.number().default(0),
   workDir: z.string(),
+  /**
+   * Whether the skill under test was in play for this run. Its meaning depends
+   * on skill mode, and the distinction matters when reading bench results:
+   *   - `discover`: a genuine behavior signal — the agent actively located and
+   *     read/invoked the skill (Skill tool, or shelling out to its SKILL.md).
+   *   - `inject`: the skill was placed into the model's system context by the
+   *     harness, so this is ~always true once the run produced any output. It
+   *     confirms the content was *present*, NOT that the model *used* it —
+   *     whether it was followed is what eval scoring measures. Every adapter
+   *     treats a produced step/message as evidence of an inject load (see #98);
+   *     `undefined` when the task carried no skill.
+   */
   skillLoaded: z.boolean().optional(),
   runStatus: RunStatusSchema,
   statusDetail: z.string().optional(),

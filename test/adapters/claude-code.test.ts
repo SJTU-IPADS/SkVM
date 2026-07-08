@@ -329,18 +329,21 @@ describe("detectSkillInject", () => {
     expect(detectSkillInject(events, snippet)).toBe(true)
   })
 
-  test("ignores short snippets to avoid false positives", () => {
-    const events: ClaudeCodeEvent[] = [{
-      type: "assistant",
-      message: { content: [{ type: "text", text: "the" }] },
-    }]
-    expect(detectSkillInject(events, "the")).toBe(false)
-  })
-
-  test("returns false when no assistant event mentions the sentinel or snippet", () => {
+  test("falls back to true when the model produced output without echoing (append-system-prompt is always in context)", () => {
+    // The injected block rides in --append-system-prompt, so any real
+    // assistant turn had the skill in front of it. Mirrors the produced-output
+    // convention every other adapter uses. See issue #98.
     const events: ClaudeCodeEvent[] = [
       { type: "system", subtype: "init" },
       { type: "assistant", message: { content: [{ type: "text", text: "hello" }] } },
+    ]
+    expect(detectSkillInject(events, "a snippet that is definitely not echoed back")).toBe(true)
+  })
+
+  test("returns false when no assistant output was produced", () => {
+    const events: ClaudeCodeEvent[] = [
+      { type: "system", subtype: "init" },
+      { type: "result", is_error: true, result: "boom" },
     ]
     expect(detectSkillInject(events, "a snippet that is definitely not echoed back")).toBe(false)
   })

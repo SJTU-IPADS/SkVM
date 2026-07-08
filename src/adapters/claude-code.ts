@@ -375,6 +375,16 @@ function injectedSystemPrompt(skillContent: string): string {
   return `${SKILL_INJECT_SENTINEL}\n\n${skillContent}`
 }
 
+/**
+ * Inject-mode load detection. The sentinel / snippet echoes are strong positive
+ * signals, but they under-report: models rarely quote a system-prompt block
+ * back even when it was fully in context. Since `--append-system-prompt` puts
+ * the injected skill in front of every turn, a run that produced any real
+ * assistant output necessarily had the skill loaded — so we fall back to that.
+ * This matches the produced-output convention every other adapter already uses
+ * for inject mode (see issue #98); it keeps `skillLoaded` comparable across the
+ * adapter fleet instead of leaving claude-code as the lone strict outlier.
+ */
 export function detectSkillInject(events: ClaudeCodeEvent[], snippet: string): boolean {
   for (const ev of events) {
     if (ev.type !== "assistant" || !ev.message) continue
@@ -386,7 +396,23 @@ export function detectSkillInject(events: ClaudeCodeEvent[], snippet: string): b
       if (snippet.length > 20 && text.includes(snippet)) return true
     }
   }
-  return false
+  return hasAssistantOutput(events)
+}
+
+/** True when the model produced at least one assistant turn with real content. */
+function hasAssistantOutput(events: ClaudeCodeEvent[]): boolean {
+  return events.some((ev) => {
+    if (ev.type !== "assistant" || !ev.message) return false
+    const content = Array.isArray(ev.message.content) ? ev.message.content : []
+    return content.some((c) => {
+      const t = (c as { type?: string })?.type
+      if (t === "text") {
+        const text = (c as ClaudeCodeContentText).text
+        return typeof text === "string" && text.length > 0
+      }
+      return t === "tool_use"
+    })
+  })
 }
 
 export function detectSkillDiscover(events: ClaudeCodeEvent[], skillName: string): boolean {
