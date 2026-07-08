@@ -16,9 +16,10 @@ import { HermesAdapter } from "./hermes.ts"
 import { JiuwenClawAdapter } from "./jiuwenclaw.ts"
 import { PiAdapter } from "./pi.ts"
 import { ClaudeCodeAdapter } from "./claude-code.ts"
+import { CodexAdapter } from "./codex.ts"
 import { createProviderForModel } from "../providers/registry.ts"
 
-export const ALL_ADAPTERS = ["bare-agent", "openclaw", "opencode", "hermes", "jiuwenclaw", "pi", "claude-code"] as const
+export const ALL_ADAPTERS = ["bare-agent", "openclaw", "opencode", "hermes", "jiuwenclaw", "pi", "claude-code", "codex"] as const
 
 export type AdapterName = typeof ALL_ADAPTERS[number]
 
@@ -45,6 +46,7 @@ export function createAdapter(
     case "jiuwenclaw": return new JiuwenClawAdapter()
     case "pi": return new PiAdapter()
     case "claude-code": return new ClaudeCodeAdapter()
+    case "codex": return new CodexAdapter()
     case "bare-agent": {
       const factory = providerFactory ?? ((cfg: AdapterConfig) =>
         createProviderForModel(cfg.model, cfg.apiKey ? { apiKey: cfg.apiKey } : undefined))

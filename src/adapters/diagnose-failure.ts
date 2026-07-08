@@ -15,6 +15,7 @@ import path from "node:path"
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { parseNDJSON, type OpenCodeEvent } from "./opencode.ts"
 import { parseClaudeCodeStreamJSON, type ClaudeCodeEvent } from "./claude-code.ts"
+import { parseCodexJSONL, isTransientCodexError, type CodexEvent } from "./codex.ts"
 
 const DIAGNOSE_TIMEOUT_MS = 500
 
@@ -284,6 +285,68 @@ function inferClaudeCodeHint(ev: ClaudeCodeEvent): string | undefined {
     return "Verify ANTHROPIC_API_KEY (managed) or session token (native: `claude /login`)."
   }
   if (ev.api_error_status === 429) return "Rate-limited by Anthropic — wait or reduce concurrency."
+  return undefined
+}
+
+// ---------------------------------------------------------------------------
+// codex
+// ---------------------------------------------------------------------------
+
+export async function diagnoseCodex(input: DiagnoseInput): Promise<FailureDiagnosis | null> {
+  return withDeadline(async () => {
+    const events = parseCodexJSONL(input.stdout)
+    // turn.failed carries the authoritative failure reason (auth, model-not-
+    // found, downstream 5xx), already shaped as a one-liner.
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i]!
+      if (ev.type === "turn.failed") {
+        const msg = extractCodexErrorMessage(ev)
+        if (msg) {
+          const hint = inferCodexHint(msg)
+          return { summary: `codex: ${msg}`, ...(hint ? { hint } : {}), source: "codex:turn-failed" }
+        }
+      }
+    }
+    // Fall back to the last non-transient error event (reconnect / transport
+    // fallback notices are Codex recovering on its own, not a real failure).
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i]!
+      if (ev.type === "error") {
+        const msg = extractCodexErrorMessage(ev)
+        if (msg && !isTransientCodexError(msg)) {
+          return { summary: `codex: ${msg}`, source: "codex:error-event" }
+        }
+      }
+    }
+    const tail = pickStderrErrorLine(input.stderr)
+    if (tail) return { summary: `codex: ${tail}`, source: "codex:stderr" }
+    return null
+  }, null)
+}
+
+function extractCodexErrorMessage(event: CodexEvent): string | undefined {
+  const msg = (event as Record<string, unknown>).message
+  if (typeof msg === "string" && msg.trim()) return msg.trim()
+  const err = (event as Record<string, unknown>).error
+  if (typeof err === "string" && err.trim()) return err.trim()
+  if (err && typeof err === "object") {
+    const m = (err as Record<string, unknown>).message
+    if (typeof m === "string" && m.trim()) return m.trim()
+  }
+  return undefined
+}
+
+function inferCodexHint(msg: string): string | undefined {
+  const text = msg.toLowerCase()
+  if (text.includes("not logged in") || text.includes("login") || text.includes("401") || text.includes("unauthorized")) {
+    return "Run `codex login` (native mode) or set the route's API key (managed mode: OPENAI_API_KEY / OPENROUTER_API_KEY)."
+  }
+  if (text.includes("model") && (text.includes("not found") || text.includes("does not exist") || text.includes("404"))) {
+    return "Check the --model id is one Codex/the provider supports (e.g. gpt-5.5)."
+  }
+  if (text.includes("429") || text.includes("rate limit")) {
+    return "Rate-limited by the provider — wait or reduce concurrency."
+  }
   return undefined
 }
 

@@ -49,6 +49,7 @@ import { ALL_ADAPTERS, type AdapterName } from "../adapters/registry.ts"
 import { resolveUserHermesDir as resolveHermesProfileDir } from "../adapters/hermes.ts"
 import { resolveUserOpencodeConfigFile as resolveOpencodeConfigFile } from "../adapters/opencode.ts"
 import { resolveUserClaudeDir } from "../adapters/claude-code.ts"
+import { resolveUserCodexHome } from "../adapters/codex.ts"
 import { shortenPath } from "../core/banner.ts"
 
 const EXAMPLE_PATH = path.join(PROJECT_ROOT, "skvm.config.example.json")
@@ -896,7 +897,7 @@ async function stepDefaultMode(draft: ConfigDraft): Promise<void> {
 
 async function stepAdapters(draft: ConfigDraft): Promise<void> {
   try {
-    console.log(c.dim("Adapters are external agent CLIs (opencode, openclaw, hermes, jiuwenclaw)."))
+    console.log(c.dim("Adapters are external agent CLIs (opencode, openclaw, hermes, jiuwenclaw, claude-code, codex)."))
     console.log(c.dim("Point one at a local git clone if you want skvm to build/run the agent"))
     console.log(c.dim("from source. Otherwise skvm tries `which <name>` on your PATH.\n"))
 
@@ -933,19 +934,20 @@ async function configureAdapter(a: ConfigurableAdapter, cur: AdapterDraft): Prom
   try {
     const next: AdapterDraft = {}
 
-    // claude-code is shipped as a single `claude` binary, not a buildable
-    // checkout — the prompt copy reflects that and offers `which claude`
-    // autodetect as the default.
+    // claude-code and codex ship as a single binary (`claude` / `codex`), not
+    // a buildable checkout — the prompt copy reflects that and offers a
+    // `which <bin>` autodetect as the default.
     let repoMessage: string
     let repoDefault: string
-    if (a === "claude-code") {
-      const detected = whichBinary("claude")
+    if (a === "claude-code" || a === "codex") {
+      const bin = a === "codex" ? "codex" : "claude"
+      const detected = whichBinary(bin)
       repoMessage = withHelp(
-        "Path to the claude binary (optional)",
-        "Absolute path to the `claude` executable.",
+        `Path to the ${bin} binary (optional)`,
+        `Absolute path to the \`${bin}\` executable.`,
         detected
-          ? `Leave empty to use ${shortenPath(detected)} (auto-detected via \`which claude\`).`
-          : "Leave empty to use whatever `which claude` finds at run time.",
+          ? `Leave empty to use ${shortenPath(detected)} (auto-detected via \`which ${bin}\`).`
+          : `Leave empty to use whatever \`which ${bin}\` finds at run time.`,
       )
       repoDefault = cur.repoPath ?? ""
     } else {
@@ -1011,6 +1013,17 @@ async function configureAdapter(a: ConfigurableAdapter, cur: AdapterDraft): Prom
         console.log(c.yellow(`  ⚠ ${shortenPath(settingsFile)} missing — native mode will error until you run \`claude /login\`.`))
       }
       console.log(c.dim("  Managed mode requires an `anthropic` route in providers.routes."))
+    }
+    if (a === "codex") {
+      const userHome = resolveUserCodexHome()
+      const authFile = path.join(userHome, "auth.json")
+      const cfgFile = path.join(userHome, "config.toml")
+      if (existsSync(authFile) || existsSync(cfgFile)) {
+        console.log(c.green(`  ✓ found ${shortenPath(existsSync(authFile) ? authFile : cfgFile)} (native mode ready)`))
+      } else {
+        console.log(c.yellow(`  ⚠ ${shortenPath(authFile)} missing — native mode will error until you run \`codex login\`.`))
+      }
+      console.log(c.dim("  Managed mode requires an `openai-compatible` or `openrouter` route in providers.routes."))
     }
     if (a === "jiuwenclaw") {
       console.log(c.yellow("  note: jiuwenclaw only supports --adapter-config=managed."))
@@ -1326,11 +1339,12 @@ async function runDoctor(): Promise<void> {
     // Unconfigured adapters get a neutral `—` row and skip deeper checks —
     // the user didn't ask for this adapter, so we shouldn't flag anything red.
     if (!adapterHasConfig) {
-      if (a === "claude-code") {
-        const found = whichBinary("claude")
+      if (a === "claude-code" || a === "codex") {
+        const bin = a === "codex" ? "codex" : "claude"
+        const found = whichBinary(bin)
         results.push(found
           ? { status: "info", label: `Adapter ${a}`, detail: `not configured (will use ${shortenPath(found)} on PATH)` }
-          : { status: "info", label: `Adapter ${a}`, detail: "not configured (no `claude` on PATH either)" },
+          : { status: "info", label: `Adapter ${a}`, detail: `not configured (no \`${bin}\` on PATH either)` },
         )
       } else {
         results.push({ status: "info", label: `Adapter ${a}`, detail: "not configured" })
@@ -1344,15 +1358,17 @@ async function runDoctor(): Promise<void> {
       } else {
         results.push({ status: "ok", label: `Adapter ${a} checkout`, detail: shortenPath(dir) })
       }
-    } else if (a === "claude-code") {
-      // claude-code is shipped as a binary; if the user didn't pin a path,
-      // verify `which claude` finds something so they're not surprised at
+    } else if (a === "claude-code" || a === "codex") {
+      // claude-code / codex ship as a binary; if the user didn't pin a path,
+      // verify `which <bin>` finds something so they're not surprised at
       // run-time. This branch is conditional on adapter being configured
       // (we only get here if `adapterHasConfig` was true).
-      const found = whichBinary("claude")
+      const bin = a === "codex" ? "codex" : "claude"
+      const product = a === "codex" ? "Codex" : "Claude Code"
+      const found = whichBinary(bin)
       results.push(found
-        ? { status: "ok", label: `claude binary on PATH`, detail: shortenPath(found) }
-        : { status: "fail", label: `claude binary on PATH`, detail: `\`which claude\` returned nothing — install Claude Code or set adapters.claude-code.repoPath` },
+        ? { status: "ok", label: `${bin} binary on PATH`, detail: shortenPath(found) }
+        : { status: "fail", label: `${bin} binary on PATH`, detail: `\`which ${bin}\` returned nothing — install ${product} or set adapters.${a}.repoPath` },
       )
     }
     // Native-mode readiness: skip if user defaults to managed AND adapter has no native-specific setting.
@@ -1375,6 +1391,14 @@ async function runDoctor(): Promise<void> {
       results.push(existsSync(settingsFile)
         ? { status: "ok", label: `claude-code native config`, detail: shortenPath(settingsFile) }
         : { status: "fail", label: `claude-code native config`, detail: `${shortenPath(settingsFile)} missing — run \`claude /login\` or switch to managed` },
+      )
+    } else if (a === "codex") {
+      const userHome = resolveUserCodexHome()
+      const authFile = path.join(userHome, "auth.json")
+      const cfgFile = path.join(userHome, "config.toml")
+      results.push(existsSync(authFile) || existsSync(cfgFile)
+        ? { status: "ok", label: `codex native config`, detail: shortenPath(existsSync(authFile) ? authFile : cfgFile) }
+        : { status: "fail", label: `codex native config`, detail: `${shortenPath(authFile)} missing — run \`codex login\` or switch to managed` },
       )
     } else if (a === "opencode") {
       const cfg = resolveOpencodeConfigFile()

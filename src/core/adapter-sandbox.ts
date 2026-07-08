@@ -1,11 +1,11 @@
 /**
  * Shared sandbox utilities for CLI-wrapping adapters (openclaw, opencode,
- * hermes, jiuwenclaw).
+ * hermes, jiuwenclaw, claude-code, codex).
  *
  * Every adapter that wraps an external harness runs inside a per-process,
  * per-adapter sandbox HOME so the user's real `~/.openclaw`, `~/.config/opencode`,
- * `~/.local/share/opencode`, `~/.hermes`, `~/.jiuwenclaw` are never written
- * to. The sandbox lives at:
+ * `~/.local/share/opencode`, `~/.hermes`, `~/.jiuwenclaw`, `~/.claude`, `~/.codex`
+ * are never written to. The sandbox lives at:
  *
  *     /tmp/skvm-adapter-home-<adapter>-<pid>-<rand>/
  *
@@ -33,6 +33,7 @@ import {
   statSync,
   lstatSync,
 } from "node:fs"
+import { stringify as stringifyTOML } from "smol-toml"
 import { createLogger } from "./logger.ts"
 import { isPidAlive } from "./file-lock.ts"
 import type { ProviderRoute } from "./types.ts"
@@ -343,4 +344,68 @@ export function buildClaudeCodeSettingsContent(route: ProviderRoute, bareModelId
   }
 
   return JSON.stringify(settings, null, 2)
+}
+
+// ---------------------------------------------------------------------------
+// Shared helper: build a managed-mode config.toml for codex
+// ---------------------------------------------------------------------------
+
+/**
+ * Synthesize a minimal `$CODEX_HOME/config.toml` that registers a route's
+ * endpoint as a custom Codex model provider and pins the model. `bareModelId`
+ * is the provider-stripped id (e.g. `gpt-5.5` for a route `openai/*` called
+ * with `openai/gpt-5.5`).
+ *
+ * Codex speaks the OpenAI wire protocol, so managed mode supports
+ * `openai-compatible` and `openrouter` routes; `anthropic` is rejected (Codex
+ * can't reach it — use native mode for Codex's own ChatGPT/API-key auth). For
+ * authenticated routes, the generated provider carries `env_key`, and the
+ * adapter injects the matching value at spawn time via `envForRoute()`
+ * (`OPENAI_API_KEY` / `OPENROUTER_API_KEY`). Deliberately auth-free local
+ * routes (`apiKey: ""`) omit `env_key`, which tells Codex the provider does
+ * not require authentication.
+ *
+ * `wire_api = "chat"` (Chat Completions) is the broadly-compatible default:
+ * OpenAI-compatible gateways (vLLM, OpenRouter, DeepSeek, LM Studio) all speak
+ * it, and official OpenAI accepts it too. Advanced users can override via
+ * `adapters.codex.extraCliArgs` (e.g. `-c model_providers.skvm.wire_api="responses"`).
+ */
+export function buildCodexConfigContent(route: ProviderRoute, bareModelId: string): string {
+  if (route.kind === "anthropic") {
+    throw new Error(
+      `buildCodexConfigContent: codex managed mode cannot use anthropic routes; got match "${route.match}". ` +
+      `Use an openai-compatible or openrouter route, or --adapter-config=native for Codex's own auth.`,
+    )
+  }
+
+  let baseUrl: string
+  let envKey: string
+  if (route.kind === "openrouter") {
+    baseUrl = route.baseUrl ?? "https://openrouter.ai/api/v1"
+    envKey = "OPENROUTER_API_KEY"
+  } else {
+    // openai-compatible
+    if (!route.baseUrl) {
+      throw new Error(`buildCodexConfigContent: route "${route.match}" (kind=openai-compatible) is missing baseUrl`)
+    }
+    baseUrl = route.baseUrl
+    envKey = "OPENAI_API_KEY"
+  }
+
+  const apiKey = resolveRouteApiKeyForConfig(route, "codex (managed)")
+  const provider: Record<string, unknown> = {
+    name: "skvm-managed",
+    base_url: baseUrl,
+    wire_api: "chat",
+  }
+  if (apiKey !== "") provider.env_key = envKey
+
+  const config = {
+    model: bareModelId,
+    model_provider: "skvm",
+    model_providers: {
+      skvm: provider,
+    },
+  }
+  return stringifyTOML(config)
 }

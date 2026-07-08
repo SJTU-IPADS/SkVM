@@ -19,6 +19,19 @@ a skill itself.
 Source of truth: Claude Code skill-loader documentation. The first match wins
 in the order above.
 
+## Codex
+
+1. Project-scoped:  `./.agents/skills/<name>/`
+2. Parent-scoped:   `../.agents/skills/<name>/`  (repeat upward to repo root)
+3. User-scoped:     `$HOME/.agents/skills/<name>/`
+
+Source of truth: Codex skill-loader documentation. Codex scans
+`.agents/skills` from the current working directory upward to the repo root,
+then user skills under `$HOME/.agents/skills`. `CODEX_HOME` controls Codex
+state such as config/auth/logs, but it is not the documented user skill root.
+`src/adapters/codex.ts` therefore writes discover-mode bench skills to the
+run workDir's `.agents/skills/<name>/SKILL.md`.
+
 ## opencode
 
 1. Project-scoped:  `./.opencode/skills/<name>/`

@@ -10,7 +10,9 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   "claude-haiku-4.5": { input: 0.8, output: 4 },
   "claude-haiku-4-5": { input: 0.8, output: 4 },
   // OpenAI
+  "gpt-5.5": { input: 5, output: 30 },
   "gpt-5.4": { input: 2.5, output: 10 },
+  "gpt-5.4-mini": { input: 0.75, output: 4.5 },
   "gpt-4.1-mini": { input: 0.4, output: 1.6 },
   "gpt-4.1-nano": { input: 0.1, output: 0.4 },
   "codex-mini-latest": { input: 1.5, output: 6 },

@@ -27,7 +27,7 @@ src/
 ├── cli/                # Declarative flag layer (flags.ts) + per-subcommand modules (see #49)
 ├── core/               # Shared types, config, logging, concurrency, headless-agent helpers
 ├── providers/          # LLMProvider backends (Anthropic, OpenAI-compatible, OpenRouter) + auto-probe
-├── adapters/           # Seven agent harness adapters (registry.ts is the single source of truth)
+├── adapters/           # Eight agent harness adapters (registry.ts is the single source of truth)
 ├── profiler/           # 26 microbenchmark generators + runner
 ├── compiler/           # 3-pass AOT compiler
 ├── runtime/            # RuntimeHooks interface consumed by adapters
@@ -57,7 +57,7 @@ Pluggable `LLMProvider` with three route kinds: `anthropic.ts` (Anthropic SDK, t
 
 `AgentAdapter` is the interface for agent harnesses. Each adapter runs an agent with tools against a model, optionally with `RuntimeHooks` (`beforeLLM`, `afterLLM`, `afterTool`, `afterRun`) injected for JIT monitoring and solidification.
 
-Seven implementations, registered centrally in **`src/adapters/registry.ts`** — the single source of truth for `AdapterName`, `ALL_ADAPTERS`, and `createAdapter()`:
+Eight implementations, registered centrally in **`src/adapters/registry.ts`** — the single source of truth for `AdapterName`, `ALL_ADAPTERS`, and `createAdapter()`:
 
 | Adapter | Source | Notes |
 |---|---|---|
@@ -68,6 +68,7 @@ Seven implementations, registered centrally in **`src/adapters/registry.ts`** �
 | `jiuwenclaw` | `jiuwenclaw.ts` | Wraps `jiuwenclaw-cli` over JSON-RPC. Token/cost **not** persisted upstream — bench/profile report `$0`. Invoked via `python3 -m jiuwenclaw.app_cli` from `skvm.config.json → adapters.jiuwenclaw`. |
 | `pi` | `pi.ts` | Wraps the `pi` coding-agent CLI (`@mariozechner/pi-coding-agent`) in a per-run sandbox. |
 | `claude-code` | `claude-code.ts` | Drives the `claude -p` CLI in a sandbox; parses token/cost usage. Heavy headless use may hit account rate limits / usage-terms. |
+| `codex` | `codex.ts` | Drives the `codex exec --json` CLI in a sandbox (`CODEX_HOME`); parses JSONL events for token usage (cost is estimated from `cost.ts` — Codex reports tokens, not USD). Managed mode supports openai-compatible / openrouter routes; native uses Codex's own ChatGPT/API-key auth. |
 
 ### Profiler (`src/profiler/`)
 
