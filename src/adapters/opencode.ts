@@ -18,6 +18,7 @@ import {
   buildOpenCodeConfigContent,
   type Sandbox,
 } from "../core/adapter-sandbox.ts"
+import { startContainer, execInContainer } from "../core/docker-run.ts"
 
 const log = createLogger("opencode")
 
@@ -365,6 +366,15 @@ export class OpenCodeAdapter implements AgentAdapter {
   private nativeAgent = "build"
   private extraCliArgs: string[] = []
   private sandbox: Sandbox | undefined
+  /** Cached route env overlay (API keys) from setup. Container mode uses
+   * this to seed the container's env — cheaper and safer than re-resolving
+   * the route at run time. */
+  private routeEnv: Record<string, string> = {}
+  /** Cached OPENCODE_CONFIG_CONTENT JSON from managed-mode setup. Container
+   * mode injects it verbatim into the container env — no file needed since
+   * opencode reads this env variable directly. `null` when the route is
+   * native or non-openai-compatible; container-mode setup rejects those. */
+  private opencodeConfigContent: string | null = null
 
   async setup(config: AdapterConfig): Promise<void> {
     this.model = config.model
@@ -431,6 +441,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       OPENCODE_DISABLE_PROJECT_CONFIG: "true",
       OPENCODE_TEST_MANAGED_CONFIG_DIR: managedEmpty,
     }
+    this.routeEnv = envForRoute(config.model)
 
     if (userConfigFile) {
       // Preserve the user's extension so opencode finds the same file in
@@ -449,10 +460,12 @@ export class OpenCodeAdapter implements AgentAdapter {
       // need the user's config at all.
       const route = resolveRoute(this.model)
       if (route.kind === "openai-compatible") {
-        envOverlay.OPENCODE_CONFIG_CONTENT = buildOpenCodeConfigContent(
+        const cfg = buildOpenCodeConfigContent(
           route,
           resolveBackendModel(this.model),
         )
+        envOverlay.OPENCODE_CONFIG_CONTENT = cfg
+        this.opencodeConfigContent = cfg
       }
     }
 
@@ -462,6 +475,26 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 
   async run(task: {
+    prompt: string
+    workDir: string
+    skill?: SkillBundle
+    taskId?: string
+    convLog?: import("../core/conversation-logger.ts").ConversationLog
+    timeoutMs?: number
+    /** Terminal-Bench image — when set (and SKVM_OC_HOST_MODE is not),
+     * opencode runs inside skvm-opencode-runtime with workDir bind-mounted
+     * at /app so model-generated shell commands (find /, grep -r, etc.)
+     * execute in a clean Ubuntu root rather than the Windows Git-Bash host.
+     * Mirrors pi's / claude-code's containerized branch. */
+    tbDockerImage?: string
+  }): Promise<RunResult> {
+    if (task.tbDockerImage && !process.env.SKVM_OC_HOST_MODE) {
+      return this.runInContainer(task)
+    }
+    return this.runOnHost(task)
+  }
+
+  private async runOnHost(task: {
     prompt: string
     workDir: string
     skill?: SkillBundle
@@ -591,6 +624,191 @@ export class OpenCodeAdapter implements AgentAdapter {
     })
 
     return builder.finish({ workDir: task.workDir, durationMs, skillLoaded, ...verdict })
+  }
+
+  /**
+   * Container-mode opencode: launch skvm-opencode-runtime with workDir
+   * bind-mounted at /app, then `docker exec opencode …` there. Mirrors the
+   * pi + claude-code adapter container branches (see pi.ts:runInContainer
+   * and claude-code.ts:runInContainer for the shared rationale — model-
+   * issued shell commands run in a clean Ubuntu root, not the Windows host
+   * via MSYS).
+   *
+   * Native mode is not yet supported for container path (bench always uses
+   * managed mode). Attempting native → clear error, tell the user to switch.
+   *
+   * Opencode's advantage over the other two adapters: its provider config
+   * comes via OPENCODE_CONFIG_CONTENT env var (a JSON string), not a file.
+   * So container mode just passes the same cached JSON string through -e —
+   * no per-run sandbox directory needed.
+   */
+  private async runInContainer(task: {
+    prompt: string
+    workDir: string
+    skill?: SkillBundle
+    taskId?: string
+    convLog?: import("../core/conversation-logger.ts").ConversationLog
+    timeoutMs?: number
+    tbDockerImage?: string
+  }): Promise<RunResult> {
+    if (this.mode === "native") {
+      throw new Error(
+        "opencode (container mode): native adapter-config is not supported " +
+        "inside containers yet — the host ~/.config/opencode is not mounted. " +
+        "Switch to --adapter-config=managed, or set SKVM_OC_HOST_MODE=1 to run " +
+        "on the host.",
+      )
+    }
+    if (!this.opencodeConfigContent) {
+      throw new Error(
+        "opencode (container mode): managed setup did not produce a config " +
+        "content (route must be openai-compatible). Anthropic / native " +
+        "routes are not yet supported in container mode.",
+      )
+    }
+
+    let skillLoaded: boolean | undefined
+
+    // Skill staging is the SAME as host mode — files live under workDir and
+    // the container sees them at /app via the mount.
+    if (task.skill) {
+      skillLoaded = false
+      if (task.skill.mode === "inject") {
+        await Bun.write(path.join(task.workDir, "CONTEXT.md"), task.skill.content)
+      } else {
+        const skillName = task.skill.meta.name
+        const skillDesc = task.skill.meta.description
+        const skillDir = path.join(task.workDir, ".opencode", "skills", skillName)
+        await mkdir(skillDir, { recursive: true })
+        const frontmatter = `---\nname: ${skillName}\ndescription: ${skillDesc}\n---\n\n`
+        await Bun.write(path.join(skillDir, "SKILL.md"), frontmatter + task.skill.content)
+      }
+    }
+
+    const startMs = performance.now()
+    const timeoutMs = task.timeoutMs ?? this.timeoutMs
+
+    // Container env: API keys + OPENCODE_CONFIG_CONTENT (verbatim from setup).
+    // XDG_* is deliberately NOT set — the container is a fresh /root every run,
+    // no user global config to shield from, and letting opencode use its own
+    // defaults (~/.config/opencode) is simpler.
+    // OPENCODE_DISABLE_PROJECT_CONFIG stays on: even in-container we don't
+    // want opencode auto-loading /app/.opencode as project-scoped config.
+    const env: Record<string, string> = {
+      ...this.routeEnv,
+      OPENCODE_CONFIG_CONTENT: this.opencodeConfigContent,
+      OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+    }
+
+    const container = await startContainer({
+      image: "skvm-opencode-runtime:latest",
+      mounts: [{ host: task.workDir, container: "/app", mode: "rw" }],
+      env,
+      workDir: "/app",
+      // Lifetime > task timeout so cleanup can rm -f cleanly even after a kill.
+      lifetimeMs: timeoutMs + 60_000,
+    })
+
+    try {
+      const prompt = `IMPORTANT: Do not ask clarifying questions. Proceed directly with implementation. Execute all steps immediately without waiting for user input.\n\n${task.prompt}`
+
+      const agentFlag = this.mode === "managed" ? "build" : this.nativeAgent
+      const opencodeCmd = [
+        "opencode",
+        "run",
+        prompt,
+        "--dir", "/app",
+        "--model", this.model,
+        "--agent", agentFlag,
+        "--pure",
+        "--format", "json",
+        ...this.extraCliArgs,
+      ]
+
+      log.info(`opencode (container): image=skvm-opencode-runtime:latest container=${container.name} model=${this.model}`)
+
+      const convLogPath = task.convLog?.filePath
+      const { stdout, stderr, exitCode, timedOut } = await execInContainer({
+        cmd: opencodeCmd,
+        container,
+        cwd: "/app",
+        timeoutMs,
+        stdoutSink: convLogPath,
+      })
+
+      const durationMs = performance.now() - startMs
+
+      if (exitCode !== 0 && stderr) {
+        log.warn(`opencode (container) exited with code ${exitCode}: ${stderr.slice(0, 2000)}`)
+      }
+
+      // If we streamed to disk we need to read it back to parse events;
+      // otherwise stdout is the entire payload.
+      let ndjsonText = stdout
+      if (convLogPath && !stdout) {
+        const convLogFile = Bun.file(convLogPath)
+        if (await convLogFile.exists()) {
+          try {
+            ndjsonText = await convLogFile.text()
+          } catch (err) {
+            log.warn(`Failed to read opencode NDJSON from ${convLogPath}: ${err}`)
+          }
+        }
+      }
+
+      const events = parseNDJSON(ndjsonText)
+
+      // Verify skill was actually loaded from events — same logic as host branch.
+      if (task.skill && skillLoaded === false) {
+        const skillSnippet = task.skill.content.replace(/^#.*\n/m, "").trim().slice(0, 60)
+
+        for (const event of events) {
+          if (skillLoaded) break
+          const part = event.part ?? {}
+
+          if (task.skill.mode === "discover" && event.type === "tool_use") {
+            const toolName = (part.tool as string) ?? (part.name as string) ?? ""
+            if (toolName === "skill") {
+              skillLoaded = true
+            }
+          }
+
+          if (task.skill.mode === "inject" && event.type === "step_finish") {
+            const contextFile = Bun.file(path.join(task.workDir, "CONTEXT.md"))
+            if (await contextFile.exists()) {
+              skillLoaded = true
+            }
+          }
+
+          if (event.type === "text" && skillSnippet.length > 20) {
+            const text = (part.text as string) ?? ""
+            if (text.includes(skillSnippet)) {
+              skillLoaded = true
+            }
+          }
+        }
+      }
+
+      const builder = eventsToRunRecord(events)
+      const verdict = await subprocessVerdict({
+        label: "opencode",
+        timedOut,
+        exitCode,
+        timeoutMs,
+        stderr,
+        diagnose: () => diagnoseOpencode({
+          sandboxRoot: this.sandbox?.root ?? "",
+          stdout: ndjsonText,
+          stderr,
+          exitCode,
+        }),
+        warn: (msg) => log.warn(msg),
+      })
+
+      return builder.finish({ workDir: task.workDir, durationMs, skillLoaded, ...verdict })
+    } finally {
+      await container.cleanup()
+    }
   }
 
   async teardown(): Promise<void> {
