@@ -19,6 +19,7 @@
 // --- registered evaluators (one side-effect import per evaluator) ---
 import "./python-grade.ts"
 import "./junit-grade.ts"
+import "./tb-grade.ts"
 // import "./docker-grader.ts"   // example of future addition
 // import "./js-grader.ts"       // example of future addition
 

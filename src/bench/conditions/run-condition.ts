@@ -9,9 +9,32 @@ import { getTmpDir } from "../../core/config.ts"
 import type { BenchTask, BenchCondition, ConditionResult } from "../types.ts"
 import type { ConversationLog } from "../../core/conversation-logger.ts"
 import { createLogger } from "../../core/logger.ts"
+import { runSubprocess } from "../../core/subprocess.ts"
 import { computeWeightedScore, buildEvalDetails } from "./scoring.ts"
 
 const log = createLogger("bench-conditions")
+
+/**
+ * For Terminal-Bench tasks, seed the host workDir with the image's /app
+ * contents so the agent (which runs on the host against workDir) can read the
+ * task's actual files (e.g. /app/filter.py). The tb-grade evaluator later
+ * mounts this same workDir back into the image at /app, so the agent's edits
+ * land in the container faithfully. No-op for non-TB tasks.
+ */
+async function seedTbAppFiles(task: BenchTask, workDir: string): Promise<void> {
+  if (!task.tbDockerImage) return
+  log.info(`Task ${task.id}: seeding workDir from ${task.tbDockerImage}:/app`)
+  // `cp -r /app/. /out/` copies /app's contents (incl. dotfiles, subdirs) into
+  // the mounted host workDir. --rm tears the throwaway container down at exit.
+  const r = await runSubprocess(
+    ["docker", "run", "--rm", "-v", `${workDir}:/out`, task.tbDockerImage,
+     "sh", "-c", "cp -r /app/. /out/ 2>/dev/null"],
+    { timeoutMs: 120000, env: { MSYS_NO_PATHCONV: "1" } },
+  )
+  if (r.exitCode !== 0) {
+    log.warn(`Task ${task.id}: TB /app seed exited ${r.exitCode}: ${r.stderr.slice(0, 200)}`)
+  }
+}
 
 /** Create workDir and copy fixture files from the task's fixtures/ directory */
 export async function prepareWorkDir(task: BenchTask): Promise<string> {
@@ -48,6 +71,10 @@ export async function prepareWorkDir(task: BenchTask): Promise<string> {
       }
     } catch { /* no setup script or execution failed */ }
   }
+
+  // Terminal-Bench: seed workDir with the image's /app so the host-side agent
+  // sees the same files the verifier will score. See seedTbAppFiles.
+  await seedTbAppFiles(task, workDir)
 
   return workDir
 }
