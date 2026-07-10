@@ -681,10 +681,13 @@ export class HermesAdapter implements AgentAdapter {
 
       let stdout = chatResult.stdout
       if (convLogPath && !stdout) {
-        try {
-          stdout = await Bun.file(convLogPath).text()
-        } catch (err) {
-          log.warn(`Failed to read hermes chat stdout from ${convLogPath}: ${err}`)
+        const convLogFile = Bun.file(convLogPath)
+        if (await convLogFile.exists()) {
+          try {
+            stdout = await convLogFile.text()
+          } catch (err) {
+            log.warn(`Failed to read hermes chat stdout from ${convLogPath}: ${err}`)
+          }
         }
       }
       const { stderr, exitCode, timedOut } = chatResult

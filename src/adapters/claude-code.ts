@@ -790,10 +790,13 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       // otherwise stdout is the entire payload.
       let streamJson = stdout
       if (convLogPath && !stdout) {
-        try {
-          streamJson = await Bun.file(convLogPath).text()
-        } catch (err) {
-          log.warn(`Failed to read claude-code stream-json from ${convLogPath}: ${err}`)
+        const convLogFile = Bun.file(convLogPath)
+        if (await convLogFile.exists()) {
+          try {
+            streamJson = await convLogFile.text()
+          } catch (err) {
+            log.warn(`Failed to read claude-code stream-json from ${convLogPath}: ${err}`)
+          }
         }
       }
 

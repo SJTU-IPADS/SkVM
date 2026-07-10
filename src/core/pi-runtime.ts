@@ -206,29 +206,6 @@ export function piEventsToRunRecord(events: PiEvent[]): RunRecordBuilder {
 }
 
 /**
- * Stream-parse pi's NDJSON stdout directly into a RunRecord, retaining ONLY
- * the events the builder actually consumes (agent_end + message_end).
- *
- * WHY: pi emits ~30k NDJSON events per long task (message_update / thinking /
- * *_delta streaming deltas make up ~99.9% of a 0.3–1.7 GB transcript). The
- * old path — `piEventsToRunRecord(parsePiNDJSON(stdout))` — materialized ALL
- * of them into a retained `PiEvent[]`, but the builder reads only agent_end /
- * message_end (~25 events). Holding 30k parsed objects alongside the buffered
- * stdout string drove peak heap to 10–32 GB and threw
- * `RangeError: Out of memory` on long crypto tasks (circuit-fibsqrt,
- * feal-*-cryptanalysis). This function is behaviorally equivalent to the old
- * path but with O(relevant-events) memory instead of O(total-events).
- *
- * `output` is the raw NDJSON string (already buffered by runSubprocess); we
- * scan it with indexOf instead of `output.split("\n")` so no 30k-element
- * substring array is materialized, and each line string is releasable as we
- * advance. A cheap `includes` pre-filter skips JSON.parse for the 99.9% of
- * lines that are streaming deltas — pi emits compact JSON
- * (`{"type":"message_end",...}`, no spaces), so the literal match is exact.
- * False positives are harmless (JSON.parse still classifies the event);
- * false negatives are impossible for pi's compact format.
- */
-/**
  * Collects the only pi events the RunRecord builder consumes (agent_end +
  * message_end). Shared by the string-scanning `piBuildRunRecordFromNDJSON`
  * and the streaming `piBuildRunRecordFromFile` so both paths apply the same
@@ -277,6 +254,29 @@ class PiEventCollector {
   }
 }
 
+/**
+ * Stream-parse pi's NDJSON stdout directly into a RunRecord, retaining ONLY
+ * the events the builder actually consumes (agent_end + message_end).
+ *
+ * WHY: pi emits ~30k NDJSON events per long task (message_update / thinking /
+ * *_delta streaming deltas make up ~99.9% of a 0.3–1.7 GB transcript). The
+ * old path — `piEventsToRunRecord(parsePiNDJSON(stdout))` — materialized ALL
+ * of them into a retained `PiEvent[]`, but the builder reads only agent_end /
+ * message_end (~25 events). Holding 30k parsed objects alongside the buffered
+ * stdout string drove peak heap to 10–32 GB and threw
+ * `RangeError: Out of memory` on long crypto tasks (circuit-fibsqrt,
+ * feal-*-cryptanalysis). This function is behaviorally equivalent to the old
+ * path but with O(relevant-events) memory instead of O(total-events).
+ *
+ * `output` is the raw NDJSON string (already buffered by runSubprocess); we
+ * scan it with indexOf instead of `output.split("\n")` so no 30k-element
+ * substring array is materialized, and each line string is releasable as we
+ * advance. A cheap `includes` pre-filter skips JSON.parse for the 99.9% of
+ * lines that are streaming deltas — pi emits compact JSON
+ * (`{"type":"message_end",...}`, no spaces), so the literal match is exact.
+ * False positives are harmless (JSON.parse still classifies the event);
+ * false negatives are impossible for pi's compact format.
+ */
 export function piBuildRunRecordFromNDJSON(output: string): RunRecordBuilder {
   const collector = new PiEventCollector()
 

@@ -37,10 +37,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # npm registry mirror to survive CN network. npmmirror is Alibaba's mirror.
 RUN npm config set registry https://registry.npmmirror.com
 
-# Pin pi to the exact version currently used on the host (see D:/SkVM
-# node_modules/@mariozechner/pi-coding-agent/package.json: 0.67.68). Updating
-# host and image in lockstep is a follow-up; for now the version is fixed to
-# avoid behavior drift between host bench and container bench during A/B.
+# Pin pi to the version declared in the repository's package.json and bun.lock.
+# Updating the project dependency and image in lockstep is a follow-up; for now
+# the fixed version avoids behavior drift between host and container benches.
 RUN npm install -g @mariozechner/pi-coding-agent@0.67.68
 
 # Sanity assertion at build time — fails the build if pi cannot start.

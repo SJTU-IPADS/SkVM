@@ -746,10 +746,13 @@ export class OpenCodeAdapter implements AgentAdapter {
       // otherwise stdout is the entire payload.
       let ndjsonText = stdout
       if (convLogPath && !stdout) {
-        try {
-          ndjsonText = await Bun.file(convLogPath).text()
-        } catch (err) {
-          log.warn(`Failed to read opencode NDJSON from ${convLogPath}: ${err}`)
+        const convLogFile = Bun.file(convLogPath)
+        if (await convLogFile.exists()) {
+          try {
+            ndjsonText = await convLogFile.text()
+          } catch (err) {
+            log.warn(`Failed to read opencode NDJSON from ${convLogPath}: ${err}`)
+          }
         }
       }
 

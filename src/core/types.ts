@@ -605,11 +605,12 @@ export interface AgentAdapter {
     /**
      * When set, the task originates from a Terminal-Bench import and carries
      * the image whose `/app` the verifier will mount workDir into. Container-
-     * aware adapters (currently only pi) MAY run their agent inside a
-     * container against this workDir so model-generated shell commands (e.g.
-     * `find /`) execute in a real Linux root instead of the Windows host via
-     * MSYS. Non-container adapters ignore the field. Set `SKVM_PI_HOST_MODE=1`
-     * to force the host path for debugging.
+     * aware adapters (pi, claude-code, opencode, and hermes) MAY run their
+     * agent inside a container against this workDir so model-generated shell
+     * commands (e.g. `find /`) execute in a real Linux root instead of the
+     * Windows host via MSYS. Other adapters ignore the field. Set the matching
+     * `SKVM_PI_HOST_MODE`, `SKVM_CC_HOST_MODE`, `SKVM_OC_HOST_MODE`, or
+     * `SKVM_HERMES_HOST_MODE` variable to `1` to force host mode for debugging.
      */
     tbDockerImage?: string
   }): Promise<RunResult>
