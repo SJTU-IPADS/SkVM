@@ -129,6 +129,56 @@ describe("runCompile — cross-flag rules", () => {
     }
   })
 
+  test("unknown --pass token is a UsageError before any side effect", async () => {
+    // Thrown before skill resolution: the bogus ./s path is never touched.
+    expect((await runError(["--skill=./s", "--model=x/y", "--pass=99"])).message).toBe(
+      `aot-compile: Unknown pass: "99". Run 'skvm aot-compile --list-passes' to see available passes.`,
+    )
+  })
+
+  test("--pass with zero tokens is a UsageError before any side effect", async () => {
+    // `--pass=,` parses to zero tokens. Without this gate the CLI would skip
+    // profile loading (no pass requires a TCP) while compileSkill falls back
+    // to the default passes (which do), failing per-job with a misleading
+    // message. Thrown before skill resolution: the bogus ./s path is never
+    // touched.
+    for (const argv of ["--pass=,", "--pass= , ,"]) {
+      expect((await runError(["--skill=./s", "--model=x/y", argv])).message).toBe(
+        "aot-compile: --pass contains no pass tokens. Run 'skvm aot-compile --list-passes' to see available passes.",
+      )
+    }
+  })
+
+  test("--pass without a TCP consumer skips profile loading entirely", async () => {
+    const { mkdtempSync } = await import("node:fs")
+    const { tmpdir } = await import("node:os")
+    const path = await import("node:path")
+    const skillDir = mkdtempSync(path.join(tmpdir(), "skvm-aot-no-tcp-pass-"))
+    await Bun.write(path.join(skillDir, "SKILL.md"), "# minimal skill\n")
+
+    // The profile cache (temp SKVM_CACHE) is empty, so reaching provider
+    // creation — which throws on the unroutable --compiler-model — proves the
+    // "missing profiles" gate was skipped for bind-env-only compiles.
+    const config = COMPILE_FLAGS.parse([
+      `--skill=${skillDir}`, "--model=x/y", "--pass=bind-env",
+      "--compiler-model=bogus/nope",
+    ])
+    if (config.help) throw new Error("unexpected help")
+    const origLog = console.log
+    console.log = () => {}
+    let thrown: unknown
+    try {
+      await runCompile(config)
+    } catch (err) {
+      thrown = err
+    } finally {
+      console.log = origLog
+    }
+    expect(thrown).toBeInstanceOf(Error)
+    expect(thrown).not.toBeInstanceOf(UsageError)
+    expect((thrown as Error).message).toContain('No providers.routes entry matches model id "bogus/nope"')
+  })
+
   test("--list-passes short-circuits without requiring --skill/--model", async () => {
     const config = COMPILE_FLAGS.parse(["--list-passes"])
     if (config.help) throw new Error("unexpected help")
@@ -218,7 +268,8 @@ Options:
   --skill=<id,...>         Skill name(s) or path(s), comma-separated (required)
   --model=<id,...>         Target model(s), comma-separated (required)
   --adapter=<name,...>     Harness name(s), comma-separated (${ALL_ADAPTERS.join(" | ")}; default: ${CLI_DEFAULTS.adapter})
-  --profile=<path>         Path to TCP JSON (single-job only; default: load from cache)
+  --profile=<path>         Path to TCP JSON (single-job only; default: load from cache).
+                           Only required when a selected pass consumes the TCP (see --list-passes).
   --pass=<list>            Compiler passes, comma-separated (numeric or string ids; see --list-passes
                            for the registry). Default: ${CLI_DEFAULTS.compilerPasses.join(",")}
   --list-passes            Print the pass registry and exit

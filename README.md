@@ -147,7 +147,7 @@ With the default `--concurrency=1`, this example typically takes about 20 minute
 
 ### 2. Compile a skill against that profile
 
-The compiler rewrites the skill to match the target's capabilities. A cached profile for the same `--model` + `--adapter` pair must exist (run `skvm profile` first, or use `skvm pipeline` which profiles automatically).
+The compiler rewrites the skill to match the target's capabilities. A cached profile for the same `--model` + `--adapter` pair must exist when a selected pass consumes it — only pass 1 (`rewrite-skill`) reads the profile (run `skvm profile` first, or use `skvm pipeline` which profiles automatically). A compile of only pass 2/3 (e.g. `--pass=bind-env` for `env-setup.sh` generation) needs no profile; see the `tcp` column of `--list-passes`.
 
 ```bash
 skvm aot-compile \

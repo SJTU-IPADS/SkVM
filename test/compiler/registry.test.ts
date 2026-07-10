@@ -26,6 +26,12 @@ describe("registry invariants", () => {
       expect(n).toBeGreaterThanOrEqual(1)
     }
   })
+
+  test("only rewrite-skill declares requiresTcp (pins the CLI's profile requirement)", () => {
+    // If a new pass starts reading ctx.tcp, declare requiresTcp on it and
+    // update this pin — the CLI only demands profiles for declared consumers.
+    expect(ALL_PASSES.filter((p) => p.requiresTcp).map((p) => p.id)).toEqual(["rewrite-skill"])
+  })
 })
 
 describe("registry token resolution", () => {

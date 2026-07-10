@@ -12,11 +12,14 @@ export const rewriteSkillPass: CompilerPass = {
   description: "Rewrite SKILL.md to compensate for the target model's capability gaps",
   consumes: [],
   produces: ["scr", "gaps"],
+  requiresTcp: true,
 
   async run(ctx: PassContext): Promise<PassOutput> {
+    const tcp = ctx.tcp
+    if (!tcp) throw new Error('pass "rewrite-skill" requires a TCP profile (ctx.tcp is missing)')
     const result = await runPass1Agentic(
       ctx.skillContent,
-      ctx.tcp,
+      tcp,
       ctx.provider,
       ctx.workDir,
       ctx.failureContext,

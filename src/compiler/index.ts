@@ -47,6 +47,16 @@ export async function compileSkill(
   const orderedPasses = topoSort(requestedPasses)
   const numericPasses = orderedPasses.map((p) => p.number)
 
+  // Passes declare `requiresTcp` when they read the profile (pass 1). Reject
+  // up front — before any workDir side effect — so a profile-less compile of
+  // only pass 2/3 works, and a missing profile fails fast otherwise.
+  const tcpConsumers = orderedPasses.filter((p) => p.requiresTcp)
+  if (tcpConsumers.length > 0 && !opts.tcp) {
+    throw new Error(
+      `pass(es) ${tcpConsumers.map((p) => `"${p.id}"`).join(", ")} require a TCP profile but none was provided. Run 'skvm profile' first, or drop them from --pass.`,
+    )
+  }
+
   log.info(`Compiling skill for ${opts.model}--${opts.harness}`)
 
   const skillName = opts.skillName ?? extractSkillName(opts.skillContent, opts.skillDir ?? opts.skillPath)
@@ -160,6 +170,7 @@ export async function compileSkill(
 }
 
 async function copyProfilingArtifacts(opts: CompileOptions, workDir: string): Promise<void> {
+  if (!opts.tcp) return
   type CopyJob = { src: string; dest: string }
   const jobs: CopyJob[] = []
   for (const detail of opts.tcp.details) {

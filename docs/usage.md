@@ -89,6 +89,9 @@ skvm aot-compile --skill=<path> --model=<id1>,<id2> --concurrency=2
 # Run selected passes only
 skvm aot-compile --skill=<path> --model=<id> --pass=1,2
 
+# Pass 2 only (env-setup.sh generation) — needs no profile
+skvm aot-compile --skill=<path> --model=<id> --pass=bind-env
+
 # Preview without writing
 skvm aot-compile --skill=<path> --model=<id> --dry-run
 

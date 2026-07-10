@@ -140,6 +140,7 @@ export function formatRegistry(): string {
     .map((p) => ({
       n: String(p.number),
       id: p.id,
+      tcp: p.requiresTcp ? "yes" : "—",
       consumes: p.consumes.join(",") || "—",
       produces: p.produces.join(",") || "—",
       description: p.description,
@@ -147,14 +148,15 @@ export function formatRegistry(): string {
   const widths = {
     n: Math.max(1, ...rows.map((r) => r.n.length)),
     id: Math.max(2, ...rows.map((r) => r.id.length)),
+    tcp: Math.max(3, ...rows.map((r) => r.tcp.length)),
     consumes: Math.max(8, ...rows.map((r) => r.consumes.length)),
     produces: Math.max(8, ...rows.map((r) => r.produces.length)),
   }
   const pad = (s: string, w: number) => s + " ".repeat(Math.max(0, w - s.length))
-  const header = `${pad("#", widths.n)}  ${pad("id", widths.id)}  ${pad("consumes", widths.consumes)}  ${pad("produces", widths.produces)}  description`
+  const header = `${pad("#", widths.n)}  ${pad("id", widths.id)}  ${pad("tcp", widths.tcp)}  ${pad("consumes", widths.consumes)}  ${pad("produces", widths.produces)}  description`
   const sep = "-".repeat(header.length)
   const body = rows
-    .map((r) => `${pad(r.n, widths.n)}  ${pad(r.id, widths.id)}  ${pad(r.consumes, widths.consumes)}  ${pad(r.produces, widths.produces)}  ${r.description}`)
+    .map((r) => `${pad(r.n, widths.n)}  ${pad(r.id, widths.id)}  ${pad(r.tcp, widths.tcp)}  ${pad(r.consumes, widths.consumes)}  ${pad(r.produces, widths.produces)}  ${r.description}`)
     .join("\n")
   return `${header}\n${sep}\n${body}`
 }

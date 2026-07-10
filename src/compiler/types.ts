@@ -98,7 +98,9 @@ export interface CompileOptions {
   skillDir?: string
   /** Explicit skill name for output directory (default: derived from skillPath). */
   skillName?: string
-  tcp: TCP
+  /** Target capability profile. Required by passes that declare `requiresTcp`
+   *  (pass 1, rewrite-skill); optional otherwise (e.g. `--pass=bind-env`). */
+  tcp?: TCP
   model: string
   harness: string
   /**

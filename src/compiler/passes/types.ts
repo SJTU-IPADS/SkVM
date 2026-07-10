@@ -23,7 +23,9 @@ export interface PassContext {
   workDir: string
   /** Current canonical SKILL.md text. Reflects all skillPatches applied so far. */
   skillContent: string
-  tcp: TCP
+  /** Target capability profile. Present whenever an enabled pass declares
+   *  `requiresTcp` — the orchestrator enforces that before running any pass. */
+  tcp?: TCP
   model: string
   harness: string
   /** Provider already wrapped with a per-pass logger that also tracks token usage. */
@@ -62,5 +64,11 @@ export interface CompilerPass {
   description: string
   consumes: ArtifactKey[]
   produces: ArtifactKey[]
+  /**
+   * Whether the pass reads `ctx.tcp`. The orchestrator rejects a compile that
+   * enables such a pass without a TCP, and the CLI only loads (and requires)
+   * profiles when at least one enabled pass declares this.
+   */
+  requiresTcp?: boolean
   run(ctx: PassContext): Promise<PassOutput>
 }

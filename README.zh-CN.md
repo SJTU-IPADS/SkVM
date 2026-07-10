@@ -144,7 +144,7 @@ skvm profile \
 
 ### 2. 基于 Profile 编译 Skill
 
-编译器会根据目标模型的能力改写 Skill。你需要先准备好同一组 `--model` + `--adapter` 对应的缓存 Profile（先运行 `skvm profile`，或者直接使用会自动完成 profiling 的 `skvm pipeline`）。
+编译器会根据目标模型的能力改写 Skill。只有当所选 Pass 会读取 Profile 时（只有 Pass 1 `rewrite-skill` 会读取），才需要先准备好同一组 `--model` + `--adapter` 对应的缓存 Profile（先运行 `skvm profile`，或者直接使用会自动完成 profiling 的 `skvm pipeline`）。只跑 Pass 2/3 的编译（例如用 `--pass=bind-env` 生成 `env-setup.sh`）不需要 Profile；各 Pass 是否读取 Profile 见 `--list-passes` 的 `tcp` 列。
 
 ```bash
 skvm aot-compile \

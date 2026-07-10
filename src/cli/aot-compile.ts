@@ -23,7 +23,11 @@ export const COMPILE_FLAGS = defineFlags(
       placeholder: "<name,...>",
       help: `Harness name(s), comma-separated (${ALL_ADAPTERS.join(" | ")}; default: ${CLI_DEFAULTS.adapter})`,
     },
-    profile: { kind: "string", placeholder: "<path>", help: "Path to TCP JSON (single-job only; default: load from cache)" },
+    profile: {
+      kind: "string",
+      placeholder: "<path>",
+      help: "Path to TCP JSON (single-job only; default: load from cache).\nOnly required when a selected pass consumes the TCP (see --list-passes).",
+    },
     pass: {
       kind: "string",
       placeholder: "<list>",
@@ -63,8 +67,30 @@ export async function runCompile(config: CompileConfig): Promise<void> {
   const passes: string[] = config.pass
     ? config.pass.split(",").map((p) => p.trim()).filter(Boolean)
     : CLI_DEFAULTS.compilerPasses.map(String)
+  // A provided --pass that yields zero tokens (e.g. `--pass=,`) must not fall
+  // through: `needsTcp` below would see "no passes" while compileSkill treats
+  // an empty list as "use the default passes", which do require a TCP.
+  if (config.pass && passes.length === 0) {
+    throw new UsageError(
+      "aot-compile: --pass contains no pass tokens. Run 'skvm aot-compile --list-passes' to see available passes.",
+      COMPILE_FLAGS.help,
+    )
+  }
   const concurrency = config.concurrency
   const dryRun = config["dry-run"]
+
+  // Resolve pass tokens up front: an unknown pass is a usage error (thrown
+  // before any side effect), and the resolved set decides whether profiles
+  // are needed at all — only passes that declare `requiresTcp` (pass 1,
+  // rewrite-skill) read the TCP, so e.g. `--pass=bind-env` compiles without
+  // a profile.
+  const { resolvePassTokens } = await import("../compiler/registry.ts")
+  let needsTcp: boolean
+  try {
+    needsTcp = resolvePassTokens(passes).some((p) => p.requiresTcp)
+  } catch (err) {
+    throw new UsageError(`aot-compile: ${err instanceof Error ? err.message : err}`, COMPILE_FLAGS.help)
+  }
 
   // --profile is a pure flag-shape check (no I/O) — validated up front,
   // before skill resolution and the banner, alongside the other cross-flag
@@ -113,9 +139,10 @@ export async function runCompile(config: CompileConfig): Promise<void> {
   }
 
   // ---------------------------------------------------------------------------
-  // Load and validate profiles for all (model, adapter) combos
+  // Load and validate profiles for all (model, adapter) combos — skipped
+  // entirely when no selected pass consumes the TCP (an explicit --profile is
+  // still honored either way).
   // ---------------------------------------------------------------------------
-  const { loadProfile } = await import("../profiler/index.ts")
   type TCP = import("../core/types.ts").TCP
   const tcpCache = new Map<string, TCP>()
 
@@ -124,7 +151,8 @@ export async function runCompile(config: CompileConfig): Promise<void> {
     const { TCPSchema } = await import("../core/types.ts")
     const profileData = await Bun.file(config.profile).json()
     tcpCache.set(`${models[0]}--${adapters[0]}`, TCPSchema.parse(profileData))
-  } else {
+  } else if (needsTcp) {
+    const { loadProfile } = await import("../profiler/index.ts")
     const missing: string[] = []
     for (const adapter of adapters) {
       for (const model of models) {
@@ -148,12 +176,12 @@ export async function runCompile(config: CompileConfig): Promise<void> {
   // ---------------------------------------------------------------------------
   // Build job matrix: skills × models × adapters
   // ---------------------------------------------------------------------------
-  type CompileJob = { skill: typeof resolvedSkills[number]; model: string; adapter: string; tcp: TCP }
+  type CompileJob = { skill: typeof resolvedSkills[number]; model: string; adapter: string; tcp: TCP | undefined }
   const jobs: CompileJob[] = []
   for (const skill of resolvedSkills) {
     for (const adapter of adapters) {
       for (const model of models) {
-        jobs.push({ skill, model, adapter, tcp: tcpCache.get(`${model}--${adapter}`)! })
+        jobs.push({ skill, model, adapter, tcp: tcpCache.get(`${model}--${adapter}`) })
       }
     }
   }
