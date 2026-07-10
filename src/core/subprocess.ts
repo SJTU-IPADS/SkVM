@@ -61,9 +61,10 @@ function killProcessTree(pid: number): void {
     if (process.platform === "win32") {
       // /T = tree, /F = force. Shell not needed; Bun.spawn resolves taskkill
       // via PATH. Ignore exit code — the process may already be exiting.
-      Bun.spawn(["taskkill", "/T", "/F", "/PID", String(pid)], {
+      const result = Bun.spawnSync(["taskkill", "/PID", String(pid), "/T", "/F"], {
         stdout: "ignore", stderr: "ignore",
       })
+      if (result.exitCode !== 0) throw new Error(`taskkill exited ${result.exitCode}`)
     } else {
       process.kill(-pid, "SIGKILL")
     }
@@ -90,6 +91,9 @@ export async function runSubprocess(
     stdout: "pipe",
     stderr: "pipe",
     env,
+    // A negative-pid kill reaches descendants only when the child leads its
+    // own process group. Windows uses taskkill /T instead.
+    detached: process.platform !== "win32",
   })
 
   let timedOut = false
@@ -103,17 +107,20 @@ export async function runSubprocess(
   const stderrReader = proc.stderr.getReader()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const readAll = async (reader: any): Promise<string> => {
-    const chunks: Uint8Array[] = []
+    const decoder = new TextDecoder()
+    let output = ""
     try {
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
-        if (value) chunks.push(value)
+        if (value) output += decoder.decode(value, { stream: true })
       }
     } catch {
       // reader cancelled (timeout) — return what we have so far
+    } finally {
+      output += decoder.decode()
     }
-    return chunks.map((c) => new TextDecoder().decode(c)).join("")
+    return output
   }
   if (opts?.timeoutMs) {
     timer = setTimeout(() => {
