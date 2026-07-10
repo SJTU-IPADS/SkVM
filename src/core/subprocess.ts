@@ -15,8 +15,8 @@ export interface SubprocessResult {
   stderr: string
   durationMs: number
   timedOut: boolean
-  /** Present (== opts.stdoutSink) when stdout was streamed to disk instead of
-   * buffered into `stdout`. When set, `stdout` is the empty string. */
+  /** Present (== opts.stdoutSink) when at least one stdout byte was streamed
+   * to disk instead of buffered into `stdout`. When set, `stdout` is empty. */
   stdoutFile?: string
 }
 
@@ -33,9 +33,9 @@ export interface SubprocessOptions {
   /**
    * When set, stream raw stdout bytes verbatim to this file path instead of
    * buffering them into `result.stdout`. `result.stdout` becomes "" and
-   * `result.stdoutFile` is set to the path. The file is created lazily on
-   * the first non-empty chunk — a child that produces no stdout leaves no
-   * file behind (preserves the old `stdout.trim()` guard in adapters).
+   * `result.stdoutFile` is set to the path only after the first non-empty
+   * chunk. A child that produces no stdout leaves no file or `stdoutFile`
+   * behind (preserves the old `stdout.trim()` guard in adapters).
    *
    * WHY: agentic LLM transcripts (pi/opencode/claude-code) reach 0.3–1.7 GB;
    * buffering that into a single string drives peak heap to 10–32 GB and
@@ -52,24 +52,27 @@ export interface SubprocessOptions {
  * stream ends early (e.g. the child is killed on timeout).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function readStreamToSink(stream: any, sinkPath: string): Promise<void> {
+async function readStreamToSink(stream: any, sinkPath: string): Promise<boolean> {
   const reader = stream.getReader()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let writer: any
+  let wroteAny = false
   try {
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
-      if (!value) continue
+      if (!value || value.byteLength === 0) continue
       if (!writer) {
         await mkdir(path.dirname(sinkPath), { recursive: true })
         writer = Bun.file(sinkPath).writer()
       }
       writer.write(value)
+      wroteAny = true
     }
   } finally {
     await writer?.end()
   }
+  return wroteAny
 }
 
 export async function runSubprocess(
@@ -99,8 +102,12 @@ export async function runSubprocess(
   // When a sink is requested, stream stdout to disk (bounds heap for giant
   // transcripts); otherwise buffer it into the result string as before.
   const sinkPath = opts?.stdoutSink
+  let wroteStdoutToSink = false
   const stdoutPromise = sinkPath
-    ? readStreamToSink(proc.stdout, sinkPath).then(() => "")
+    ? readStreamToSink(proc.stdout, sinkPath).then((wroteAny) => {
+        wroteStdoutToSink = wroteAny
+        return ""
+      })
     : new Response(proc.stdout).text()
   const [exitCode, stdout, stderr] = await Promise.all([
     proc.exited.then((code) => { if (timer) clearTimeout(timer); return code }),
@@ -113,7 +120,7 @@ export async function runSubprocess(
     stderr,
     durationMs: Date.now() - start,
     timedOut,
-    ...(sinkPath ? { stdoutFile: sinkPath } : {}),
+    ...(wroteStdoutToSink && sinkPath ? { stdoutFile: sinkPath } : {}),
   }
 }
 
