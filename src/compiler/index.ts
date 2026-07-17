@@ -1,5 +1,5 @@
 import path from "node:path"
-import { mkdir, writeFile, copyFile, rm, appendFile } from "node:fs/promises"
+import { mkdir, writeFile, copyFile, rm, appendFile, readdir } from "node:fs/promises"
 import type { LLMProvider } from "../providers/types.ts"
 import { emptyTokenUsage, addTokenUsage } from "../core/types.ts"
 import { copyDirRecursive } from "../core/fs-utils.ts"
@@ -12,7 +12,7 @@ import { LoggingProvider } from "../core/logging-provider.ts"
 import type { CompileOptions, CompilationResult } from "./types.ts"
 import { resolveCompilerTimeout } from "../core/timeouts.ts"
 import type { ArtifactKey, PassRunMeta } from "./artifacts.ts"
-import { ArtifactStore } from "./artifacts.ts"
+import { ArtifactStore, ARTIFACT_DIR } from "./artifacts.ts"
 import type { CompilerPass, PassContext, SkillPatch } from "./passes/types.ts"
 import { defaultPasses, resolvePassTokens, topoSort, validateDeps } from "./registry.ts"
 import { generateWorkflowDagDocument } from "./passes/extract-parallelism/parallelism.ts"
@@ -147,7 +147,9 @@ export async function compileSkill(
     }
   }
 
-  const guard = validateGuard(opts.skillContent, skillContent)
+  const guard = validateGuard(opts.skillContent, skillContent, {
+    bundlePaths: await listBundleFilePaths(workDir),
+  })
   if (!guard.passed) {
     log.warn(`Guard failed: ${guard.violations.join("; ")}`)
   }
@@ -167,6 +169,26 @@ export async function compileSkill(
     costUsd: 0,
     durationMs: performance.now() - startMs,
   }
+}
+
+// Compilation metadata that lives in the variant dir but is not part of the
+// shipped skill bundle — excluded from the guard's reference-integrity set.
+const GUARD_SKIP_FILES = new Set(["SKILL.md", "compilation-plan.json", "meta.json", "env-setup.sh", "jit-candidates.json", "workflow-dag.md"])
+const GUARD_SKIP_DIRS = new Set([ARTIFACT_DIR, "_profiling"])
+
+/** Relative paths of the real bundle files in `workDir`, for the guard. */
+async function listBundleFilePaths(workDir: string): Promise<string[]> {
+  const entries = await readdir(workDir, { withFileTypes: true, recursive: true })
+  const paths: string[] = []
+  for (const e of entries) {
+    if (!e.isFile()) continue
+    const rel = path.relative(workDir, path.join(e.parentPath ?? workDir, e.name))
+    const segs = rel.split(path.sep)
+    if (segs.some((s) => GUARD_SKIP_DIRS.has(s))) continue
+    if (GUARD_SKIP_FILES.has(rel)) continue
+    paths.push(segs.join("/"))
+  }
+  return paths
 }
 
 async function copyProfilingArtifacts(opts: CompileOptions, workDir: string): Promise<void> {

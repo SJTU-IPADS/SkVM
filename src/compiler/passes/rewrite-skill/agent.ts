@@ -9,6 +9,7 @@ import { runAgentLoop } from "../../../core/agent-loop.ts"
 import { AGENT_TOOLS, createAgentToolExecutor } from "../../../core/agent-tools.ts"
 import { extractSCR } from "./extractor.ts"
 import { analyzeGaps } from "./gap-analyzer.ts"
+import { deriveDirectives } from "./directives.ts"
 import { getPrimitive } from "../../../core/primitives.ts"
 import { createLogger } from "../../../core/logger.ts"
 
@@ -202,129 +203,52 @@ function formatAllGapDetails(
 // System Prompt
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(tcp: TCP): string {
-  return `You are a SkVM pass-1 compensation editor.
+export function buildSystemPrompt(tcp: TCP): string {
+  return `You are the SkVM AOT compiler's rewrite pass (pass 1).
 
-Your job is not to generally improve the writing.
-Your job is to reduce the mismatch between:
-- what the skill requires from the agent, and
-- what the target model can reliably do, primitive by primitive.
+INPUT: a skill document (SKILL.md), the target model's capability profile, a capability-gap analysis with profiling evidence, and compilation directives DERIVED from that profile.
+OUTPUT: a compiled SKILL.md optimized for this specific target model.
 
-You are compiling a skill against a target capability profile.
-That means: for each justified edit, lower the primitive capability demand of the skill while preserving the skill's intent, structure, and main workflow.
-
-## Target Model
+## Target
 - Model: ${tcp.model}
 - Harness: ${tcp.harness}
 
-## Compilation Semantics
-A skill imposes capability demands through its instructions.
-A model has limited capability supply, represented by primitive levels.
-A capability gap means the current wording of the skill likely asks the model to do something above its reliable level.
+## Compilation calculus
+A skill imposes capability demands; the target model has a measured capability supply. Your job is to reshape the skill so every demand lands at or below the model's reliable level:
+- Where the model is BELOW a required level (a gap): compensate by inlining the exact artifact — command, lookup table, ready-to-run template — so the model copies instead of composing.
+- Where the model is at L3: delete how-to teaching for that primitive — the model already knows how. Keep any domain facts, parameters, or requirements that teaching carried; capability does not substitute for task knowledge.
+How aggressively to cut overall is NOT universal — it depends on this model's profile. The task message carries a size budget and model-derived directives computed from the capability analysis; follow them exactly. For a strong profile that means light, gap-targeted edits that respect the original structure; for a weak profile it means deep distillation into a compact execution card.
 
-Your task is to edit the skill so that the demanded primitive level is reduced toward the model's available level.
+## Model-derived directives
+The task message lists directives derived from this model's measured weaknesses, each with its evidence. Treat every directive as a hard requirement for the compiled skill. Do not add compensations for weaknesses the profile does not show — unneeded rules are noise for this model.
 
-Think in this chain:
-purpose -> primitive -> required level -> model level -> degradation direction -> local text edit
+## Delete (scaled by the size budget)
+- Background, rationale, education, "why this matters".
+- Every "ask the user / wait for confirmation / propose a plan before acting" step — compiled skills run HEADLESS in an automated harness; there is no user mid-task, and a confirmation step stalls the run.
+- Alternatives and option menus — pick one default path and state only it.
+- How-to teaching for primitives the capability table shows at L3 (keep domain facts and requirements embedded in it).
+- Restatements of the task, generic advice ("be careful", "double-check"), decorative structure.
+You may restructure freely: drop or rename headings, remove code blocks, reorder sections. The guard does not require structural identity — only the task contract, frontmatter, and size budget.
 
-An edit is good only if it makes that chain more executable for this model.
-An edit is bad if it merely adds explanation, verbosity, or extra process without lowering primitive demand.
+## Preserve: the task contract
+Never drop (distilled phrasing is fine):
+- required outputs: file names, formats, schemas;
+- correctness criteria and validation requirements;
+- coverage requirements (what must be handled — not how verbosely it was explained);
+- references to bundled files that actually exist (scripts/, templates/, ...). Never invent a file reference.
+The card itself must NOT contain example output filenames or report formats of its own — a model will follow the card's example filename instead of the task's required one and misplace otherwise-correct output. Where the original showed an output example, replace it with: "write the output exactly where and how the task prompt specifies".
+A smaller skill that asks the agent to produce less, check less, or cover less is NOT a valid compilation.
 
-## Core Objective
-Prefer the smallest set of local edits that reduce capability demand.
-Do not try to "cover every gap".
-Do not optimize for sounding clearer in general.
-Optimize for making the skill executable by this model with less branching, less hidden state, and less multi-step inference.
+## Gap-driven decisions
+For each listed gap: if profiling evidence shows the model failing a primitive the skill needs, compensate by LOWERING demand — inline the exact command, table, or template so the primitive is exercised at the model's level instead of above it. Apply the degradation guidance attached to each gap. If a gap has no concrete local compensation, ignore it; never add prose about a gap.
 
-## Priority Rules
-- Prioritize gaps marked as missing over weak gaps.
-- Prioritize larger level mismatches over smaller ones.
-- Prioritize edits that directly lower primitive demand over edits that only add hints.
-- If a gap cannot be mapped to a specific local span in the skill, skip it.
-- If the degradation guidance does not imply a concrete wording change, skip it.
-
-## How To Interpret Primitive Gaps
-Treat each primitive gap as a demand mismatch, not as a topic label.
-
-Examples of valid compensation logic:
-- If the skill currently requires conditional recovery or branching beyond the model's planning level, replace that local instruction with a fixed linear default path.
-- If the skill currently requires multi-file or multi-step tool coordination beyond the model's tool-use level, rewrite that local instruction so the agent performs one explicit operation at a time.
-- If the skill currently requires complex generation patterns above the model's generation level, replace them with simpler explicit patterns, smaller outputs, or more concrete templates.
-
-Do not copy these examples literally. Apply the same reasoning to the actual primitive and degradation guidance provided in the task.
-
-## What You May Do
-- Rephrase a local sentence so it requires less reasoning, planning, or tool coordination.
-- Replace an open-ended instruction with one explicit default path.
-- Add at most 1 short clarifying sentence when it directly lowers ambiguity tied to a listed primitive gap.
-- Simplify execution patterns, output shape, or file interaction when that lowers primitive demand.
-
-## What You Must NOT Do
-- Do not add new sections or headings.
-- Do not remove checklist items, quality criteria, or validation requirements unless they are explicitly optional in the original skill.
-- Do not narrow the task scope, output scope, or required coverage to compensate for a capability gap.
-- Do not reduce the number of workflow steps, bullet items, numbered items, or other enumerated items.
-- Do not rewrite the document wholesale.
-- Do not turn concise instructions into long procedures or checklists.
-- Do not add generic advice like "verify carefully", "double-check", "read first", or "retry if needed".
-- Do not add process that increases primitive demand, such as extra branching, extra passes, extra rewrites, or unnecessary verification loops.
-- Do not edit more than 3 local regions.
-- Do not mention tools the agent does not have. In this compiler run, the available tools are: read_file, write_file, execute_command.
-
-## Gap Mapping Rule
-For each candidate edit, explicitly validate all of the following before writing:
-1. Which purpose does this edit support?
-2. Which primitive is being compensated?
-3. What is the current required level, and what level does the model have?
-4. What local text span is creating that demand?
-5. Which degradation direction applies?
-6. How exactly does the new wording reduce the primitive demand?
-
-If you cannot answer all six, do not make the edit.
-
-## Structural Constraints
-Preserve:
-- YAML frontmatter
-- all markdown headings
-- all original code blocks, unless a specific degradation requires a local simplification inside one
-- the overall workflow shape of the skill
-
-## Workflow
-The full SKILL.md and bundled files are already provided.
-Do not reread provided files unless one specific detail is missing.
-
-1. Triage the listed gaps by severity and editability.
-2. Map each viable gap to one concrete local text span.
-3. Reject edits that increase process more than they reduce primitive demand.
-4. Keep only the highest-confidence local edits.
-5. If no high-confidence edit survives, leave the skill unchanged.
-6. Otherwise write the full edited SKILL.md once via write_file and stop.
-
-## Quality Bar
-- Reduce capability demand, not just ambiguity.
-- Favor linear defaults over branches.
-- Favor explicit local actions over inferred strategy.
-- Favor smaller output, simpler structure, and fewer moving parts when aligned with the degradation guidance.
-- Keep added rationale extremely short.
-- When in doubt, preserve the original text.
-
-## Task-Contract Preservation
-A compensation edit must preserve the task contract of the skill.
-
-Do not improve executability by removing or weakening:
-- correctness checks
-- quality bars
-- acceptance criteria
-- checklist items
-- required outputs
-- coverage requirements
-- comparison dimensions
-- safety or validation constraints
-
-A smaller or simpler skill is NOT better if it asks the agent to do less, check less, or justify less.
-
-Valid compensation reduces capability demand while preserving task scope and output expectations.
-Invalid compensation reduces task scope, output quality, or evaluation coverage in order to appear easier.`
+## Hard constraints
+- Respect the size budget given in the task message.
+- Keep YAML frontmatter present; its \`name:\` value must stay exactly the original's.
+${tcp.harness === "bare-agent"
+    ? "- Mention only tools this harness has: read_file, write_file, execute_command."
+    : "- Never name specific agent tools in the compiled skill — the target harness has its own toolset. Phrase actions neutrally: \"write the file\", \"run the command\"."}
+- Write the complete compiled SKILL.md in ONE write_file call, then stop. No commentary.`
 }
 
 
@@ -332,7 +256,7 @@ Invalid compensation reduces task scope, output quality, or evaluation coverage 
 // Initial User Message
 // ---------------------------------------------------------------------------
 
-function buildInitialMessage(
+export function buildInitialMessage(
   scr: SCR,
   gaps: CapabilityGap[],
   tcp: TCP,
@@ -342,10 +266,47 @@ function buildInitialMessage(
 ): string {
   const sections: string[] = []
 
+  // Size budget and rules come from the profile analysis, not from any
+  // hard-coded model assumption: a weak profile yields deep distillation
+  // (floored at 60 lines so templates fit, capped at 200 to stay a card);
+  // a strong profile keeps the original length and gets no extra rules.
+  const directives = deriveDirectives(tcp)
+  const origLines = skillContent.split("\n").length
+  // Floored at 60 lines so templates still fit and capped at 200 to stay a card —
+  // but never above the original, or a 45-line skill on the weakest tier would be
+  // handed a 60-line budget while the rationale above it says "distill deeply".
+  const sizeBudget = directives.tier === "keep"
+    ? origLines
+    : Math.min(origLines, Math.max(60, Math.min(200, Math.ceil(origLines * directives.sizeBudgetFraction))))
+
   sections.push(`# Compilation Task
 
-EDIT the existing SKILL.md for model **${tcp.model}** on harness **${tcp.harness}**.
-All file contents are provided below. Plan your edits based on the gap details, then write the edited SKILL.md.`)
+COMPILE the SKILL.md below for model **${tcp.model}** on harness **${tcp.harness}**.
+All file contents are provided. Decide what this model actually needs, then write the compiled SKILL.md.
+
+## Size budget (derived from capability profile)
+${directives.budgetRationale}.
+The original is ${origLines} lines; the compiled SKILL.md must be **at most ${sizeBudget} lines**.`)
+
+  // Model-derived directives: the profile-conditional rules the compiled
+  // skill must obey. Empty for strong profiles by design.
+  if (directives.rules.length > 0) {
+    sections.push(`\n## Model-Derived Directives (from capability profile)
+${directives.rules.map((r) => `- ${r.directive}\n  [evidence: ${r.evidence}]`).join("\n")}`)
+  } else {
+    sections.push(`\n## Model-Derived Directives (from capability profile)
+None — the profile shows no systematic weaknesses. Make only gap-targeted edits and preserve the original structure.`)
+  }
+
+  // Capability table: strengths tell the compiler what guidance to DELETE,
+  // weaknesses what to compensate with templates.
+  const byLevel: Record<string, string[]> = { L3: [], L2: [], L1: [], L0: [] }
+  for (const [prim, level] of Object.entries(tcp.capabilities)) byLevel[level]?.push(prim)
+  sections.push(`\n## Target Model Capability Table
+- L3 (reliable — delete how-to teaching for these; keep domain facts): ${byLevel.L3!.join(", ") || "—"}
+- L2: ${byLevel.L2!.join(", ") || "—"}
+- L1 (weak — compensate with exact commands/templates): ${byLevel.L1!.join(", ") || "—"}
+- L0 (failing — route around entirely): ${byLevel.L0!.join(", ") || "—"}`)
 
   // Inline SKILL.md content
   sections.push(`\n## Current SKILL.md\n\n\`\`\`markdown\n${skillContent}\n\`\`\``)
@@ -361,7 +322,7 @@ All file contents are provided below. Plan your edits based on the gap details, 
 
   // Gap summary table
   if (gaps.length === 0) {
-    sections.push(`\nNo capability gaps detected — the model meets all skill requirements. No edits needed.`)
+    sections.push(`\nNo capability gaps detected — the model meets every level this skill requires, so compensation templates are unnecessary. Cleanup still is: apply the size budget and the model-derived directives, delete headless-hostile steps (confirmation prompts, option menus), and remove content that would mislead the model away from the task prompt's requirements. If after that the original is already optimal, write it back unchanged.`)
   } else {
     sections.push(`\n## Capability Gaps (${gaps.length})
 
@@ -379,12 +340,7 @@ All file contents are provided below. Plan your edits based on the gap details, 
     sections.push(formatAllGapDetails(gaps, scr, tcp, failureContext))
 
     sections.push(`
-For each gap above, determine:
-1. Where in the skill text does this primitive get exercised?
-2. What specific failure pattern does the model exhibit in profiling?
-3. Does the degradation guidance suggest a concrete wording change?
-
-Only edit for gaps where all three answers point to a specific, localized change.`)
+Use the gaps to decide which exact commands, tables, or templates to inline — those carry the knowledge this model lacks. Everything not needed for a gap or for the task contract is a deletion candidate. Then write the complete compiled SKILL.md (one write_file call).`)
   }
 
   // Failure context summary for JIT
@@ -423,9 +379,18 @@ export async function runPass1Agentic(
   const gaps = analyzeGaps(scr, tcp)
   log.info(`Gaps: ${gaps.length}`)
 
-  if (gaps.length === 0) {
-    return { scr, gaps, compiledSkill: skillContent }
-  }
+  // No early return on zero gaps: "no capability gap" does not mean "nothing
+  // to compile". With an early return, skills whose content actively harms a
+  // fully-capable model (misleading examples, verbose noise) pass through
+  // verbatim and the compiled variant inherits the original's failures — the
+  // cleanup never runs. With zero gaps the agent still applies the size
+  // budget, the derived directives, and the universal cleanup rules.
+  //
+  // What bounds the downside is the guard VERDICT, not the guard itself: a
+  // failed guard is recorded on the variant's meta and logged, but nothing here
+  // rolls the variant back, so a consumer that ignores `guardPassed` will run a
+  // rejected artifact. Treat the verdict as load-bearing when consuming a
+  // compiled variant.
 
   const bundledFiles = await readWorkDirFiles(workDir)
   const system = buildSystemPrompt(tcp)
