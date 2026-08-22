@@ -172,3 +172,93 @@ describe("aotVariantRunner guard fallback", () => {
     expect(result.skillContentHash).toBe(contentHash(COMPILED))
   })
 })
+
+// A cached p3 variant must run without a TCP profile or compiler provider:
+// pass3 never consumes the TCP, and a cache hit compiles nothing at all.
+// (A pre-compile-then-bench workflow hits exactly this path.)
+describe("aotVariantRunner TCP requirement", () => {
+  const P3_COMPILED = "---\nname: demo\ndescription: d\n---\n# body\n\n**Parallel execution hints:** …\n"
+
+  async function makeCachedP3Variant(skillId: string, model: string, harness: string) {
+    const dir = getVariantDir(harness, model, skillId, "p3")
+    await mkdir(dir, { recursive: true })
+    await writeFile(path.join(dir, "SKILL.md"), P3_COMPILED)
+    await writeFile(path.join(dir, "meta.json"), JSON.stringify({ guardPassed: true }))
+  }
+
+  async function makeP3Skill(skillId: string): Promise<ResolvedSkill> {
+    const skillDir = await mkdtemp(path.join(tmpdir(), "skvm-p3skill-"))
+    const content = "---\nname: demo\ndescription: d\n---\n# body\n"
+    await writeFile(path.join(skillDir, "SKILL.md"), content)
+    return {
+      skillId, skillDir,
+      skillPath: path.join(skillDir, "SKILL.md"),
+      skillContent: content,
+      skillMeta: { name: skillId, description: "d" },
+      bundleFiles: [],
+    }
+  }
+
+  function p3Ctx(skillId: string, skill: ResolvedSkill, adapter: AgentAdapter): ConditionContext {
+    return {
+      condition: "aot-compiled-p3",
+      task: {
+        id: "p3-task", category: "test", gradingType: "automated", prompt: "noop",
+        eval: [{ method: "file-check", path: "out.txt", mode: "exact", expected: "ok" }],
+        timeoutMs: 5_000, maxSteps: 5,
+      },
+      adapter,
+      adapterConfig: { model: "test/fake", maxSteps: 5, timeoutMs: 5_000 },
+      skills: [skill],
+      createConvLog: async () => ({}) as unknown as ConversationLog,
+      tcp: undefined,
+      compilerProvider: undefined,
+      aotFallback: undefined,
+      jitRuns: 0,
+    } satisfies Partial<ConditionContext> as ConditionContext
+  }
+
+  test("cached p3 variant runs with neither TCP nor compiler provider", async () => {
+    const skillId = "p3-cached-no-tcp"
+    const model = "test/fake"
+    const harness = "fake-capture"
+    await makeCachedP3Variant(skillId, model, harness)
+    const skill = await makeP3Skill(skillId)
+
+    const state: { seenContent?: string } = {}
+    const adapter: AgentAdapter = {
+      name: harness,
+      async setup() {},
+      async run(task): Promise<RunResult> {
+        state.seenContent = task.skill?.content
+        await Bun.write(`${task.workDir}/out.txt`, "ok")
+        return {
+          text: "done", steps: [], tokens: emptyTokenUsage(), cost: 0,
+          durationMs: 1, llmDurationMs: 1, workDir: task.workDir, runStatus: "ok",
+        }
+      },
+      async teardown() {},
+    }
+
+    const result = await aotVariantRunner.run(p3Ctx(skillId, skill, adapter))
+    expect(result.runStatus).toBe("ok")
+    expect(state.seenContent).toBe(P3_COMPILED)
+  })
+
+  test("uncached p3 without a compiler provider degrades to a zero result, not a crash", async () => {
+    const skillId = "p3-uncached-no-provider"
+    const skill = await makeP3Skill(skillId)
+    const adapter: AgentAdapter = {
+      name: "fake-never-called",
+      async setup() {},
+      async run(): Promise<RunResult> {
+        throw new Error("adapter must not run when compilation is impossible")
+      },
+      async teardown() {},
+    }
+
+    const result = await aotVariantRunner.run(p3Ctx(skillId, skill, adapter))
+    expect(result.score).toBe(0)
+    expect(result.error).toMatch(/compiler provider/i)
+  })
+})

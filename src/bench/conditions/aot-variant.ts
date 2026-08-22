@@ -1,5 +1,6 @@
 import path from "node:path"
 import { compileSkill, writeVariant } from "../../compiler/index.ts"
+import { resolvePassTokens } from "../../compiler/registry.ts"
 import { ARTIFACT_DIR } from "../../compiler/artifacts.ts"
 import { toPassTag } from "../../core/config.ts"
 import { getVariantDir } from "../../proposals/storage.ts"
@@ -13,6 +14,17 @@ import {
 } from "./staging.ts"
 
 const log = createLogger("bench-conditions")
+
+/**
+ * Whether an AOT condition's selected passes include one that consumes the
+ * TCP profile (pass 1). Conditions made only of profile-free passes (e.g.
+ * aot-compiled-p3) can compile — and always run from cache — without one.
+ */
+export function aotConditionNeedsTcp(condition: string): boolean {
+  const passes = parseAotPasses(condition)
+  if (!passes) return false
+  return resolvePassTokens(passes.map(String)).some((p) => p.requiresTcp)
+}
 
 /**
  * Whether a compiled AOT variant should be discarded in favour of the original
@@ -52,9 +64,6 @@ export const aotVariantRunner: ConditionRunner = {
     const passes = parseAotPasses(condition)
     if (!passes) {
       throw new Error(`[aot-variant] not an AOT condition: ${condition}`)
-    }
-    if (!ctx.tcp || !ctx.compilerProvider) {
-      throw new Error(`[aot-variant] ${condition} requires a TCP profile and a compiler provider`)
     }
 
     const skillContent = concatSkillContents(skills)
@@ -97,7 +106,25 @@ export const aotVariantRunner: ConditionRunner = {
         throw new Error("not cached")
       }
     } catch {
-      // Compile with the requested passes
+      // Compile with the requested passes. A TCP profile is only needed when
+      // one of them consumes it (pass 1) — a cached variant above needs
+      // neither the TCP nor a compiler provider. Mirrors compileSkill's own
+      // per-pass gate; checked here first to fail as a scored zero rather
+      // than an exception from inside the compiler.
+      if (!ctx.compilerProvider) {
+        return zeroConditionResult(condition, { skillId, skillPath }, {
+          error: `[aot-variant] ${condition} needs to compile ${skillId} but no compiler provider is configured`,
+          runStatus: "adapter-crashed",
+          statusDetail: "aot compile impossible: no compiler provider",
+        })
+      }
+      if (!ctx.tcp && resolvePassTokens(passes.map(String)).some((p) => p.requiresTcp)) {
+        return zeroConditionResult(condition, { skillId, skillPath }, {
+          error: `[aot-variant] ${condition} includes a TCP-consuming pass but no --profile was provided`,
+          runStatus: "adapter-crashed",
+          statusDetail: "aot compile impossible: missing TCP profile",
+        })
+      }
       log.info(`[${condition}] Compiling ${skillId} for ${adapterConfig.model} (passes=${passes})`)
       try {
         const result = await compileSkill({

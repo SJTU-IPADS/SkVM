@@ -16,6 +16,7 @@ import type { ResolvedSkill } from "../core/skill-loader.ts"
 // Side-effect import: ensures every custom evaluator registers at module load.
 import "./evaluators/index.ts"
 import { CONDITION_RUNNERS, resolveConditionKind } from "./conditions/index.ts"
+import { aotConditionNeedsTcp } from "./conditions/aot-variant.ts"
 import { generateReport, printSummary, printMultiModelSummary, generateMultiModelMarkdown, printMultiAdapterSummary, generateMultiAdapterMarkdown } from "./reporter.ts"
 import { type AdapterName, createAdapter } from "../adapters/registry.ts"
 import { getBenchLogDir, safeModelName } from "../core/config.ts"
@@ -290,7 +291,10 @@ async function prepareBenchSession(config: BenchRunConfig): Promise<{
 
     for (const condition of config.conditions) {
       if (!hasSkill && condition !== "no-skill") continue
-      if (isAotCondition(condition) && !tcp) continue
+      // AOT conditions only need the TCP when a selected pass consumes it
+      // (pass 1). Cached variants and profile-free passes (2/3) run without
+      // one — mirrors the per-pass gate in compileSkill/aot-compile.
+      if (isAotCondition(condition) && !tcp && aotConditionNeedsTcp(condition)) continue
 
       const done = completedRunCount(progress, task.id, condition)
       if (done >= runsPerTask) {

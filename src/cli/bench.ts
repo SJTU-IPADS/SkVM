@@ -16,6 +16,7 @@ import { AdapterConfigModeSchema } from "../core/types.ts"
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "../core/ui-defaults.ts"
 import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
 import { BENCH_CONDITIONS, isAotCondition, isValidCondition, AOT_FALLBACK_DEFAULT } from "../bench/types.ts"
+import { aotConditionNeedsTcp } from "../bench/conditions/aot-variant.ts"
 import type { BenchCondition, BenchRunConfig, AotFallbackMode } from "../bench/types.ts"
 
 export const BENCH_FLAGS = defineFlags(
@@ -280,8 +281,8 @@ export async function runBench(config: BenchConfig): Promise<void> {
     adapterConfigMode: resolveAdapterConfigMode(config["adapter-config"]),
   }
 
-  if (!baseConfig.tcpPath && conditions.some(c => isAotCondition(c))) {
-    console.log("Warning: --profile not set. AOT conditions will be skipped.")
+  if (!baseConfig.tcpPath && conditions.some(c => isAotCondition(c) && aotConditionNeedsTcp(c))) {
+    console.log("Warning: --profile not set. AOT conditions whose passes consume the TCP (pass 1) will be skipped.")
     console.log("Run: bun run skvm profile --model=<id> to generate a TCP first.\n")
   }
 
