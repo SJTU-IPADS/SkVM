@@ -230,23 +230,6 @@ export class OpenRouterProvider implements LLMProvider {
     const text = (message?.content as string) ?? ""
     const toolCalls: LLMToolCall[] = []
 
-    const rawToolCalls = message?.tool_calls as Array<{
-      id: string
-      function: { name: string; arguments: string }
-    }> | undefined
-
-    if (rawToolCalls) {
-      for (const tc of rawToolCalls) {
-        let args: Record<string, unknown>
-        try {
-          args = JSON.parse(tc.function.arguments)
-        } catch (parseErr) {
-          throw new ToolArgumentsParseError(this.name, tc.function.arguments, parseErr)
-        }
-        toolCalls.push({ id: tc.id, name: tc.function.name, arguments: args })
-      }
-    }
-
     // OpenRouter returns prompt_tokens as the TOTAL prompt (including any
     // cached portion). prompt_tokens_details.cached_tokens breaks out the
     // cached portion, so the fresh input is the difference.
@@ -267,6 +250,29 @@ export class OpenRouterProvider implements LLMProvider {
     // usage.cost is authoritative — present when the request body included
     // `usage: { include: true }`. Prefer it over local pricing-table estimates.
     const costUsd = typeof usage?.cost === "number" ? usage.cost : undefined
+
+    const rawToolCalls = message?.tool_calls as Array<{
+      id: string
+      function: { name: string; arguments: string }
+    }> | undefined
+
+    if (rawToolCalls) {
+      for (const tc of rawToolCalls) {
+        let args: Record<string, unknown>
+        try {
+          args = JSON.parse(tc.function.arguments)
+        } catch (parseErr) {
+          // Billed before the arguments failed to parse — hand the spend to the caller so a
+          // rejected turn is still accounted for.
+          throw new ToolArgumentsParseError(this.name, tc.function.arguments, parseErr, {
+            tokens,
+            costUsd,
+            durationMs,
+          })
+        }
+        toolCalls.push({ id: tc.id, name: tc.function.name, arguments: args })
+      }
+    }
 
     const finishReason = (choice?.finish_reason as string) ?? "stop"
     const stopReason = finishReason === "tool_calls"

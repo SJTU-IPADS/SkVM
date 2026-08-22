@@ -1,10 +1,21 @@
 import type { AgentStep, ToolCall, TokenUsage } from "./types.ts"
 import { emptyTokenUsage, addTokenUsage } from "./types.ts"
 import type { LLMProvider, LLMTool, LLMToolCall, LLMToolResult, LLMResponse, LLMMessage, CompletionParams } from "../providers/types.ts"
-import { isProviderError } from "../providers/errors.ts"
+import { isProviderError, isToolArgumentsParseError, type ToolArgumentsParseError } from "../providers/errors.ts"
 import { createLogger } from "./logger.ts"
 
 const log = createLogger("agent-loop")
+
+/**
+ * How many *consecutive* malformed-tool-call responses the loop tolerates
+ * before giving up on the run. A ToolArgumentsParseError is a recoverable
+ * content failure (the model leaked reasoning into tool_call arguments, or
+ * emitted JSON JSON.parse rejects): the loop feeds the parse error back and
+ * lets the model retry. Only when the model can't produce a valid tool call
+ * after this many attempts in a row do we stop — as a scored task failure,
+ * not an adapter crash. Reset to zero on any successfully-parsed response.
+ */
+export const MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
 // ---------------------------------------------------------------------------
 // Types
@@ -118,6 +129,62 @@ export async function runAgentLoop(
   let pendingHistory: Array<{ role: "system" | "user" | "assistant"; content: string }> | undefined
   let lastActionSig = ""
   let repeatCount = 0
+  let consecutiveParseFailures = 0
+
+  // Feed a malformed-tool-call parse error back to the model so it can retry,
+  // instead of aborting the whole run. The offending response never became a
+  // valid LLMResponse, so we can't continue it via completeWithToolResults;
+  // we drop back to a plain complete() with the parse error appended as a
+  // corrective user turn. Any exchange staged in `pendingHistory` is committed
+  // first (that continuation path is being abandoned). Returns whether the
+  // caller should retry the turn or give up on the run.
+  const feedBackParseError = (err: ToolArgumentsParseError): "retry" | "giveup" => {
+    if (pendingHistory) {
+      params.messages.push(...pendingHistory)
+      pendingHistory = undefined
+    }
+    // The rejected turn was billed before it failed to parse (the provider throws after a 200 OK),
+    // so its spend belongs in the run totals. Cost follows the same all-or-nothing rule as a
+    // successful response: one unpriced call makes the run's dollar figure an estimate.
+    if (err.usage) {
+      totalTokens = addTokenUsage(totalTokens, err.usage.tokens)
+      llmDurationMs += err.usage.durationMs
+      totalCostUsd = totalCostUsd !== undefined && err.usage.costUsd !== undefined
+        ? totalCostUsd + err.usage.costUsd
+        : undefined
+    }
+    // Replay the model's own malformed output as the assistant turn it was, then correct it. Two
+    // reasons this is not folded into a single user message: consecutive user turns are invalid on
+    // some providers, and a correction that says "your previous reply" has to have a previous reply
+    // in the history to refer to — otherwise, on the tool-results path, the model reads it as being
+    // about the successful call whose output it can see.
+    params.messages.push(
+      { role: "assistant", content: err.rawArguments },
+      {
+        role: "user",
+        content:
+          `That reply was rejected: the tool call's arguments were not valid JSON ` +
+          `(${err.message}). Respond again with a valid tool call, emitting well-formed JSON ` +
+          `for the arguments.`,
+      },
+    )
+    // Record the rejected attempt so it counts as a step and shows in the trace. The text is the
+    // model's raw output, not a harness-authored sentence — a transcript reader (or a grader
+    // scanning assistant text) should never see the harness impersonating the model.
+    steps.push({
+      role: "assistant",
+      text: err.rawArguments.slice(0, 2000),
+      toolCalls: [],
+      timestamp: Date.now(),
+    })
+    consecutiveParseFailures++
+    if (consecutiveParseFailures >= MAX_CONSECUTIVE_PARSE_FAILURES) {
+      log.warn(`Giving up after ${consecutiveParseFailures} consecutive malformed tool calls`)
+      return "giveup"
+    }
+    log.debug(`Malformed tool call (attempt ${consecutiveParseFailures}); feeding parse error back for retry`)
+    return "retry"
+  }
 
   try {
     while (iteration < maxIterations) {
@@ -131,7 +198,15 @@ export async function runAgentLoop(
 
       // --- LLM call ---
       if (!response) {
-        response = await provider.complete(params)
+        try {
+          response = await provider.complete(params)
+        } catch (err) {
+          if (!isToolArgumentsParseError(err)) throw err
+          if (feedBackParseError(err) === "giveup") break
+          response = undefined
+          continue
+        }
+        consecutiveParseFailures = 0
         llmDurationMs += response.durationMs
       }
       // (else: response was already set by completeWithToolResults at end of previous iteration)
@@ -253,7 +328,17 @@ export async function runAgentLoop(
       }
 
       // Next LLM call with tool results
-      response = await provider.completeWithToolResults(params, toolResults, response)
+      try {
+        response = await provider.completeWithToolResults(params, toolResults, response)
+      } catch (err) {
+        if (!isToolArgumentsParseError(err)) throw err
+        if (feedBackParseError(err) === "giveup") break
+        // Abandon the tool-result continuation; next iteration restarts with a
+        // plain complete() carrying the flushed history + corrective message.
+        response = undefined
+        continue
+      }
+      consecutiveParseFailures = 0
       llmDurationMs += response.durationMs
     }
   } catch (err) {

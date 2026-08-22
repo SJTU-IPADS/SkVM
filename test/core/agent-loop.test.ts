@@ -1,6 +1,9 @@
 import { test, expect, describe } from "bun:test"
-import { runAgentLoop } from "../../src/core/agent-loop.ts"
-import type { LLMProvider, LLMResponse, CompletionParams, LLMToolResult } from "../../src/providers/types.ts"
+import { runAgentLoop, MAX_CONSECUTIVE_PARSE_FAILURES } from "../../src/core/agent-loop.ts"
+import type { LLMProvider, LLMResponse, CompletionParams, LLMToolResult, LLMMessage } from "../../src/providers/types.ts"
+import { ToolArgumentsParseError, ProviderHttpError } from "../../src/providers/errors.ts"
+
+const EMPTY_TOKENS = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
 // Minimal mock LLM. Each `complete` call sleeps for `delayMs` then returns
 // a final end_turn response, so the loop exits naturally after one iteration.
@@ -198,5 +201,295 @@ describe("runAgentLoop ILP dispatch", () => {
       "call_2",
       "call_3",
     ])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Malformed tool_call recovery (feed-back-and-retry, not adapter-crash)
+// ---------------------------------------------------------------------------
+//
+// Small models (e.g. qwen3-30b) sometimes leak reasoning into tool_call
+// arguments, producing JSON that JSON.parse rejects. The provider surfaces
+// that as ToolArgumentsParseError. The loop must treat it as a recoverable
+// content failure: feed the parse error back to the model and let it retry,
+// rather than aborting the whole run as adapter-crashed.
+
+describe("runAgentLoop malformed tool_call recovery", () => {
+  test("feeds parse error back and recovers when the model retries with valid JSON", async () => {
+    const calls: LLMMessage[][] = []
+    let n = 0
+    const provider: LLMProvider = {
+      name: "parse-then-ok",
+      async complete(params: CompletionParams): Promise<LLMResponse> {
+        calls.push(params.messages.map((m) => ({ ...m })))
+        n++
+        if (n === 1) {
+          throw new ToolArgumentsParseError("parse-then-ok", "<think>oops</think>{not: json")
+        }
+        return { text: "recovered", toolCalls: [], tokens: EMPTY_TOKENS, durationMs: 1, stopReason: "end_turn" }
+      },
+      async completeWithToolResults(): Promise<LLMResponse> {
+        throw new Error("not used")
+      },
+    }
+
+    const result = await runAgentLoop(
+      {
+        provider,
+        model: "mock",
+        tools: [],
+        executeTool: async () => ({ output: "", durationMs: 0 }),
+        system: "",
+        maxIterations: 10,
+        timeoutMs: 5000,
+      },
+      [{ role: "user", content: "go" }],
+    )
+
+    // Did not crash the run — recovered and produced the model's retry.
+    expect(result.error).toBeUndefined()
+    expect(result.text).toBe("recovered")
+    expect(result.iterations).toBeGreaterThanOrEqual(2)
+    // The retry actually saw a corrective message telling it to emit valid JSON.
+    expect(calls.length).toBe(2)
+    expect(calls[1]!.some((m) => m.role === "user" && m.content.includes("JSON"))).toBe(true)
+  })
+
+  test("the counter is consecutive: alternating bad/good never exhausts it", async () => {
+    // The give-up rule is about a model that CANNOT emit valid JSON, not one that occasionally
+    // fails. Without the reset, a long run with sporadic parse failures would be killed at the
+    // third one, however far apart they were.
+    let n = 0
+    // One scripted sequence shared by both entry points: bad, good, bad, good, ... Each failure is
+    // separated by a success, so the consecutive counter must never reach its limit.
+    const next = (): LLMResponse => {
+      n++
+      if (n % 2 === 1 && n < 8) {
+        throw new ToolArgumentsParseError("alternating", `{bad-${n}`, undefined, {
+          tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+          durationMs: 7,
+        })
+      }
+      if (n < 8) {
+        return {
+          text: "",
+          toolCalls: [{ id: `call_${n}`, name: "bash", arguments: { command: `echo ${n}` } }],
+          tokens: EMPTY_TOKENS, durationMs: 1, stopReason: "tool_use",
+        }
+      }
+      return { text: "done", toolCalls: [], tokens: EMPTY_TOKENS, durationMs: 1, stopReason: "end_turn" }
+    }
+    const provider: LLMProvider = {
+      name: "alternating",
+      async complete(): Promise<LLMResponse> {
+        return next()
+      },
+      async completeWithToolResults(): Promise<LLMResponse> {
+        return next()
+      },
+    }
+
+    const result = await runAgentLoop(
+      {
+        provider,
+        model: "mock",
+        tools: [],
+        executeTool: async () => ({ output: "ok", durationMs: 0 }),
+        system: "",
+        maxIterations: 30,
+        timeoutMs: 5000,
+      },
+      [{ role: "user", content: "go" }],
+    )
+
+    expect(result.error).toBeUndefined()
+    expect(result.text).toBe("done")
+    // Four rejected turns happened, none of them consecutive, and the run survived all of them.
+    expect(n).toBe(8)
+  })
+
+  test("a rejected turn's tokens, cost and latency still land in the run totals", async () => {
+    // The provider throws AFTER a 200 OK, so the call was billed. Dropping it understates cost
+    // exactly on the weak-model runs this recovery path exists to keep.
+    let n = 0
+    const provider: LLMProvider = {
+      name: "billed-then-ok",
+      async complete(): Promise<LLMResponse> {
+        n++
+        if (n === 1) {
+          throw new ToolArgumentsParseError("billed-then-ok", "{bad", undefined, {
+            tokens: { input: 100, output: 20, cacheRead: 5, cacheWrite: 0 },
+            costUsd: 0.002,
+            durationMs: 250,
+          })
+        }
+        return {
+          text: "recovered", toolCalls: [],
+          tokens: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 },
+          costUsd: 0.001, durationMs: 50, stopReason: "end_turn",
+        }
+      },
+      async completeWithToolResults(): Promise<LLMResponse> {
+        throw new Error("not used")
+      },
+    }
+
+    const result = await runAgentLoop(
+      {
+        provider, model: "mock", tools: [],
+        executeTool: async () => ({ output: "", durationMs: 0 }),
+        system: "", maxIterations: 10, timeoutMs: 5000,
+      },
+      [{ role: "user", content: "go" }],
+    )
+
+    expect(result.tokens).toEqual({ input: 110, output: 22, cacheRead: 5, cacheWrite: 0 })
+    expect(result.totalCostUsd).toBeCloseTo(0.003, 6)
+    expect(result.llmDurationMs).toBe(300)
+  })
+
+  test("the correction follows the model's own rejected output, not a bare user turn", async () => {
+    // Two consecutive user turns are invalid on some providers, and "your previous reply" has to
+    // have a previous reply to refer to.
+    const calls: LLMMessage[][] = []
+    let n = 0
+    const provider: LLMProvider = {
+      name: "shape-check",
+      async complete(params: CompletionParams): Promise<LLMResponse> {
+        calls.push(params.messages.map((m) => ({ ...m })))
+        n++
+        if (n === 1) throw new ToolArgumentsParseError("shape-check", "<think>x</think>{bad")
+        return { text: "ok", toolCalls: [], tokens: EMPTY_TOKENS, durationMs: 1, stopReason: "end_turn" }
+      },
+      async completeWithToolResults(): Promise<LLMResponse> {
+        throw new Error("not used")
+      },
+    }
+
+    await runAgentLoop(
+      {
+        provider, model: "mock", tools: [],
+        executeTool: async () => ({ output: "", durationMs: 0 }),
+        system: "", maxIterations: 10, timeoutMs: 5000,
+      },
+      [{ role: "user", content: "go" }],
+    )
+
+    const retry = calls[1]!
+    expect(retry.at(-2)).toEqual({ role: "assistant", content: "<think>x</think>{bad" })
+    expect(retry.at(-1)!.role).toBe("user")
+    // No two adjacent turns share a role.
+    for (let i = 1; i < retry.length; i++) {
+      expect(retry[i]!.role).not.toBe(retry[i - 1]!.role)
+    }
+  })
+
+  test("a non-parse ProviderError still propagates as an infra failure", async () => {
+    // The whole point of the change is that PARSE failures stop being infra errors. Everything
+    // else must keep crashing the run loudly.
+    const provider: LLMProvider = {
+      name: "http-boom",
+      async complete(): Promise<LLMResponse> {
+        throw new ProviderHttpError("OpenRouter API error 500: upstream exploded", "http-boom", 500, "boom")
+      },
+      async completeWithToolResults(): Promise<LLMResponse> {
+        throw new Error("not used")
+      },
+    }
+
+    await expect(
+      runAgentLoop(
+        {
+          provider, model: "mock", tools: [],
+          executeTool: async () => ({ output: "", durationMs: 0 }),
+          system: "", maxIterations: 5, timeoutMs: 5000,
+        },
+        [{ role: "user", content: "go" }],
+      ),
+    ).rejects.toThrow(/upstream exploded/)
+  })
+
+  test("gives up as a scored run (not a crash) after N consecutive parse failures", async () => {
+    let n = 0
+    const provider: LLMProvider = {
+      name: "always-parse-err",
+      async complete(): Promise<LLMResponse> {
+        n++
+        throw new ToolArgumentsParseError("always-parse-err", "<think>never valid</think>{")
+      },
+      async completeWithToolResults(): Promise<LLMResponse> {
+        throw new Error("not used")
+      },
+    }
+
+    const result = await runAgentLoop(
+      {
+        provider,
+        model: "mock",
+        tools: [],
+        executeTool: async () => ({ output: "", durationMs: 0 }),
+        system: "",
+        maxIterations: 10, // deliberately larger than the parse-retry cap
+        timeoutMs: 5000,
+      },
+      [{ role: "user", content: "go" }],
+    )
+
+    // Persistent malformed JSON is the model failing the task, not the harness
+    // crashing: no propagated error, so runStatus stays 'ok' and it scores 0.
+    expect(result.error).toBeUndefined()
+    // The consecutive-failure cap fired before maxIterations was exhausted.
+    expect(n).toBe(MAX_CONSECUTIVE_PARSE_FAILURES)
+    expect(result.iterations).toBeLessThanOrEqual(MAX_CONSECUTIVE_PARSE_FAILURES)
+  })
+
+  test("recovers from a parse error on the completeWithToolResults (mid-conversation) path", async () => {
+    const completeCalls: LLMMessage[][] = []
+    let completeN = 0
+    let toolRuns = 0
+    const provider: LLMProvider = {
+      name: "mid-conv",
+      async complete(params: CompletionParams): Promise<LLMResponse> {
+        completeCalls.push(params.messages.map((m) => ({ ...m })))
+        completeN++
+        if (completeN === 1) {
+          return {
+            text: "",
+            toolCalls: [{ id: "c0", name: "bash", arguments: { command: "echo hi" } }],
+            tokens: EMPTY_TOKENS,
+            durationMs: 1,
+            stopReason: "tool_use",
+          }
+        }
+        return { text: "recovered after tool", toolCalls: [], tokens: EMPTY_TOKENS, durationMs: 1, stopReason: "end_turn" }
+      },
+      async completeWithToolResults(): Promise<LLMResponse> {
+        throw new ToolArgumentsParseError("mid-conv", "<think>leak</think>{bad")
+      },
+    }
+
+    const result = await runAgentLoop(
+      {
+        provider,
+        model: "mock",
+        tools: [],
+        executeTool: async () => {
+          toolRuns++
+          return { output: "hi", durationMs: 0 }
+        },
+        system: "",
+        maxIterations: 10,
+        timeoutMs: 5000,
+      },
+      [{ role: "user", content: "go" }],
+    )
+
+    expect(result.error).toBeUndefined()
+    expect(result.text).toBe("recovered after tool")
+    expect(toolRuns).toBe(1)
+    // Recovery restarted via complete(); the retry saw the prior tool exchange
+    // plus a corrective message.
+    expect(completeN).toBe(2)
+    expect(completeCalls[1]!.some((m) => m.role === "user" && m.content.includes("JSON"))).toBe(true)
   })
 })

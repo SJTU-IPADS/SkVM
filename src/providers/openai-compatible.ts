@@ -242,23 +242,6 @@ export class OpenAICompatibleProvider implements LLMProvider {
     const text = (message?.content as string) ?? ""
     const toolCalls: LLMToolCall[] = []
 
-    const rawToolCalls = message?.tool_calls as Array<{
-      id: string
-      function: { name: string; arguments: string }
-    }> | undefined
-
-    if (rawToolCalls) {
-      for (const tc of rawToolCalls) {
-        let args: Record<string, unknown>
-        try {
-          args = JSON.parse(tc.function.arguments)
-        } catch (parseErr) {
-          throw new ToolArgumentsParseError(this.name, tc.function.arguments, parseErr)
-        }
-        toolCalls.push({ id: tc.id, name: tc.function.name, arguments: args })
-      }
-    }
-
     // Cached prompt tokens: OpenAI-style APIs (OpenAI, Azure, vLLM) report
     // `prompt_tokens_details.cached_tokens` as the cached portion of the full
     // `prompt_tokens` count. Fresh input is the difference.
@@ -274,6 +257,28 @@ export class OpenAICompatibleProvider implements LLMProvider {
       output: usage?.completion_tokens ?? 0,
       cacheRead: cachedTokens,
       cacheWrite: 0,
+    }
+
+    const rawToolCalls = message?.tool_calls as Array<{
+      id: string
+      function: { name: string; arguments: string }
+    }> | undefined
+
+    if (rawToolCalls) {
+      for (const tc of rawToolCalls) {
+        let args: Record<string, unknown>
+        try {
+          args = JSON.parse(tc.function.arguments)
+        } catch (parseErr) {
+          // The response was billed before its arguments failed to parse; hand the spend to
+          // the caller so a rejected turn is still accounted for.
+          throw new ToolArgumentsParseError(this.name, tc.function.arguments, parseErr, {
+            tokens,
+            durationMs,
+          })
+        }
+        toolCalls.push({ id: tc.id, name: tc.function.name, arguments: args })
+      }
     }
 
     const finishReason = (choice?.finish_reason as string) ?? "stop"

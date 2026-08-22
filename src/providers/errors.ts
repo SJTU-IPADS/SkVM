@@ -13,6 +13,8 @@
  * exhausted). Generic `Error` escaping a provider indicates a bug.
  */
 
+import type { TokenUsage } from "../core/types.ts"
+
 /** Base class. All provider-originating infra errors extend this. */
 export class ProviderError extends Error {
   /** Underlying error, for debugging. */
@@ -111,8 +113,26 @@ export function isToolChoiceUnsupportedError(err: unknown): boolean {
  *
  * Carries the raw argument string for diagnostic logging.
  */
+/**
+ * What a rejected response had already billed.
+ *
+ * The parse failure happens *after* a 200 OK, so the tokens are spent whether or
+ * not the arguments parsed. Carrying them on the error is the only way the loop
+ * can account for a turn it never receives as an LLMResponse.
+ */
+export interface ParseFailureUsage {
+  tokens: TokenUsage
+  costUsd?: number
+  durationMs: number
+}
+
 export class ToolArgumentsParseError extends ProviderError {
-  constructor(provider: string, readonly rawArguments: string, cause?: unknown) {
+  constructor(
+    provider: string,
+    readonly rawArguments: string,
+    cause?: unknown,
+    readonly usage?: ParseFailureUsage,
+  ) {
     super(
       `tool_call arguments not parseable as JSON (${rawArguments.length} chars): ` +
       `${JSON.stringify(rawArguments.slice(0, 120))}${rawArguments.length > 120 ? "…" : ""}`,
