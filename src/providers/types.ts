@@ -42,6 +42,14 @@ export interface LLMResponse {
   durationMs: number
   stopReason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence"
   /**
+   * The upstream fleet that served this call — OpenRouter's `provider` field, e.g. "DeepInfra".
+   * Distinct from `LLMProvider.name` ("openrouter"), which is the gateway. OpenRouter silently
+   * re-routes a model id between fleets and the fleet materially changes behavior, so this is
+   * written to the conversation log to make a run's serving path diagnosable after the fact.
+   * Pin the fleet with SKVM_OPENROUTER_PROVIDER (note: that takes slugs, not this display name).
+   */
+  servingProvider?: string
+  /**
    * Reasoning trace returned alongside `text` by thinking-mode models
    * (deepseek-v4, deepseek-reasoner, …). Per deepseek's contract, this must be
    * echoed back in the assistant message of the NEXT request whenever the

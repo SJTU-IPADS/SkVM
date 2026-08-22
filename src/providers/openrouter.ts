@@ -22,6 +22,36 @@ interface OpenRouterMessage {
   }>
 }
 
+/**
+ * Pin the serving backend.
+ *
+ * OpenRouter routes a model id to whichever upstream fleet it likes, and it re-routes between
+ * sessions. Two runs of the same skill on the same model can therefore land on different
+ * backends — we measured a session pair where prompt-cache hit rate went 0% -> 75% and mean call
+ * latency 1.8s -> 3.1s, with per-task scores moving up to 58 points on byte-identical inputs.
+ * A benchmark that re-runs weeks later is then comparing serving paths, not skills.
+ *
+ * Set SKVM_OPENROUTER_PROVIDER (comma-separated, e.g. "deepinfra,nebius") to pin the order and
+ * disable fallbacks. Unset = OpenRouter's default routing (and non-reproducible serving).
+ *
+ * Two things to know before setting it:
+ *
+ * - `order` takes lowercase provider SLUGS, not the display name that comes back as
+ *   `servingProvider` ("Nebius AI Studio" is the slug `nebius`). Entries are lowercased here;
+ *   anything beyond case still has to be the slug.
+ * - The pin is PROCESS-WIDE, while slugs are per-model. One `skvm bench` process can drive several
+ *   model ids — `--model=a,b,c`, plus `--judge-model`, plus optimizer and task-generation calls —
+ *   and they all go through this provider. A fleet that serves the target model but not the judge
+ *   turns every judge call into a hard failure, because allow_fallbacks is off. Pin only when every
+ *   model in the process is served by the listed fleets.
+ */
+function providerRouting(): Record<string, unknown> | undefined {
+  const order = process.env.SKVM_OPENROUTER_PROVIDER
+    ?.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
+  if (!order?.length) return undefined
+  return { order, allow_fallbacks: false }
+}
+
 function toOpenAIToolChoice(tc: ToolChoice | undefined): unknown | undefined {
   if (!tc) return undefined
   if (tc === "auto") return "auto"
@@ -60,6 +90,8 @@ export class OpenRouterProvider implements LLMProvider {
       // gets stale and can't account for prompt caching.
       usage: { include: true },
     }
+    const routing = providerRouting()
+    if (routing) body.provider = routing
     if (!this.requiresReasoning()) body.reasoning = { effort: "none" }
     if (tools?.length) body.tools = tools
     const toolChoice = toOpenAIToolChoice(params.toolChoice)
@@ -116,6 +148,8 @@ export class OpenRouterProvider implements LLMProvider {
       temperature: params.temperature ?? 0,
       usage: { include: true },
     }
+    const routing = providerRouting()
+    if (routing) body.provider = routing
     if (!this.requiresReasoning()) body.reasoning = { effort: "none" }
     if (tools?.length) body.tools = tools
     const toolChoice = toOpenAIToolChoice(params.toolChoice)
@@ -189,8 +223,15 @@ export class OpenRouterProvider implements LLMProvider {
           PROVIDER_NAME,
         )
       }
+      // A pinned fleet that is down, misspelled, or does not serve this model fails exactly like a
+      // real OpenRouter incident. Say which, or the user re-runs against the same dead pin — and
+      // 429 is retryable, so they wait through the backoff first.
+      const pin = process.env.SKVM_OPENROUTER_PROVIDER
+      const pinHint = pin && (res.status === 404 || res.status === 429)
+        ? ` (SKVM_OPENROUTER_PROVIDER="${pin}" pins routing with allow_fallbacks:false — unset it to let OpenRouter route)`
+        : ""
       throw new ProviderHttpError(
-        `OpenRouter API error ${res.status}: ${errText.slice(0, 500)}`,
+        `OpenRouter API error ${res.status}: ${errText.slice(0, 500)}${pinHint}`,
         PROVIDER_NAME,
         res.status,
         errText,
@@ -268,6 +309,12 @@ export class OpenRouterProvider implements LLMProvider {
     // `usage: { include: true }`. Prefer it over local pricing-table estimates.
     const costUsd = typeof usage?.cost === "number" ? usage.cost : undefined
 
+    // Which upstream fleet actually served this call. Recorded so a run's serving backend is
+    // diagnosable after the fact rather than inferred from cache-hit rates (see providerRouting).
+    // `provider` is not in OpenRouter's published response schema but is present on non-streaming
+    // responses; absent or renamed simply yields undefined.
+    const servingProvider = typeof data.provider === "string" ? data.provider : undefined
+
     const finishReason = (choice?.finish_reason as string) ?? "stop"
     const stopReason = finishReason === "tool_calls"
       ? "tool_use" as const
@@ -275,6 +322,6 @@ export class OpenRouterProvider implements LLMProvider {
         ? "max_tokens" as const
         : "end_turn" as const
 
-    return { text, toolCalls, tokens, costUsd, durationMs, stopReason }
+    return { text, toolCalls, tokens, costUsd, durationMs, stopReason, servingProvider }
   }
 }

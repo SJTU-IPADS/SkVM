@@ -96,6 +96,7 @@ Only relevant when a route uses `apiKeyEnv`, or when no route exists:
 | `OPENROUTER_API_KEY` | Default fallback when no route is configured |
 | `ANTHROPIC_API_KEY` | Default `apiKeyEnv` the wizard suggests for Anthropic routes |
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | Standard SDK vars skvm auto-injects into external adapter subprocesses when the matched route is openai-compatible |
+| `SKVM_OPENROUTER_PROVIDER` | Comma-separated OpenRouter provider **slugs** (e.g. `deepinfra,nebius`). Pins `provider.order` with `allow_fallbacks:false`, so a model id is served by the same fleet across runs instead of being silently re-routed. Process-wide, and slugs are per-model — if one process drives several models (`--model=a,b`, `--judge-model`), every one of them must be served by the listed fleets or its calls hard-fail. Unset = OpenRouter's own routing. |
 | Any custom name | Whatever you put in `apiKeyEnv` |
 
 You can `export X=...` in your shell, or write `X=...` lines to `<repo>/.env` — the latter is auto-loaded at startup.

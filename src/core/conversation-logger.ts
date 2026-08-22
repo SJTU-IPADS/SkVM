@@ -109,6 +109,10 @@ export class ConversationLog {
       tokens: response.tokens,
       durationMs: response.durationMs,
       stopReason: response.stopReason,
+      // The fleet that served this call, when the provider reports one. Written here because a
+      // serving path that is not in the transcript is not diagnosable after the fact — which is
+      // the entire point of recording it. Absent for providers that do not report a fleet.
+      ...(response.servingProvider !== undefined ? { servingProvider: response.servingProvider } : {}),
     })
   }
 

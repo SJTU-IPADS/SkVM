@@ -51,3 +51,29 @@ describe("ConversationLog", () => {
     expect(requestEntries[2].messages).toHaveLength(5)
   })
 })
+
+describe("ConversationLog serving backend", () => {
+  const baseResponse = {
+    text: "hi",
+    toolCalls: [],
+    tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+    durationMs: 1,
+    stopReason: "end_turn" as const,
+  }
+
+  test("records the fleet that served a call, and omits it when unreported", async () => {
+    const filePath = path.join(tmpdir(), `conv-fleet-${Date.now()}.jsonl`)
+    const log = new ConversationLog(filePath)
+
+    log.logResponse({ ...baseResponse, servingProvider: "DeepInfra" })
+    log.logResponse(baseResponse)
+    await log.finalize()
+
+    const entries = (await Bun.file(filePath).text())
+      .trim().split("\n").map((line) => JSON.parse(line))
+
+    // A serving path that never reaches the transcript is not diagnosable after the fact.
+    expect(entries[0].servingProvider).toBe("DeepInfra")
+    expect("servingProvider" in entries[1]).toBe(false)
+  })
+})
