@@ -126,16 +126,18 @@ export async function listProfiles(): Promise<Array<{ model: string; harness: st
 
   // Scan layout: harness/safeModel/latest.json
   const glob = new Bun.Glob("*/*/latest.json")
-  for await (const file of glob.scan(PROFILES_DIR)) {
-    try {
-      const data = await Bun.file(path.join(PROFILES_DIR, file)).json()
-      const tcp = TCPSchema.parse(data)
-      const key = `${tcp.model}::${tcp.harness}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      results.push({ model: tcp.model, harness: tcp.harness, profiledAt: tcp.profiledAt })
-    } catch { /* skip invalid */ }
-  }
+  try {
+    for await (const file of glob.scan(PROFILES_DIR)) {
+      try {
+        const data = await Bun.file(path.join(PROFILES_DIR, file)).json()
+        const tcp = TCPSchema.parse(data)
+        const key = `${tcp.model}::${tcp.harness}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        results.push({ model: tcp.model, harness: tcp.harness, profiledAt: tcp.profiledAt })
+      } catch { /* skip invalid */ }
+    }
+  } catch { /* PROFILES_DIR doesn't exist yet (fresh cache) → no profiles */ }
 
   return results
 }
