@@ -13,7 +13,7 @@ const log = createLogger("pass2")
  * Pass 2: Environment Binding.
  *
  * Pipeline: extract deps → detect platform → normalize → generate script
- * from template → simulate-and-repair (up to 3 LLM-driven attempts).
+ * from template → simulate-and-repair (up to 5 LLM-driven attempts).
  */
 export async function runPass2(
   skillContent: string,
@@ -35,7 +35,7 @@ export async function runPass2(
     platform,
     provider,
     workDir,
-    maxAttempts: 3,
+    maxAttempts: 5,
   })
 
   if (!simulation.success) {

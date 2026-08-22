@@ -26,13 +26,37 @@ function mkPlatform(os: PlatformContext["os"], overrides?: Partial<PlatformConte
 }
 
 describe("pass2 install policy", () => {
-  test("macOS prefers python -m pip and records fallback note without venv", () => {
+  test("pip deps route through the template helpers (never raw pip)", () => {
     const platform = mkPlatform("macos", {
       packageManagers: { ...mkPlatform("macos").packageManagers, brew: true },
     })
     const policy = createInstallPolicy(platform)
-    expect(policy.pipInstallPrefix).toBe("python -m pip install")
-    expect(policy.notes.join(" ")).toContain("fallback")
+    expect(policy.pipInstallPrefix).toBe("pip_install")
+    expect(policy.pipCheckPrefix).toBe("pip_check")
+    expect(policy.notes.join(" ")).toContain("fall")
+  })
+
+  test("pip-less platform notes the venv bootstrap", () => {
+    const platform = mkPlatform("linux", {
+      packageManagers: { ...mkPlatform("linux").packageManagers, pip: false },
+    })
+    const policy = createInstallPolicy(platform)
+    expect(policy.pipInstallPrefix).toBe("pip_install")
+    expect(policy.notes.join(" ")).toContain("SKVM_ENV_DIR")
+  })
+
+  test("normalized pip dependency uses the helpers", () => {
+    const deps: DependencyEntry[] = [{
+      name: "reportlab",
+      type: "pip",
+      checkCommand: "",
+      required: true,
+      source: "model",
+      confidence: 0.9,
+    }]
+    const normalized = normalizeDependenciesForPlatform(deps, mkPlatform("linux"))
+    expect(normalized[0]?.checkCommand).toBe("pip_check reportlab")
+    expect(normalized[0]?.installCommand).toBe("pip_install reportlab")
   })
 
   test("linux system dependency prefers apt when available", () => {

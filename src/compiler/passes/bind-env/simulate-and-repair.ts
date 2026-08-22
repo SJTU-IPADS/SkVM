@@ -74,9 +74,10 @@ Requirements:
 - Keep all text in English.
 - Preserve strict mode (set -euo pipefail).
 - Keep check-before-install behavior for each dependency.
+- Keep the python bootstrap helpers (PY variable, bootstrap_venv, ensure_python, pip_check, pip_install) and route every pip install through them — never call pip, pip3, or python -m pip directly. The platform may have NO usable pip at all (see packageManagers.pip); the helpers bootstrap a private venv in that case.
 - Add defensive fallback checks when commands can fail due to missing package managers.
 - Do NOT add repository refresh or upgrade commands (no apt-get update/upgrade, apt update/upgrade, yum update, dnf update/upgrade, brew update/upgrade, choco/winget upgrade).
-- Output ONLY the repaired bash script.`,
+- Output ONLY the repaired bash script, complete from #!/bin/bash to the final FAIL check — never truncate.`,
     messages: [{
       role: "user",
       content: `Repair this env-setup script using the failure logs.
@@ -96,7 +97,9 @@ Current script:
 ${opts.currentScript}`,
     }],
     temperature: 0,
-    maxTokens: 4096,
+    // Scripts with many dependency blocks run long; a tight cap truncates the
+    // repair mid-script and burns an attempt on the resulting syntax error.
+    maxTokens: 8192,
   })
 
   let script = response.text.trim()

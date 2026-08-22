@@ -59,8 +59,8 @@ ${policyJson}
 
 Generate the complete bash script. Emit one check-then-install block per dependency, following the template pattern.
 Apply platform-aware installation choices:
-- macOS: prefer conda/venv python environments when available, fallback to system python -m pip only if needed.
-- Linux/Windows: detect available installers first, then use bounded install commands.
+- pip dependencies MUST go through the template's pip_check / pip_install helpers — never call pip, pip3, or python -m pip directly. The helpers resolve the right interpreter and bootstrap a private venv when the platform has no usable pip (see packageManagers.pip in the Platform Context).
+- System dependencies: detect available installers first, then use bounded install commands.
 - Do NOT run repository refresh commands or system upgrades (for example: apt-get update, apt update, yum update, dnf update, brew update, upgrade).
 
 Output ONLY the script content, no markdown fences, no explanation.`,
@@ -72,6 +72,7 @@ Given a template and a list of dependencies (each with name, type, checkCommand,
 Rules:
 - Start with #!/bin/bash and set -euo pipefail
 - Include the log() and warn() helper functions from the template
+- Copy the python bootstrap helpers (PY variable, bootstrap_venv, ensure_python, pip_check, pip_install) from the template VERBATIM, and route every pip dependency through pip_check/pip_install
 - For each dependency, emit a check block: if checkCommand succeeds, log present; else install and track failures
 - Redirect check commands to /dev/null (stdout and stderr)
 - Use || to catch install failures without aborting the script

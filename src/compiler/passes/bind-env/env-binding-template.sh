@@ -7,25 +7,54 @@ set -euo pipefail
 log() { echo "[env-bind] $*"; }
 warn() { echo "[env-bind] WARNING: $*" >&2; }
 
-OS_NAME="$(uname -s | tr '[:upper:]' '[:lower:]' || echo unknown)"
+# --- python runtime resolution ---------------------------------------------
+# Prefer an already-active conda/venv. Otherwise use system python3/python.
+# When no usable pip exists (module absent, or installs into the system
+# interpreter are blocked, e.g. PEP 668), bootstrap a private venv at
+# $SKVM_ENV_DIR (default: ./.skvm-env) and prepend its bin to PATH, so that
+# processes started after this script inherit the bound environment.
+PY=""
 
-prefer_python_cmd() {
-  if [ -n "${CONDA_DEFAULT_ENV:-}" ]; then
-    echo "python"
-    return
+bootstrap_venv() {
+  ENV_DIR="${SKVM_ENV_DIR:-$PWD/.skvm-env}"
+  if [ ! -x "$ENV_DIR/bin/python" ]; then
+    log "bootstrapping private venv at $ENV_DIR"
+    "$PY" -m venv "$ENV_DIR" || { warn "venv creation failed"; return 1; }
   fi
+  PATH="$ENV_DIR/bin:$PATH"
+  export PATH
+  PY="$ENV_DIR/bin/python"
+  log "python: $PY"
+}
 
-  if [ -n "${VIRTUAL_ENV:-}" ]; then
-    echo "python"
-    return
+ensure_python() {
+  if [ -n "$PY" ]; then return 0; fi
+  if [ -n "${CONDA_DEFAULT_ENV:-}" ] || [ -n "${VIRTUAL_ENV:-}" ]; then
+    PY="$(command -v python || command -v python3)" || { warn "no python in active environment"; return 1; }
+    return 0
   fi
-
-  # macOS policy: prefer virtual envs, fallback to system python when unavailable.
-  if [ "$OS_NAME" = "darwin" ]; then
-    warn "No conda/venv detected on macOS; falling back to system python"
+  PY="$(command -v python3 || command -v python)" || { warn "no python interpreter found"; return 1; }
+  if ! "$PY" -m pip --version >/dev/null 2>&1; then
+    bootstrap_venv || return 1
   fi
+}
 
-  echo "python"
+pip_check() {
+  ensure_python || return 1
+  "$PY" -m pip show "$@"
+}
+
+pip_install() {
+  ensure_python || return 1
+  if "$PY" -m pip install "$@"; then return 0; fi
+  # System-interpreter installs can be rejected (PEP 668 externally-managed,
+  # or missing write permission) — retry once inside the private venv.
+  case "$PY" in
+    "${SKVM_ENV_DIR:-$PWD/.skvm-env}"/*) return 1 ;;
+  esac
+  warn "pip install failed on $PY; retrying inside a private venv"
+  bootstrap_venv || return 1
+  "$PY" -m pip install "$@"
 }
 
 install_system_pkg() {
@@ -37,7 +66,7 @@ install_system_pkg() {
   fi
 
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update && apt-get install -y "$pkg"
+    apt-get install -y "$pkg"
     return
   fi
 

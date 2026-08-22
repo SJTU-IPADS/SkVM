@@ -38,41 +38,29 @@ function systemInstallFor(platform: PlatformContext): (name: string) => string {
 export function createInstallPolicy(platform: PlatformContext): InstallPolicy {
   const notes: string[] = []
 
-  // macOS policy: prefer conda/venv, fallback to system pip if unavailable.
+  // pip deps always go through the template's pip_check/pip_install helpers:
+  // they resolve the interpreter (active conda/venv → system python3/python)
+  // and bootstrap a private venv at $SKVM_ENV_DIR when no usable pip exists
+  // (module absent, or system installs blocked by PEP 668). Never emit raw
+  // `pip`/`python -m pip` — it breaks on hosts without pip.
   if (platform.os === "macos") {
     if (platform.python.condaActive) {
-      notes.push("macOS: conda environment detected, prefer conda-scoped python -m pip.")
-      return {
-        pipInstallPrefix: "python -m pip install",
-        pipCheckPrefix: "python -m pip show",
-        systemInstallTemplate: systemInstallFor(platform),
-        notes,
-      }
+      notes.push("macOS: conda environment detected; pip_install targets the conda-scoped python.")
+    } else if (platform.python.venvActive) {
+      notes.push("macOS: venv detected; pip_install targets the venv-scoped python.")
+    } else {
+      notes.push("macOS: no conda/venv detected; pip_install falls back to system python or a bootstrapped venv.")
     }
-
-    if (platform.python.venvActive) {
-      notes.push("macOS: venv detected, prefer venv-scoped python -m pip.")
-      return {
-        pipInstallPrefix: "python -m pip install",
-        pipCheckPrefix: "python -m pip show",
-        systemInstallTemplate: systemInstallFor(platform),
-        notes,
-      }
-    }
-
-    notes.push("macOS: no conda/venv detected, fallback to system python -m pip.")
-    return {
-      pipInstallPrefix: "python -m pip install",
-      pipCheckPrefix: "python -m pip show",
-      systemInstallTemplate: systemInstallFor(platform),
-      notes,
-    }
+  } else {
+    notes.push("Linux/Windows: detect existing environment first and prefer pip/npm when available.")
+  }
+  if (!platform.packageManagers.pip) {
+    notes.push("No system pip detected: pip_install will bootstrap a private venv at $SKVM_ENV_DIR (default ./.skvm-env).")
   }
 
-  notes.push("Linux/Windows: detect existing environment first and prefer pip/npm when available.")
   return {
-    pipInstallPrefix: "python -m pip install",
-    pipCheckPrefix: "python -m pip show",
+    pipInstallPrefix: "pip_install",
+    pipCheckPrefix: "pip_check",
     systemInstallTemplate: systemInstallFor(platform),
     notes,
   }
