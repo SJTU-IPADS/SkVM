@@ -365,10 +365,18 @@ export function buildClaudeCodeSettingsContent(route: ProviderRoute, bareModelId
  * routes (`apiKey: ""`) omit `env_key`, which tells Codex the provider does
  * not require authentication.
  *
- * `wire_api = "chat"` (Chat Completions) is the broadly-compatible default:
- * OpenAI-compatible gateways (vLLM, OpenRouter, DeepSeek, LM Studio) all speak
- * it, and official OpenAI accepts it too. Advanced users can override via
- * `adapters.codex.extraCliArgs` (e.g. `-c model_providers.skvm.wire_api="responses"`).
+ * `wire_api = "responses"`: Codex 0.95.0 removed the Chat Completions wire —
+ * `wire_api = "chat"` is rejected at config load with "no longer supported"
+ * (openai/codex#7782), where 0.94.0 only warned. So Responses is the only wire
+ * a current Codex speaks, and the gateway behind a managed route must expose an
+ * OpenAI Responses endpoint. OpenRouter does; several OpenAI-*compatible*
+ * gateways (vLLM, LM Studio, DeepSeek direct) serve only
+ * `/v1/chat/completions` and cannot be driven through managed-mode Codex at
+ * all — use a different adapter, or Codex's native mode against a gateway it
+ * supports. On a Codex older than 0.95 the previous wire can be restored with
+ * `adapters.codex.extraCliArgs`
+ * (e.g. `-c model_providers.skvm.wire_api="chat"`); `-c` overrides the
+ * generated config file.
  */
 export function buildCodexConfigContent(route: ProviderRoute, bareModelId: string): string {
   if (route.kind === "anthropic") {
@@ -392,11 +400,21 @@ export function buildCodexConfigContent(route: ProviderRoute, bareModelId: strin
     envKey = "OPENAI_API_KEY"
   }
 
+  // A chat-only gateway now fails at the first request rather than at config
+  // load, and a bare "404 page not found" from `/responses` gives no hint of
+  // why. Say it up front — this is the one wire Codex leaves us.
+  if (route.kind === "openai-compatible") {
+    log.warn(
+      `codex (managed): route "${route.match}" must serve the OpenAI Responses API at ${baseUrl}/responses. ` +
+      `Gateways that only implement /v1/chat/completions (vLLM, LM Studio, DeepSeek direct) will 404 on every request.`,
+    )
+  }
+
   const apiKey = resolveRouteApiKeyForConfig(route, "codex (managed)")
   const provider: Record<string, unknown> = {
     name: "skvm-managed",
     base_url: baseUrl,
-    wire_api: "chat",
+    wire_api: "responses",
   }
   if (apiKey !== "") provider.env_key = envKey
 

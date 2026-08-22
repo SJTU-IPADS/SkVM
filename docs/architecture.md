@@ -68,7 +68,7 @@ Eight implementations, registered centrally in **`src/adapters/registry.ts`** �
 | `jiuwenclaw` | `jiuwenclaw.ts` | Wraps `jiuwenclaw-cli` over JSON-RPC. Token/cost **not** persisted upstream — bench/profile report `$0`. Invoked via `python3 -m jiuwenclaw.app_cli` from `skvm.config.json → adapters.jiuwenclaw`. |
 | `pi` | `pi.ts` | Wraps the `pi` coding-agent CLI (`@mariozechner/pi-coding-agent`) in a per-run sandbox. |
 | `claude-code` | `claude-code.ts` | Drives the `claude -p` CLI in a sandbox; parses token/cost usage. Heavy headless use may hit account rate limits / usage-terms. |
-| `codex` | `codex.ts` | Drives the `codex exec --json` CLI in a sandbox (`CODEX_HOME`); parses JSONL events for token usage (cost is estimated from `cost.ts` — Codex reports tokens, not USD). Managed mode supports openai-compatible / openrouter routes; native uses Codex's own ChatGPT/API-key auth. |
+| `codex` | `codex.ts` | Drives the `codex exec --json` CLI in a sandbox (`CODEX_HOME`); parses JSONL events for token usage (cost is estimated from `cost.ts` — Codex reports tokens, not USD). Managed mode supports openai-compatible / openrouter routes, and requires the gateway to serve the OpenAI **Responses** API — Codex 0.95 removed the Chat Completions wire, so chat-only gateways (vLLM, LM Studio) cannot be used in managed mode; native uses Codex's own ChatGPT/API-key auth. |
 
 ### Profiler (`src/profiler/`)
 

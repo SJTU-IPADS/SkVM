@@ -291,7 +291,7 @@ describe("buildCodexConfigContent", () => {
     expect(cfg.model_provider).toBe("skvm")
     expect(cfg.model_providers.skvm.base_url).toBe("https://api.example.com/v1")
     expect(cfg.model_providers.skvm.env_key).toBe("OPENAI_API_KEY")
-    expect(cfg.model_providers.skvm.wire_api).toBe("chat")
+    expect(cfg.model_providers.skvm.wire_api).toBe("responses")
   })
 
   test("openrouter route → OPENROUTER_API_KEY and default base_url", () => {
@@ -299,6 +299,9 @@ describe("buildCodexConfigContent", () => {
     const cfg = parseTOML(toml) as any
     expect(cfg.model_providers.skvm.env_key).toBe("OPENROUTER_API_KEY")
     expect(cfg.model_providers.skvm.base_url).toBe("https://openrouter.ai/api/v1")
+    // The route the Responses wire is verified against — pin it here too, not
+    // just on the openai-compatible case.
+    expect(cfg.model_providers.skvm.wire_api).toBe("responses")
   })
 
   test("auth-free local route omits env_key", () => {
