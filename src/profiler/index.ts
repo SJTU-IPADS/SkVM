@@ -389,6 +389,8 @@ function recordPrimitiveResult(
       durationMs: lr.durationMs,
       costUsd: lr.costUsd,
       tokens: lr.tokens,
+      llmCalls: lr.llmCalls,
+      llmCallsWithCost: lr.llmCallsWithCost,
       testDescription: gen.descriptions[lr.level],
       failureDetails: lr.instances
         .filter((i) => !i.passed && !i.skipped)

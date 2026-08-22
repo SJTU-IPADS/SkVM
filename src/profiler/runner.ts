@@ -12,6 +12,7 @@ import { createProgressSpinner } from "../core/spinner.ts"
 import { ConversationLog } from "../core/conversation-logger.ts"
 import { buildFailureDiagnostics } from "./failure-diagnostics.ts"
 import { Pool, createAsyncMutex } from "../core/concurrency.ts"
+import { readPartialUsage } from "../providers/errors.ts"
 
 const consoleLog = createLogger("profiler")
 
@@ -90,6 +91,8 @@ async function runLevel(
   let totalDurationMs = 0
   let totalCostUsd = 0
   let totalTokens = emptyTokenUsage()
+  let totalLlmCalls = 0
+  let totalLlmCallsWithCost = 0
 
   for (let i = 0; i < instanceCount; i++) {
     const inst = generator.generate(level)
@@ -100,6 +103,8 @@ async function runLevel(
     totalDurationMs += result.durationMs
     totalCostUsd += result.costUsd
     totalTokens = addTokenUsage(totalTokens, result.tokens)
+    totalLlmCalls += result.llmCalls
+    totalLlmCallsWithCost += result.llmCallsWithCost
   }
 
   // A level passes when every instance that actually ran passed. Skipped
@@ -117,6 +122,8 @@ async function runLevel(
     durationMs: totalDurationMs,
     costUsd: totalCostUsd,
     tokens: totalTokens,
+    llmCalls: totalLlmCalls,
+    llmCallsWithCost: totalLlmCallsWithCost,
   }
 }
 
@@ -144,6 +151,8 @@ async function runInstance(
   // skipped run is still money spent.
   let costUsd = 0
   let tokens = emptyTokenUsage()
+  let llmCalls = 0
+  let llmCallsWithCost = 0
 
   // Create per-instance conversation log and save eval script if convLogDir is set
   let convLog: ConversationLog | undefined
@@ -171,6 +180,8 @@ async function runInstance(
     const runResult = await adapter.run({ prompt: inst.prompt, workDir, taskId: `${primitiveId}-${level}-${index}`, convLog })
     costUsd = runResult.cost
     tokens = runResult.tokens
+    llmCalls = runResult.llmCalls ?? 0
+    llmCallsWithCost = runResult.llmCallsWithCost ?? 0
     await writeFile(path.join(workDir, "response.txt"), runResult.text)
 
     // Adapter-level gate (mirrors src/framework/runner.ts): when the run
@@ -188,6 +199,8 @@ async function runInstance(
         durationMs,
         costUsd,
         tokens,
+        llmCalls,
+        llmCallsWithCost,
       }
     }
 
@@ -201,7 +214,7 @@ async function runInstance(
       skipped = true
       const durationMs = performance.now() - startMs
       log.warn(`    instance ${index}: SKIPPED (environment) — ${evalResult.infraError}`)
-      return { instance: index, passed: false, skipped: true, details: `skipped (environment): ${evalResult.infraError}`, durationMs, costUsd, tokens }
+      return { instance: index, passed: false, skipped: true, details: `skipped (environment): ${evalResult.infraError}`, durationMs, costUsd, tokens, llmCalls, llmCallsWithCost }
     }
 
     const durationMs = performance.now() - startMs
@@ -209,7 +222,7 @@ async function runInstance(
 
     if (evalResult.pass) {
       log.info(`    instance ${index}: PASS (${(durationMs / 1000).toFixed(1)}s, ${runResult.steps.length} steps)`)
-      return { instance: index, passed: true, details: evalResult.details, durationMs, costUsd, tokens, checkpoints: evalResult.checkpoints }
+      return { instance: index, passed: true, details: evalResult.details, durationMs, costUsd, tokens, llmCalls, llmCallsWithCost, checkpoints: evalResult.checkpoints }
     }
 
     // Build rich failure diagnostics
@@ -237,11 +250,29 @@ async function runInstance(
       await writeFile(reportPath, JSON.stringify(diagnostics.report, null, 2))
     }
 
-    return { instance: index, passed: false, details: diagnostics.enrichedDetails, durationMs, costUsd, tokens, failureReport: diagnostics.report, checkpoints: evalResult.checkpoints }
+    return { instance: index, passed: false, details: diagnostics.enrichedDetails, durationMs, costUsd, tokens, llmCalls, llmCallsWithCost, failureReport: diagnostics.report, checkpoints: evalResult.checkpoints }
   } catch (err) {
     const durationMs = performance.now() - startMs
+    // An infra error escapes the adapter before it can return a RunResult, so
+    // the locals above are still zero. The adapter attaches what it had spent;
+    // recover it, or this probe's real billing vanishes from the profile.
+    // Cost stays at the authoritative sum or 0 — never a pricing-table guess.
+    // An unpriced remainder shows up as llmCallsWithCost < llmCalls, which the
+    // export reports rather than papering over.
+    const partial = readPartialUsage(err)
+    if (partial) {
+      tokens = partial.tokens
+      costUsd = partial.costUsd ?? 0
+      llmCalls = partial.llmCalls
+      llmCallsWithCost = partial.llmCallsWithCost
+      const total = partial.tokens.input + partial.tokens.output + partial.tokens.cacheRead
+      log.warn(
+        `    instance ${index}: recovered spend from failed run — ` +
+        `${partial.llmCalls} LLM call(s), ${total} tokens, $${costUsd.toFixed(6)}`,
+      )
+    }
     log.warn(`    instance ${index}: ERROR - ${err}`)
-    return { instance: index, passed: false, details: `Error: ${err}`, durationMs, costUsd, tokens }
+    return { instance: index, passed: false, details: `Error: ${err}`, durationMs, costUsd, tokens, llmCalls, llmCallsWithCost }
   } finally {
     if (convLog) await convLog.finalize()
     if (passed || skipped) {
@@ -258,16 +289,25 @@ async function runInstance(
  * summing the persisted details keeps totals correct across resumed runs,
  * where in-memory accumulators would miss the pre-resume spend.
  */
-export function sumProfileCost(details: TCP["details"]): { totalUsd: number; totalTokens: TokenUsage } {
+export function sumProfileCost(details: TCP["details"]): {
+  totalUsd: number
+  totalTokens: TokenUsage
+  llmCalls: number
+  llmCallsWithCost: number
+} {
   let totalUsd = 0
   let totalTokens = emptyTokenUsage()
+  let llmCalls = 0
+  let llmCallsWithCost = 0
   for (const d of details) {
     for (const lr of d.levelResults) {
       totalUsd += lr.costUsd
       totalTokens = addTokenUsage(totalTokens, lr.tokens)
+      llmCalls += lr.llmCalls ?? 0
+      llmCallsWithCost += lr.llmCallsWithCost ?? 0
     }
   }
-  return { totalUsd, totalTokens }
+  return { totalUsd, totalTokens, llmCalls, llmCallsWithCost }
 }
 
 /**
@@ -344,6 +384,8 @@ export async function profileTarget(opts: {
         durationMs: lr.durationMs,
         costUsd: lr.costUsd,
         tokens: lr.tokens,
+        llmCalls: lr.llmCalls,
+        llmCallsWithCost: lr.llmCallsWithCost,
         testDescription: gen.descriptions[lr.level],
         failureDetails: lr.instances
           .filter((i) => !i.passed && !i.skipped)

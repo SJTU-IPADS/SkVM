@@ -1,7 +1,7 @@
 import type { AgentStep, ToolCall, TokenUsage } from "./types.ts"
 import { emptyTokenUsage, addTokenUsage } from "./types.ts"
 import type { LLMProvider, LLMTool, LLMToolCall, LLMToolResult, LLMResponse, LLMMessage, CompletionParams } from "../providers/types.ts"
-import { isProviderError } from "../providers/errors.ts"
+import { isProviderError, attachPartialUsage } from "../providers/errors.ts"
 import { createLogger } from "./logger.ts"
 
 const log = createLogger("agent-loop")
@@ -66,6 +66,13 @@ export interface AgentLoopResult {
   error?: Error
   /** True if the loop broke because it exceeded `timeoutMs`. */
   timedOut?: boolean
+  /**
+   * LLM calls issued, and how many returned an authoritative `costUsd`.
+   * Equal counts mean `totalCostUsd` is a measurement; a shortfall means the
+   * caller fell back to a pricing table and the dollar figure is an estimate.
+   */
+  llmCalls: number
+  llmCallsWithCost: number
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +114,12 @@ export async function runAgentLoop(
   // them; if any response omits it, totalCostUsd becomes undefined so the
   // caller falls back to estimateCost on totalTokens.
   let totalCostUsd: number | undefined = 0
+  // Coverage counters run alongside the all-or-nothing accumulator: they say
+  // *how much* of the spend was authoritatively priced, which the single
+  // undefined cannot. A profile whose dollars came from the pricing-table
+  // fallback must be legible as such rather than passing for a measurement.
+  let llmCalls = 0
+  let llmCallsWithCost = 0
   let llmDurationMs = 0
   let finalText = ""
   const allToolCalls: ToolCall[] = []
@@ -137,6 +150,8 @@ export async function runAgentLoop(
       // (else: response was already set by completeWithToolResults at end of previous iteration)
 
       totalTokens = addTokenUsage(totalTokens, response.tokens)
+      llmCalls++
+      if (response.costUsd !== undefined) llmCallsWithCost++
       if (totalCostUsd !== undefined && response.costUsd !== undefined) {
         totalCostUsd += response.costUsd
       } else {
@@ -262,7 +277,17 @@ export async function runAgentLoop(
     // content failures (bad tool call, parse error, tool execution error).
     // If we capture them into loopError they get flattened into a stringy
     // adapterError.stderr field and downstream can't tell the difference.
-    if (isProviderError(err)) throw err
+    //
+    // The spend so far rides along on the error: it was really billed, and
+    // the propagation would otherwise drop it on the floor.
+    if (isProviderError(err)) {
+      throw attachPartialUsage(err, {
+        tokens: totalTokens,
+        costUsd: totalCostUsd,
+        llmCalls,
+        llmCallsWithCost,
+      })
+    }
     loopError = err instanceof Error ? err : new Error(String(err))
     log.warn(`Agent loop error after ${iteration} iterations: ${loopError.message.slice(0, 200)}`)
   }
@@ -286,6 +311,8 @@ export async function runAgentLoop(
     steps,
     tokens: totalTokens,
     totalCostUsd,
+    llmCalls,
+    llmCallsWithCost,
     llmDurationMs,
     iterations: iteration,
     allToolCalls,

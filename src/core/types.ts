@@ -226,6 +226,15 @@ export const RunResultSchema = z.object({
    * the absent-means-available rule for unmigrated adapters.
    */
   usageAvailable: z.boolean().optional(),
+  /**
+   * LLM calls issued, and how many carried a provider-authoritative cost.
+   * Only adapters that see per-call usage populate these (bare-agent today);
+   * absent means "not reported", which is distinct from zero. When the two
+   * disagree, `cost` is partly a pricing-table estimate rather than a
+   * measurement — cost-accounting consumers must be able to tell.
+   */
+  llmCalls: z.number().optional(),
+  llmCallsWithCost: z.number().optional(),
   /** Display-only: human-debug stderr snippet. NOT a status signal — check runStatus instead. */
   adapterError: z.object({
     exitCode: z.number(),
@@ -300,6 +309,11 @@ export const PrimitiveProfileDetailSchema = z.object({
     /** Token usage across the level's instances. Defaults to zeros for
      *  profiles written before cost accounting was wired through. */
     tokens: TokenUsageSchema.default({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }),
+    /** LLM calls across the level's instances, and how many were priced by the
+     *  provider. Absent on profiles written before coverage tracking, which is
+     *  distinct from a measured zero. */
+    llmCalls: z.number().optional(),
+    llmCallsWithCost: z.number().optional(),
     /** What this profiling level tests (from generator descriptions) */
     testDescription: z.string().default(""),
     /** Failure details from failed instances */
@@ -328,6 +342,13 @@ export const TCPSchema = z.object({
     totalUsd: z.number(),
     totalTokens: TokenUsageSchema,
     durationMs: z.number(),
+    /** Profile-wide cost coverage: LLM calls issued, and how many the provider
+     *  priced authoritatively. `llmCallsWithCost < llmCalls` means `totalUsd`
+     *  understates the real bill, so a profile can never present an
+     *  unmeasured (or $0-fallback) cost as if it were measured. Absent on
+     *  profiles written before coverage tracking. */
+    llmCalls: z.number().optional(),
+    llmCallsWithCost: z.number().optional(),
   }),
   /** True when this profile is incomplete (interrupted mid-run). Defaults to false for backward compat. */
   isPartial: z.boolean().default(false),

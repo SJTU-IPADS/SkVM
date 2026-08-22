@@ -78,6 +78,10 @@ export const PROFILE_FLAGS = defineFlags(
       placeholder: "<path>",
       help: "Write a per-primitive cost/token CSV\nfrom the cached profiles of --model × --adapter, then exit.\nReads the cache only — no LLM calls.",
     },
+    "export-all-versions": {
+      kind: "bool",
+      help: "With --export-cost, emit every archived profile run, not just\nthe latest, so repeat runs can be compared (rows are keyed\nby the profiled_at column).",
+    },
   },
   {
     usage: [
@@ -140,17 +144,28 @@ export async function runProfile(config: ProfileConfig): Promise<void> {
   // Missing profiles are a hard error (scriptability rule — the caller must
   // know the CSV is incomplete rather than silently getting fewer rows).
   if (config["export-cost"]) {
-    const { loadProfile } = await import("../profiler/index.ts")
+    const { loadProfile, listProfileVersions, loadProfileVersion } = await import("../profiler/index.ts")
     const { profileCostCsv } = await import("../profiler/cost-export.ts")
+    const allVersions = config["export-all-versions"]
     const entries: TCP[] = []
     for (const model of models) {
       for (const harness of adapters) {
-        const tcp = await loadProfile(model, harness)
-        if (!tcp) {
+        const tcps: TCP[] = []
+        if (allVersions) {
+          for (const v of await listProfileVersions(model, harness)) {
+            const archived = await loadProfileVersion(model, harness, v.version)
+            if (archived) tcps.push(archived)
+          }
+        }
+        // `latest` is also the newest archive, so de-duplicate by run stamp
+        // rather than emitting the final run twice.
+        const latest = await loadProfile(model, harness)
+        if (latest && !tcps.some(t => t.profiledAt === latest.profiledAt)) tcps.push(latest)
+        if (tcps.length === 0) {
           console.error(`profile: no cached profile for ${model} -- ${harness}; run 'skvm profile' first`)
           process.exit(1)
         }
-        entries.push(tcp)
+        entries.push(...tcps)
       }
     }
     await Bun.write(config["export-cost"], profileCostCsv(entries))

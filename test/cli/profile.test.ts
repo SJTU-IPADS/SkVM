@@ -43,6 +43,7 @@ describe("PROFILE_FLAGS.parse — typed config", () => {
       "adapter-config": undefined,
       "timeout-ms": TIMEOUT_DEFAULTS.taskExec,
       "export-cost": undefined,
+      "export-all-versions": false,
     })
   })
 
@@ -71,6 +72,7 @@ describe("PROFILE_FLAGS.parse — typed config", () => {
       "adapter-config": "native",
       "timeout-ms": 60000,
       "export-cost": undefined,
+      "export-all-versions": false,
     })
   })
 
@@ -148,26 +150,29 @@ Usage:
   skvm profile --batch [options]
 
 Options:
-  --model=<id,...>        Model identifier(s), comma-separated (required unless --batch).
-                          Format: <provider>/<model-id> — the <provider> prefix selects
-                          a route in providers.routes (see docs/providers.md)
-  --adapter=<name,...>    Agent adapter(s), comma-separated: ${ALL_ADAPTERS.join(" | ")}
-                          (default: ${CLI_DEFAULTS.adapter}; batch default: all adapters)
-  --primitives=<list>     Comma-separated primitive IDs (default: all registered)
-  --skip=<list>           Comma-separated primitive IDs to skip
-  --instances=<n>         Instances per level (default: ${CLI_DEFAULTS.profileInstances})
-  --force                 Ignore cached profile, re-run
-  --list                  List cached profiles
-  --batch                 Profile all models from bench config
-  --concurrency=<n>       Parallel primitives across all model×adapter combos.
-                          Slots are distributed per-adapter then per-model. (default: ${CLI_DEFAULTS.concurrency})
-  --adapter-config=<m>    native | managed (default: defaults.adapterConfigMode in
-                          skvm.config.json, falls back to managed). Native uses your
-                          real harness config; managed uses providers.routes only.
-  --timeout-ms=<n>        Cap on each microbenchmark probe's adapter execution (ms) (default: ${TIMEOUT_DEFAULTS.taskExec})
-  --export-cost=<path>    Write a per-primitive cost/token CSV
-                          from the cached profiles of --model × --adapter, then exit.
-                          Reads the cache only — no LLM calls.`,
+  --model=<id,...>         Model identifier(s), comma-separated (required unless --batch).
+                           Format: <provider>/<model-id> — the <provider> prefix selects
+                           a route in providers.routes (see docs/providers.md)
+  --adapter=<name,...>     Agent adapter(s), comma-separated: ${ALL_ADAPTERS.join(" | ")}
+                           (default: ${CLI_DEFAULTS.adapter}; batch default: all adapters)
+  --primitives=<list>      Comma-separated primitive IDs (default: all registered)
+  --skip=<list>            Comma-separated primitive IDs to skip
+  --instances=<n>          Instances per level (default: ${CLI_DEFAULTS.profileInstances})
+  --force                  Ignore cached profile, re-run
+  --list                   List cached profiles
+  --batch                  Profile all models from bench config
+  --concurrency=<n>        Parallel primitives across all model×adapter combos.
+                           Slots are distributed per-adapter then per-model. (default: ${CLI_DEFAULTS.concurrency})
+  --adapter-config=<m>     native | managed (default: defaults.adapterConfigMode in
+                           skvm.config.json, falls back to managed). Native uses your
+                           real harness config; managed uses providers.routes only.
+  --timeout-ms=<n>         Cap on each microbenchmark probe's adapter execution (ms) (default: ${TIMEOUT_DEFAULTS.taskExec})
+  --export-cost=<path>     Write a per-primitive cost/token CSV
+                           from the cached profiles of --model × --adapter, then exit.
+                           Reads the cache only — no LLM calls.
+  --export-all-versions    With --export-cost, emit every archived profile run, not just
+                           the latest, so repeat runs can be compared (rows are keyed
+                           by the profiled_at column).`,
     )
   })
 })

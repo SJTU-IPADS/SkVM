@@ -13,6 +13,8 @@
  * exhausted). Generic `Error` escaping a provider indicates a bug.
  */
 
+import type { TokenUsage } from "../core/types.ts"
+
 /** Base class. All provider-originating infra errors extend this. */
 export class ProviderError extends Error {
   /** Underlying error, for debugging. */
@@ -152,4 +154,53 @@ export function looksLikeNetworkError(err: unknown): boolean {
   if (!(err instanceof Error)) return false
   const msg = err.message.toLowerCase()
   return NETWORK_ERROR_HINTS.some((keyword) => msg.includes(keyword))
+}
+
+// ---------------------------------------------------------------------------
+// Partial usage carried on the throw path
+// ---------------------------------------------------------------------------
+
+/**
+ * Tokens and cost already spent when an infra error aborted a run.
+ *
+ * A ProviderError propagates past every usage accumulator on its way out
+ * (agent loop -> adapter -> caller), so without this the spend simply
+ * disappears from the record: a rate-limited run reports 0 tokens and $0
+ * despite having burned both. Cost accounting must survive the failure that
+ * caused it, so the accumulators attach what they had to the error.
+ */
+export interface PartialUsage {
+  tokens: TokenUsage
+  /** Undefined when at least one call did not report an authoritative cost. */
+  costUsd?: number
+  /** LLM calls issued before the abort, and how many reported a cost. */
+  llmCalls: number
+  llmCallsWithCost: number
+}
+
+/**
+ * Non-enumerable so the payload never leaks into `JSON.stringify(err)` or a
+ * stderr dump, and `Symbol.for` so it survives module duplication.
+ */
+const PARTIAL_USAGE_KEY = Symbol.for("skvm.partialUsage")
+
+/** Attach spend-so-far to an in-flight error. Returns the same error for `throw attach(...)`. */
+export function attachPartialUsage<E>(err: E, usage: PartialUsage): E {
+  if (err !== null && typeof err === "object") {
+    Object.defineProperty(err, PARTIAL_USAGE_KEY, {
+      value: usage,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    })
+  }
+  return err
+}
+
+/** Read spend-so-far off an error, if an accumulator attached any. */
+export function readPartialUsage(err: unknown): PartialUsage | undefined {
+  if (err !== null && typeof err === "object" && PARTIAL_USAGE_KEY in err) {
+    return (err as Record<symbol, PartialUsage>)[PARTIAL_USAGE_KEY]
+  }
+  return undefined
 }

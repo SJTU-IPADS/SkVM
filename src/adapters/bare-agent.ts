@@ -254,6 +254,15 @@ Available skills:
       },
     }
 
+    // An infra error (rate-limit exhaustion, provider down) propagates out of the
+    // loop by design. Flush the transcript before it leaves: a failed run's tokens
+    // were billed just the same, and the spend the loop attached to the error is
+    // only recoverable if the log it can be reconciled against was written.
+    const rethrowAfterFlush = async (err: unknown): Promise<never> => {
+      if (convLog) await convLog.finalize()
+      throw err
+    }
+
     const loopResult = await runAgentLoop(
       {
         provider: wrappedProvider,
@@ -296,7 +305,7 @@ Available skills:
           : (completedCall) => { allToolCalls.push(completedCall) },
       },
       [{ role: "user", content: task.prompt }],
-    )
+    ).catch(rethrowAfterFlush)
 
     const durationMs = performance.now() - startMs
 
@@ -318,6 +327,8 @@ Available skills:
       cost: estimateCost(this.model, loopResult.tokens, loopResult.totalCostUsd),
       durationMs,
       llmDurationMs: loopResult.llmDurationMs,
+      llmCalls: loopResult.llmCalls,
+      llmCallsWithCost: loopResult.llmCallsWithCost,
       workDir: task.workDir,
       skillLoaded: task.skill ? skillLoaded : undefined,
       runStatus,

@@ -1,6 +1,6 @@
 import type { Level } from "../core/types.ts"
 import { LEVEL_ORDER } from "../core/types.ts"
-import type { PrimitiveResult, LevelResult } from "./types.ts"
+import type { LevelResult } from "./types.ts"
 import { createLogger } from "../core/logger.ts"
 
 const log = createLogger("calibrator")
@@ -13,17 +13,28 @@ export interface CalibrationInversion {
 }
 
 /**
+ * The slice of a profiling result an inversion check reads. Deliberately
+ * narrower than `PrimitiveResult`: callers adapt TCP details into this shape,
+ * and requiring the full result would force them to synthesize cost and
+ * instance fields the check never looks at.
+ */
+export interface InversionCheckInput {
+  primitiveId: string
+  levelResults: Array<Pick<LevelResult, "level" | "passed">>
+}
+
+/**
  * Check for hierarchy inversions in profiling results.
  *
  * An inversion occurs when a higher level passes but a lower level fails
  * (e.g., L3 passed but L2 failed). This suggests the level hierarchy
  * may be miscalibrated for this model.
  */
-export function detectInversions(results: PrimitiveResult[]): CalibrationInversion[] {
+export function detectInversions(results: InversionCheckInput[]): CalibrationInversion[] {
   const inversions: CalibrationInversion[] = []
 
   for (const result of results) {
-    const levelMap = new Map<string, LevelResult>()
+    const levelMap = new Map<string, InversionCheckInput["levelResults"][number]>()
     for (const lr of result.levelResults) {
       levelMap.set(lr.level, lr)
     }

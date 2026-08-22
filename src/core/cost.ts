@@ -1,8 +1,30 @@
 import type { TokenUsage } from "./types.ts"
 import { resolveBackendModel } from "../providers/registry.ts"
 
-/** Cost per million tokens for known models (input/output) */
+/**
+ * Cost per million tokens for known models (input/output).
+ *
+ * Keys are **backend-namespace** ids — what `resolveBackendModel` returns after
+ * stripping the CLI routing prefix. An OpenRouter id keeps its vendor segment
+ * (`qwen/qwen3-30b-a3b-instruct-2507`), so bare names like `qwen3-30b` below
+ * only ever match direct-vendor routes. A missing key prices the run at $0,
+ * which is why this is a fallback of last resort: prefer the provider's own
+ * `usage.cost`, and check `llmCallsWithCost` before trusting a dollar figure.
+ */
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+  // OpenRouter-routed ids, verified against the models API on 2026-08-06.
+  // Listed prices drift; these exist so a provider that omits usage.cost
+  // produces a usable estimate instead of a silent $0.
+  "anthropic/claude-opus-4.6": { input: 5, output: 25 },
+  "deepseek/deepseek-v3.2": { input: 0.269, output: 0.4 },
+  "google/gemini-3-flash-preview": { input: 0.5, output: 3 },
+  "qwen/qwen3-30b-a3b-instruct-2507": { input: 0.04815, output: 0.19305 },
+  "qwen/qwen3.5-397b-a17b": { input: 0.39, output: 2.34 },
+  "mistralai/mistral-small-2603": { input: 0.15, output: 0.6 },
+  "mistralai/codestral-2508": { input: 0.3, output: 0.9 },
+  "openai/gpt-5.6-sol": { input: 5, output: 30 },
+  "openai/gpt-5.6-luna": { input: 0.1, output: 0.6 },
+  "openai/gpt-5.4-mini": { input: 0.75, output: 4.5 },
   // Anthropic
   "claude-opus-4.6": { input: 15, output: 75 },
   "claude-opus-4-6": { input: 15, output: 75 },

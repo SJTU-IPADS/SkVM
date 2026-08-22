@@ -29,6 +29,14 @@ export interface InstanceResult {
   costUsd: number
   /** Token usage of the instance's adapter run. */
   tokens: TokenUsage
+  /**
+   * LLM calls the run issued, and how many returned a provider-authoritative
+   * cost. A shortfall means `costUsd` is partly a pricing-table estimate —
+   * without this, a fallback that silently prices at $0 is indistinguishable
+   * from a genuinely cheap run.
+   */
+  llmCalls: number
+  llmCallsWithCost: number
   /** True when the instance was skipped for an environment reason (e.g. a
    *  missing dependency) and must NOT count as a pass or a failure. */
   skipped?: boolean
@@ -51,6 +59,9 @@ export interface LevelResult {
   durationMs: number
   costUsd: number
   tokens: TokenUsage
+  /** Summed over the level's instances; see `InstanceResult.llmCalls`. */
+  llmCalls: number
+  llmCallsWithCost: number
 }
 
 /** Result of profiling one primitive (all levels) */
