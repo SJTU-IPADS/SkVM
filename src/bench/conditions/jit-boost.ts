@@ -81,7 +81,7 @@ export const jitBoostRunner: ConditionRunner = {
 
         lastRunResult = { ...runResult, workDir }
 
-        const evalResults = await evaluateAll(task.eval, { ...runResult, workDir }, evaluatorConfig)
+        const evalResults = await evaluateAll(task.eval, { ...runResult, workDir }, { ...evaluatorConfig, taskDir: task.taskDir })
         const { overallScore: score } = computeWeightedScore(buildEvalDetails(evalResults), task.gradingWeights)
 
         jitRunReports.push({
@@ -173,7 +173,7 @@ export const jitBoostRunner: ConditionRunner = {
 
         lastRunResult = { ...runResult, workDir }
 
-        const evalResults = await evaluateAll(task.eval, { ...runResult, workDir }, evaluatorConfig)
+        const evalResults = await evaluateAll(task.eval, { ...runResult, workDir }, { ...evaluatorConfig, taskDir: task.taskDir })
         const { overallScore: score } = computeWeightedScore(buildEvalDetails(evalResults), task.gradingWeights)
 
         jitRunReports.push({

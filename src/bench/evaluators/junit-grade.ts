@@ -65,8 +65,20 @@ const JunitGradeCriterionSchema = z.object({
 
 export const JunitGradePayloadSchema = z
   .object({
-    /** Path to the bun test file, relative to workDir. */
+    /** Path to the bun test file, relative to workDir (or taskDir, see testFileFrom). */
     testFile: z.string().min(1, "testFile must be non-empty"),
+    /**
+     * Where `testFile` is anchored.
+     * - "fixtures" (default): relative to the run workDir — the file arrived
+     *   there via the task's fixtures/ copy and is visible to the agent.
+     * - "task": relative to the task directory (where task.json lives). The
+     *   test file and any sibling assets (e.g. expected/ golden outputs it
+     *   loads via import.meta.dirname) never enter the agent-visible workDir,
+     *   so grading assets cannot leak answers. The test subprocess still runs
+     *   with cwd = workDir, so `process.cwd()`-relative reads inside the test
+     *   see the agent's outputs.
+     */
+    testFileFrom: z.enum(["fixtures", "task"]).default("fixtures"),
     /** Reserved for future runners (pytest, jest, …). Only "bun" is wired today. */
     runner: z.enum(["bun"]).default("bun"),
     /** Timeout for the test subprocess in milliseconds. */
@@ -297,7 +309,8 @@ export const junitGrade: CustomEvaluator = {
     JunitGradePayloadSchema.parse(payload)
   },
 
-  async checkIntegrity(criterion, { fixturesDir }) {
+  async checkIntegrity(criterion, ctx) {
+    const { fixturesDir } = ctx
     // validatePayload already guarantees payload shape; checkIntegrity only
     // catches the "shape is fine but the test file is not on disk" class of
     // authoring mistake. Without this, the junit runner spawns bun against
@@ -309,35 +322,36 @@ export const junitGrade: CustomEvaluator = {
         reason: `junit-grade payload invalid: ${parsed.error.message}`,
       }
     }
-    const { testFile } = parsed.data
+    const { testFile, testFileFrom } = parsed.data
     const label = criterion.id ? `"${criterion.id}"` : "(unnamed)"
     const fs = await import("node:fs/promises")
     const pathMod = await import("node:path")
+    const anchorName = testFileFrom === "task" ? "the task directory" : "fixtures/"
     if (pathMod.isAbsolute(testFile) || testFile.split(/[\\/]/).includes("..")) {
       return {
         ok: false,
-        reason: `junit-grade criterion ${label}: testFile must be a relative path inside fixtures/`,
+        reason: `junit-grade criterion ${label}: testFile must be a relative path inside ${anchorName}`,
       }
     }
-    const testPath = pathMod.join(fixturesDir, testFile)
+    const testPath = pathMod.join(testFileFrom === "task" ? ctx.taskDir : fixturesDir, testFile)
     try {
       const s = await fs.stat(testPath)
       if (!s.isFile()) {
         return {
           ok: false,
-          reason: `junit-grade criterion ${label}: testFile ${JSON.stringify(testFile)} is not a regular file under fixtures/`,
+          reason: `junit-grade criterion ${label}: testFile ${JSON.stringify(testFile)} is not a regular file under ${anchorName}`,
         }
       }
     } catch {
       return {
         ok: false,
-        reason: `junit-grade criterion ${label}: testFile ${JSON.stringify(testFile)} not found under fixtures/`,
+        reason: `junit-grade criterion ${label}: testFile ${JSON.stringify(testFile)} not found under ${anchorName}`,
       }
     }
     return { ok: true }
   },
 
-  async run({ criterion, runResult }) {
+  async run({ criterion, runResult, taskDir }) {
     // Payload was already validated at load time via validatePayload, but we
     // re-parse here to narrow the `unknown` type for the rest of this fn.
     // This is cheap (<1ms for any realistic criteria count).
@@ -352,12 +366,30 @@ export const junitGrade: CustomEvaluator = {
     const payload = parsed.data
     const workDir = runResult.workDir
 
+    // Resolve the test file. "fixtures" mode: relative to workDir (the file
+    // arrived via the fixtures copy). "task" mode: absolute path into the
+    // task directory — the file never entered the workDir, so grading assets
+    // (expected/ golden outputs) stay invisible to the agent.
+    let testFileArg = payload.testFile
+    if (payload.testFileFrom === "task") {
+      if (!taskDir) {
+        return {
+          pass: false,
+          score: 0.0,
+          details:
+            `junit-grade: payload sets testFileFrom: "task" but the evaluation context has no taskDir. ` +
+            `Pass EvaluatorConfig.taskDir (bench conditions do this automatically) or use testFileFrom: "fixtures".`,
+        }
+      }
+      testFileArg = (await import("node:path")).join(taskDir, payload.testFile)
+    }
+
     const junitFile = "_junit_results.xml"
     const proc = Bun.spawn(
       [
         "bun",
         "test",
-        payload.testFile,
+        testFileArg,
         "--reporter=junit",
         `--reporter-outfile=${junitFile}`,
       ],

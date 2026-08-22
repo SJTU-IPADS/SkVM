@@ -22,6 +22,13 @@ export interface EvaluatorConfig {
    * `estimateCost(model, tokens)` when present.
    */
   onJudgeUsage?: (tokens: TokenUsage, costUsd?: number) => void
+  /**
+   * Directory of the task definition, forwarded to custom evaluators via
+   * `CustomEvalContext.taskDir`. Set by callers that load tasks from disk
+   * (bench conditions); evaluators that grade against task-side assets
+   * (e.g. junit-grade `testFileFrom: "task"`) require it.
+   */
+  taskDir?: string
 }
 
 export interface EvaluateAllOptions {
@@ -45,7 +52,7 @@ export async function evaluate(
     case "llm-judge":
       return evaluateLLMJudge(criterion, runResult, config)
     case "custom":
-      return evaluateCustom(criterion, runResult)
+      return evaluateCustom(criterion, runResult, config)
   }
 }
 
@@ -572,6 +579,7 @@ async function evaluateLLMJudge(
 async function evaluateCustom(
   criterion: Extract<EvalCriterion, { method: "custom" }>,
   runResult: RunResult,
+  config: EvaluatorConfig = {},
 ): Promise<EvalResult> {
   const evaluator = customEvaluators.get(criterion.evaluatorId)
   if (!evaluator) {
@@ -586,6 +594,6 @@ async function evaluateCustom(
   // The evaluator's `run` returns everything except `criterion`. The
   // framework owns criterion attachment so id/name/weight/payload declared
   // on the task-level criterion always flow through to downstream consumers.
-  const result = await evaluator.run({ criterion, runResult })
+  const result = await evaluator.run({ criterion, runResult, taskDir: config.taskDir })
   return { ...result, criterion }
 }

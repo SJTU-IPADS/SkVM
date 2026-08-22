@@ -491,3 +491,120 @@ describe("junit-grade end-to-end run()", () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// testFileFrom: "task" — taskDir-anchored test files (hidden from the agent)
+// ---------------------------------------------------------------------------
+
+const CWD_PROBE_TEST = `
+import { describe, test, expect } from "bun:test"
+import { existsSync, readFileSync } from "node:fs"
+import path from "node:path"
+
+describe("probe", () => {
+  test("workdir artifact exists", () => {
+    // resolved against cwd, which must be the agent workDir
+    expect(existsSync(path.resolve("artifact.txt"))).toBe(true)
+  })
+  test("golden file matches", () => {
+    // resolved against the test file location, which must be the task dir
+    const golden = readFileSync(path.join(import.meta.dirname, "expected", "golden.txt"), "utf-8").trim()
+    const actual = readFileSync(path.resolve("artifact.txt"), "utf-8").trim()
+    expect(actual).toBe(golden)
+  })
+})
+`
+
+describe("junit-grade testFileFrom: task", () => {
+  test("schema defaults testFileFrom to fixtures", () => {
+    const p = JunitGradePayloadSchema.parse({
+      testFile: "a.test.ts",
+      criteria: [{ id: "a", weight: 1.0, description: "A", testPattern: "x" }],
+    })
+    expect(p.testFileFrom).toBe("fixtures")
+  })
+
+  test("runs a taskDir-anchored test with cwd=workDir and expected/ next to the test", async () => {
+    const workDir = await mkdtemp(path.join(tmpdir(), "junit-grade-taskdir-w-"))
+    const taskDir = await mkdtemp(path.join(tmpdir(), "junit-grade-taskdir-t-"))
+    try {
+      // agent output lives in workDir only
+      await Bun.write(path.join(workDir, "artifact.txt"), "hello\n")
+      // test + golden live in taskDir only (never copied to workDir)
+      await Bun.write(path.join(taskDir, "probe.test.ts"), CWD_PROBE_TEST)
+      await Bun.write(path.join(taskDir, "expected", "golden.txt"), "hello\n")
+
+      const payload = JunitGradePayloadSchema.parse({
+        testFile: "probe.test.ts",
+        testFileFrom: "task",
+        criteria: [
+          { id: "artifact", weight: 0.5, description: "artifact exists", testPattern: "workdir artifact exists" },
+          { id: "golden", weight: 0.5, description: "matches golden", testPattern: "golden file matches" },
+        ],
+      })
+
+      const result = await junitGrade.run({
+        criterion: { method: "custom", evaluatorId: "junit-grade", payload },
+        runResult: baseRunResult(workDir),
+        taskDir,
+      })
+
+      expect(result.score).toBeCloseTo(1.0, 5)
+      expect(result.pass).toBe(true)
+    } finally {
+      await rm(workDir, { recursive: true, force: true })
+      await rm(taskDir, { recursive: true, force: true })
+    }
+  })
+
+  test("testFileFrom task without a taskDir in context fails with a clear reason", async () => {
+    const workDir = await mkdtemp(path.join(tmpdir(), "junit-grade-taskdir-x-"))
+    try {
+      const payload = JunitGradePayloadSchema.parse({
+        testFile: "probe.test.ts",
+        testFileFrom: "task",
+        criteria: [{ id: "a", weight: 1.0, description: "A", testPattern: "x" }],
+      })
+
+      const result = await junitGrade.run({
+        criterion: { method: "custom", evaluatorId: "junit-grade", payload },
+        runResult: baseRunResult(workDir),
+      })
+
+      expect(result.score).toBe(0)
+      expect(result.pass).toBe(false)
+      expect(result.details).toMatch(/taskDir/)
+    } finally {
+      await rm(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test("checkIntegrity resolves testFileFrom=task against taskDir", async () => {
+    const taskDir = await mkdtemp(path.join(tmpdir(), "junit-grade-taskdir-i-"))
+    try {
+      await Bun.write(path.join(taskDir, "probe.test.ts"), CWD_PROBE_TEST)
+      const criterion = {
+        method: "custom" as const,
+        evaluatorId: "junit-grade",
+        payload: {
+          testFile: "probe.test.ts",
+          testFileFrom: "task",
+          criteria: [{ id: "a", weight: 1.0, description: "A", testPattern: "x" }],
+        },
+      }
+      const ok = await junitGrade.checkIntegrity!(criterion, {
+        taskDir,
+        fixturesDir: path.join(taskDir, "fixtures"),
+      })
+      expect(ok.ok).toBe(true)
+
+      const missing = await junitGrade.checkIntegrity!(
+        { ...criterion, payload: { ...criterion.payload, testFile: "nope.test.ts" } },
+        { taskDir, fixturesDir: path.join(taskDir, "fixtures") },
+      )
+      expect(missing.ok).toBe(false)
+    } finally {
+      await rm(taskDir, { recursive: true, force: true })
+    }
+  })
+})

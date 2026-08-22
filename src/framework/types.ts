@@ -14,6 +14,14 @@ export type { Task, RunResult, EvalResult, EvalCriterion, AdapterConfig, AgentAd
 export interface CustomEvalContext {
   criterion: Extract<EvalCriterion, { method: "custom" }>
   runResult: RunResult
+  /**
+   * Directory of the task definition (where task.json lives), when the
+   * caller knows it. Lets evaluators reference grading assets that live
+   * next to the task instead of inside the agent-visible workDir — e.g.
+   * junit-grade's `testFileFrom: "task"` keeps test files and expected/
+   * golden outputs hidden from the agent.
+   */
+  taskDir?: string
 }
 
 /**

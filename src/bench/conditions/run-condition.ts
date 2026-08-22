@@ -187,7 +187,10 @@ export async function runCondition(args: RunConditionArgs): Promise<ConditionRes
       task: args.task,
       adapter: args.adapter,
       adapterConfig: args.adapterConfig,
-      evaluatorConfig: args.evaluatorConfig,
+      // Per-task taskDir rides on the shared evaluator config so custom
+      // evaluators can grade against assets living next to task.json
+      // (junit-grade testFileFrom: "task") without them entering the workDir.
+      evaluatorConfig: { ...args.evaluatorConfig, taskDir: args.task.taskDir },
       convLog: args.convLog,
       skill: args.skill,
       workDir,

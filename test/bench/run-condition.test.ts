@@ -155,3 +155,56 @@ describe("bench/conditions runCondition scaffold", () => {
     expect(adapter.seenWorkDirs).toEqual(staged)
   })
 })
+
+describe("runCondition plumbs taskDir to custom evaluators", () => {
+  test("junit-grade testFileFrom=task scores against a taskDir-anchored test", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const path = await import("node:path")
+    await import("../../src/bench/evaluators/index.ts") // register junit-grade
+
+    const taskDir = await mkdtemp(path.join(tmpdir(), "run-cond-taskdir-"))
+    try {
+      await Bun.write(
+        path.join(taskDir, "probe.test.ts"),
+        `import { test, expect } from "bun:test"
+import { existsSync } from "node:fs"
+import path from "node:path"
+test("agent artifact exists", () => {
+  expect(existsSync(path.resolve("out.txt"))).toBe(true)
+})
+`,
+      )
+
+      const task: BenchTask = {
+        ...makeTask(),
+        taskDir,
+        eval: [
+          {
+            method: "custom",
+            evaluatorId: "junit-grade",
+            payload: {
+              testFile: "probe.test.ts",
+              testFileFrom: "task",
+              criteria: [
+                { id: "artifact", weight: 1.0, description: "artifact exists", testPattern: "agent artifact exists" },
+              ],
+            },
+          },
+        ],
+      }
+
+      const result = await runCondition({
+        condition: "original",
+        task,
+        adapter: okAdapter(),
+        adapterConfig,
+      })
+
+      expect(result.runStatus).toBe("ok")
+      expect(result.score).toBeCloseTo(1.0, 5)
+    } finally {
+      await rm(taskDir, { recursive: true, force: true })
+    }
+  })
+})
