@@ -43,6 +43,40 @@ describe("runSubprocess: timeout", () => {
     expect(r.exitCode).toBe(0)
     expect(r.stdout.trim()).toBe("ok")
   })
+
+  test("escalates to SIGKILL when the child ignores SIGTERM", async () => {
+    const r = await runSubprocess(["sh", "-c", 'trap "" TERM; sleep 30'], {
+      timeoutMs: 200,
+      killGraceMs: 300,
+      drainGraceMs: 100,
+    })
+    expect(r.timedOut).toBe(true)
+    expect(r.exitCode).not.toBe(0)
+    expect(r.durationMs).toBeLessThan(5000)
+  })
+})
+
+describe("runSubprocess: pipe-holding grandchildren", () => {
+  test("returns after child exit even when a grandchild holds the output pipe", async () => {
+    // The background sleep inherits the stdout pipe's write end, so the
+    // stream never reaches EOF; the drain must cut off after the grace.
+    const r = await runSubprocess(["sh", "-c", "sleep 30 & echo visible"], {
+      drainGraceMs: 200,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout.trim()).toBe("visible")
+    expect(r.durationMs).toBeLessThan(5000)
+  })
+
+  test("timeout + SIGTERM-immune tree + pipe holder resolves promptly (openclaw wedge shape)", async () => {
+    const r = await runSubprocess(["sh", "-c", 'trap "" TERM; sleep 30 & sleep 30'], {
+      timeoutMs: 200,
+      killGraceMs: 200,
+      drainGraceMs: 200,
+    })
+    expect(r.timedOut).toBe(true)
+    expect(r.durationMs).toBeLessThan(5000)
+  })
 })
 
 describe("runSubprocess: env overlay", () => {
