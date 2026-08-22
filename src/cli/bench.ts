@@ -15,8 +15,8 @@ import { resolveAdapterConfigMode } from "../core/config.ts"
 import { AdapterConfigModeSchema } from "../core/types.ts"
 import { CLI_DEFAULTS, MODEL_DEFAULTS } from "../core/ui-defaults.ts"
 import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
-import { BENCH_CONDITIONS, isAotCondition, isValidCondition } from "../bench/types.ts"
-import type { BenchCondition, BenchRunConfig } from "../bench/types.ts"
+import { BENCH_CONDITIONS, isAotCondition, isValidCondition, AOT_FALLBACK_DEFAULT } from "../bench/types.ts"
+import type { BenchCondition, BenchRunConfig, AotFallbackMode } from "../bench/types.ts"
 
 export const BENCH_FLAGS = defineFlags(
   "bench",
@@ -64,6 +64,13 @@ when --conditions includes jit-boost
     "max-steps": { kind: "int", min: 1, default: CLI_DEFAULTS.maxSteps, help: "Max agent steps per task.\nUniform across tasks; per-task task.maxSteps is not used in bench." },
     "judge-model": { kind: "string", placeholder: "<id>", default: MODEL_DEFAULTS.judge, help: "LLM judge model" },
     "compiler-model": { kind: "string", placeholder: "<id>", help: `Model for AOT compiler (default: ${MODEL_DEFAULTS.compiler})` },
+    "aot-fallback": {
+      kind: "enum",
+      values: ["original", "use-anyway"],
+      default: AOT_FALLBACK_DEFAULT,
+      placeholder: "<mode>",
+      help: "What an aot-compiled variant that fails the compiler guard does:\noriginal = run the original skill instead (default);\nuse-anyway = run the compiled variant regardless (A/B diagnosis).",
+    },
     profile: { kind: "string", placeholder: "<path>", help: "TCP JSON path (required for aot conditions)" },
     "keep-workdirs": { kind: "bool", help: "Don't delete work directories after runs" },
     concurrency: {
@@ -262,6 +269,7 @@ export async function runBench(config: BenchConfig): Promise<void> {
     cliTimeoutMs,
     judgeModel: config["judge-model"],
     compilerModel: config["compiler-model"],
+    aotFallback: config["aot-fallback"] as AotFallbackMode,
     source: config.source ? config.source.split(",").map(s => s.trim()) : undefined,
     tcpPath: config.profile,
     resumeSession: config.resume,

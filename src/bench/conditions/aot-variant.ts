@@ -5,12 +5,41 @@ import { toPassTag } from "../../core/config.ts"
 import { getVariantDir } from "../../proposals/storage.ts"
 import { contentHash, parseSkillMeta, buildSkillBundleFromContent } from "../../core/skill-loader.ts"
 import { createLogger } from "../../core/logger.ts"
-import { parseAotPasses } from "../types.ts"
+import { parseAotPasses, AOT_FALLBACK_DEFAULT, type AotFallbackMode } from "../types.ts"
 import type { ConditionRunner } from "./types.ts"
 import { runCondition, zeroConditionResult } from "./run-condition.ts"
-import { concatSkillContents, combinedSkillId, copyDirFiltered } from "./staging.ts"
+import {
+  concatSkillContents, combinedSkillId, copyDirFiltered, copySkillBundles, bundleSkillMeta,
+} from "./staging.ts"
 
 const log = createLogger("bench-conditions")
+
+/**
+ * Whether a compiled AOT variant should be discarded in favour of the original
+ * skill: only when it failed the compiler guard AND the operator did not opt
+ * into `use-anyway`. Keeping this a pure predicate makes the gate unit-testable
+ * without spinning up a compile.
+ */
+export function shouldFallbackToOriginal(guardPassed: boolean, mode: AotFallbackMode): boolean {
+  return !guardPassed && mode === "original"
+}
+
+/**
+ * Read a compiled variant's guard verdict from its `meta.json`
+ * (`guardPassed`). Conservative on the absence of a clear FAIL: a missing,
+ * malformed, or pre-guard (`guardPassed` absent) meta returns `true` so we
+ * never fall back on an artifact we can't prove failed the guard.
+ */
+export async function readVariantGuardPassed(variantDir: string): Promise<boolean> {
+  const metaFile = Bun.file(path.join(variantDir, "meta.json"))
+  if (!(await metaFile.exists())) return true
+  try {
+    const meta = JSON.parse(await metaFile.text()) as { guardPassed?: boolean }
+    return meta.guardPassed !== false
+  } catch {
+    return true
+  }
+}
 
 /**
  * Run an AOT variant with the passes encoded in the condition name
@@ -41,12 +70,16 @@ export const aotVariantRunner: ConditionRunner = {
 
     let compiledContent: string
     let loadedSkillPath = compiledPath
+    // Guard verdict for the variant we end up running (cached meta.json or the
+    // fresh compile). Determines whether the fallback gate fires below.
+    let guardPassed = true
 
     try {
       const existing = Bun.file(compiledPath)
       if (await existing.exists()) {
         compiledContent = await existing.text()
         loadedSkillPath = compiledPath
+        guardPassed = await readVariantGuardPassed(path.dirname(compiledPath))
         log.info(`[${condition}] Using cached ${passTag} variant for ${skillId}`)
       } else if (passTag === "p1p2p3") {
         // Check legacy flat path (backward compatibility)
@@ -55,6 +88,7 @@ export const aotVariantRunner: ConditionRunner = {
         if (await legacyFile.exists()) {
           compiledContent = await legacyFile.text()
           loadedSkillPath = legacyPath
+          guardPassed = await readVariantGuardPassed(path.dirname(legacyPath))
           log.info(`[${condition}] Using legacy cached variant for ${skillId}`)
         } else {
           throw new Error("not cached")
@@ -77,6 +111,7 @@ export const aotVariantRunner: ConditionRunner = {
           passes: passes.map(String),
         }, ctx.compilerProvider, { showSpinner: false })
         compiledContent = result.compiledSkill
+        guardPassed = result.guardPassed
         await writeVariant(result)
       } catch (err) {
         log.error(`[${condition}] Compilation failed for ${skillId}: ${err}`)
@@ -86,6 +121,33 @@ export const aotVariantRunner: ConditionRunner = {
           statusDetail: `compiler failed: ${String(err).slice(0, 200)}`,
         })
       }
+    }
+
+    // Guard gate: a guard-failing compiled variant is not shipped (its bench
+    // score would misrepresent the deployed system). Fall back to the original
+    // skill, keeping the AOT condition label so the row still aggregates into
+    // the aot-compiled column, and mark `aotFallback`. `--aot-fallback=use-anyway`
+    // opts out for A/B diagnosis of how much guard-failing artifacts hurt.
+    const fallbackMode = ctx.aotFallback ?? AOT_FALLBACK_DEFAULT
+    if (shouldFallbackToOriginal(guardPassed, fallbackMode)) {
+      log.warn(`[${condition}] compiled ${skillId} failed the guard; running the original skill instead (--aot-fallback=original)`)
+      return runCondition({
+        condition,
+        task,
+        adapter,
+        adapterConfig,
+        evaluatorConfig: ctx.evaluatorConfig,
+        convLog,
+        evalOptions: ctx.evalOptions,
+        skill: buildSkillBundleFromContent(skillContent, bundleSkillMeta(skills, skillId), ctx.skillMode),
+        stage: (workDir) => copySkillBundles(skills, workDir),
+        resultMeta: {
+          skillId,
+          skillPath,
+          skillContentHash: contentHash(skillContent),
+          aotFallback: true,
+        },
+      })
     }
 
     const aotSkillMeta = parseSkillMeta(compiledContent, path.dirname(skillPath))

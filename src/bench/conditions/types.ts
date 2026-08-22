@@ -3,7 +3,7 @@ import type { LLMProvider } from "../../providers/types.ts"
 import type { EvaluatorConfig, EvaluateAllOptions } from "../../framework/evaluator.ts"
 import type { ConversationLog } from "../../core/conversation-logger.ts"
 import type { ResolvedSkill } from "../../core/skill-loader.ts"
-import type { BenchTask, BenchCondition, ConditionResult } from "../types.ts"
+import type { BenchTask, BenchCondition, ConditionResult, AotFallbackMode } from "../types.ts"
 
 /**
  * The five dispatchable condition families. Concrete `BenchCondition` strings
@@ -49,6 +49,11 @@ export interface ConditionContext {
   tcp?: TCP
   /** Compiler provider; set when the condition set contains an AOT condition. */
   compilerProvider?: LLMProvider
+  /**
+   * How aot-variant handles a compiled variant that failed the compiler guard.
+   * Undefined is treated as `AOT_FALLBACK_DEFAULT` ('original').
+   */
+  aotFallback?: AotFallbackMode
   /** Number of jit-boost runs (1 warmup + N-1 with hooks). */
   jitRuns: number
   /** Absolute CLI timeout override; feeds jit-boost candidate-gen timeout resolution. */

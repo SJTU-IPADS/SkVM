@@ -68,6 +68,7 @@ describe("BENCH_FLAGS.parse", () => {
       "max-steps": CLI_DEFAULTS.maxSteps,
       "judge-model": MODEL_DEFAULTS.judge,
       "compiler-model": undefined,
+      "aot-fallback": "original",
       profile: undefined,
       "keep-workdirs": false,
       concurrency: undefined,
@@ -115,6 +116,7 @@ describe("BENCH_FLAGS.parse", () => {
       "max-steps": CLI_DEFAULTS.maxSteps,
       "judge-model": MODEL_DEFAULTS.judge,
       "compiler-model": undefined,
+      "aot-fallback": "original",
       profile: undefined,
       "keep-workdirs": true,
       concurrency: 4,
@@ -288,6 +290,9 @@ Options:
                                  Uniform across tasks; per-task task.maxSteps is not used in bench. (default: ${CLI_DEFAULTS.maxSteps})
   --judge-model=<id>             LLM judge model (default: ${MODEL_DEFAULTS.judge})
   --compiler-model=<id>          Model for AOT compiler (default: ${MODEL_DEFAULTS.compiler})
+  --aot-fallback=<mode>          What an aot-compiled variant that fails the compiler guard does:
+                                 original = run the original skill instead (default);
+                                 use-anyway = run the compiled variant regardless (A/B diagnosis). (default: original)
   --profile=<path>               TCP JSON path (required for aot conditions)
   --keep-workdirs                Don't delete work directories after runs
   --concurrency=<n>              Parallel task runs (default: ${CLI_DEFAULTS.concurrency}; judge mode default: ${CLI_DEFAULTS.benchJudgeConcurrency}).

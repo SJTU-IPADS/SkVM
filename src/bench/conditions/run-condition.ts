@@ -55,7 +55,7 @@ export async function prepareWorkDir(task: BenchTask): Promise<string> {
 /** Identity fields a condition stamps onto both its success and crash results. */
 export type ConditionResultMeta = Pick<
   ConditionResult,
-  "skillId" | "skillPath" | "skillPaths" | "skillContentHash"
+  "skillId" | "skillPath" | "skillPaths" | "skillContentHash" | "aotFallback"
 >
 
 /** Convert TestResult to ConditionResult */
@@ -101,6 +101,7 @@ export function toConditionResult(
     skillPath: opts?.skillPath,
     skillPaths: opts?.skillPaths,
     skillContentHash: opts?.skillContentHash,
+    ...(opts?.aotFallback ? { aotFallback: true } : {}),
     ...(runResult.skillLoaded !== undefined ? { skillLoaded: runResult.skillLoaded } : {}),
     ...(error ? { error } : {}),
     runStatus: runResult.runStatus,

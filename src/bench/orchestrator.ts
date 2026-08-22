@@ -367,6 +367,7 @@ async function executeBenchItem(
     evalOptions: ctx.buildEvalOptions(task.id, condition),
     tcp: ctx.tcp,
     compilerProvider: ctx.compilerProvider,
+    aotFallback: ctx.config.aotFallback,
     jitRuns: ctx.config.jitRuns,
     cliTimeoutMs: ctx.config.cliTimeoutMs,
   })

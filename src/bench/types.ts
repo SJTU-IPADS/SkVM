@@ -114,6 +114,18 @@ export function isAotCondition(condition: BenchCondition): boolean {
   return parseAotPasses(condition) !== null
 }
 
+/**
+ * What an AOT condition does when its compiled variant fails the compiler
+ * guard (`meta.json.guardPassed === false`).
+ *   - 'original'    → don't ship a guard-failing artifact; run the original
+ *                     skill instead and mark the result `aotFallback`. Default.
+ *   - 'use-anyway'  → run the compiled variant regardless (for A/B diagnosis
+ *                     of how much guard-failing artifacts actually hurt).
+ */
+export type AotFallbackMode = "original" | "use-anyway"
+
+export const AOT_FALLBACK_DEFAULT: AotFallbackMode = "original"
+
 /** Validate a condition string. */
 export function isValidCondition(condition: string): boolean {
   return ["no-skill", "original", "jit-optimized", "jit-boost"].includes(condition) || isAotCondition(condition)
@@ -171,6 +183,13 @@ export interface ConditionResult {
   skillContentHash?: string
   skillMode?: SkillMode
   skillLoaded?: boolean
+  /**
+   * Set true when an AOT condition fell back to the original skill because the
+   * compiled variant failed the compiler guard (aotFallback=original). The
+   * score/tokens/skill identity are the original skill's — the compiled
+   * artifact was NOT run. Absent/false means the compiled variant was used.
+   */
+  aotFallback?: boolean
   jitRuns?: JitRunReport[]
   jitPromotions?: number
   /** Individual run scores when runsPerTask > 1 */
@@ -301,6 +320,11 @@ export interface BenchRunConfig {
   judgeModel?: string
   /** Model for AOT/JIT compiler (default: openrouter/anthropic/claude-sonnet-4.6) */
   compilerModel?: string
+  /**
+   * How AOT conditions handle a guard-failing compiled variant. CLI
+   * `--aot-fallback`. Undefined is treated as `AOT_FALLBACK_DEFAULT`.
+   */
+  aotFallback?: AotFallbackMode
   tcpPath?: string
   resumeSession?: string
   keepWorkDirs: boolean
