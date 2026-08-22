@@ -34,11 +34,37 @@ export const AGENT_TOOLS: LLMTool[] = [
     description: "Execute a shell command in the working directory. Returns stdout, stderr, and exit code.",
     inputSchema: {
       type: "object",
-      properties: { command: { type: "string", description: "Shell command to execute" } },
+      properties: {
+        command: { type: "string", description: "Shell command to execute" },
+        timeout_seconds: {
+          type: "number",
+          description: "Optional timeout in seconds for long-running commands (default 30, max 600). Raise this when a command legitimately needs more than 30s (large batch jobs, test suites).",
+        },
+      },
       required: ["command"],
     },
   },
 ]
+
+// ---------------------------------------------------------------------------
+// Command timeout resolution
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_COMMAND_TIMEOUT_MS = 30_000
+export const MAX_COMMAND_TIMEOUT_MS = 600_000
+
+/**
+ * Resolve the model-provided `timeout_seconds` argument to a millisecond
+ * budget. Invalid values (non-number, NaN, <= 0) fall back to the default
+ * rather than erroring — a malformed timeout should never fail a command
+ * that would otherwise run.
+ */
+export function resolveCommandTimeoutMs(timeoutSeconds: unknown): number {
+  if (typeof timeoutSeconds !== "number" || !Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+    return DEFAULT_COMMAND_TIMEOUT_MS
+  }
+  return Math.min(Math.round(timeoutSeconds * 1000), MAX_COMMAND_TIMEOUT_MS)
+}
 
 // ---------------------------------------------------------------------------
 // Shared Tool Executor
@@ -98,7 +124,8 @@ export function createAgentToolExecutor(
               durationMs: performance.now() - start,
             }
           }
-          const TOOL_TIMEOUT_MS = 30_000
+          const toolTimeoutMs = resolveCommandTimeoutMs(args.timeout_seconds)
+          const timeoutLabel = `${Math.round(toolTimeoutMs / 1000)}s`
           const READ_TIMEOUT_MS = 2_000
           const proc = Bun.spawn(["sh", "-c", cmd], {
             cwd: workDir,
@@ -107,7 +134,7 @@ export function createAgentToolExecutor(
             env: { ...process.env, HOME: process.env.HOME },
           })
           const timeout = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("command timed out after 30s")), TOOL_TIMEOUT_MS),
+            setTimeout(() => reject(new Error(`command timed out after ${timeoutLabel}`)), toolTimeoutMs),
           )
           try {
             const exitCode = await Promise.race([proc.exited, timeout])
@@ -123,7 +150,7 @@ export function createAgentToolExecutor(
             return { output, exitCode, durationMs: performance.now() - start }
           } catch {
             proc.kill()
-            return { output: "Error: command timed out after 30s", durationMs: performance.now() - start }
+            return { output: `Error: command timed out after ${timeoutLabel}`, durationMs: performance.now() - start }
           }
         }
 
