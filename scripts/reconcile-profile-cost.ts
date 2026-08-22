@@ -7,15 +7,19 @@
  * independent record of the same calls. If the two disagree, one of them is
  * wrong and no number from that profile should be published.
  *
- * This is the gate for the D5 profiling-cost measurement: run it after every
- * profile, and treat a mismatch as a failed run rather than a rounding quirk.
+ * Treat it as a gate on published cost numbers: run it after a profile, and
+ * treat a mismatch as a failed run rather than a rounding quirk.
  *
  * Usage:
  *   bun run scripts/reconcile-profile-cost.ts --model=<id> --adapter=<name> [--json]
  *   bun run scripts/reconcile-profile-cost.ts --profile=<path/to/latest.json> [--json]
  *
  * Exit code is non-zero when the profile and its logs disagree beyond
- * --tolerance (default 0.5%), or when cost coverage is incomplete.
+ * --tolerance (default 0.5%), or when the share of provider-priced calls falls
+ * below --min-coverage (default 0.99). Coverage between that threshold and
+ * 100% passes with a caveat: the totals are right, but the dollar figure is a
+ * floor, because some providers occasionally return a response with no usage
+ * block at all.
  */
 
 import path from "node:path"
@@ -145,15 +149,34 @@ async function main() {
   const callsWithCost = tcp.cost.llmCallsWithCost
   const coverageKnown = calls !== undefined && callsWithCost !== undefined && calls > 0
   const coverageComplete = coverageKnown && callsWithCost === calls
+  const coverageRatio = coverageKnown ? callsWithCost! / calls! : 0
 
+  // Two failure modes that must not be conflated:
+  //
+  //   - A metric mismatch means the profile's aggregate disagrees with the
+  //     calls it is made of. The data is wrong; nothing from it is publishable.
+  //   - Incomplete coverage means the provider omitted usage on some calls
+  //     (observed: AtlasCloud returning a response with no usage block). The
+  //     data is right, but the dollar figure is a floor. That is disclosable,
+  //     not disqualifying — as long as the gap stays small enough to state.
+  //
+  // So mismatches always fail, while coverage fails only below the threshold.
+  const minCoverage = Number(args.get("min-coverage") ?? "0.99")
   const mismatches = checks.filter(c => !c.ok)
-  const ok = mismatches.length === 0 && coverageComplete
+  const coverageAcceptable = coverageKnown && coverageRatio >= minCoverage
+  const ok = mismatches.length === 0 && coverageAcceptable
+  const costIsFloor = coverageAcceptable && !coverageComplete
 
   if (asJson) {
     console.log(JSON.stringify({
       ok, label, model: tcp.model, harness: tcp.harness, profiledAt: tcp.profiledAt,
       logDir, logFiles: logs.files, tolerance,
-      checks, coverage: { calls, callsWithCost, complete: coverageComplete, logCalls: logs.calls, logCallsWithCost: logs.callsWithCost },
+      checks,
+      coverage: {
+        calls, callsWithCost, complete: coverageComplete, costIsFloor,
+        ratio: coverageRatio, minCoverage,
+        logCalls: logs.calls, logCallsWithCost: logs.callsWithCost,
+      },
       servingBackends: logs.providers,
     }, null, 2))
   } else {
@@ -166,7 +189,12 @@ async function main() {
       const fmt = (n: number) => (c.name === "cost usd" ? `$${n.toFixed(6)}` : n.toLocaleString())
       console.log(`  ${c.name.padEnd(20)} ${fmt(c.profile).padStart(14)} ${fmt(c.logs).padStart(14)}   ${pct(c.diff).padStart(7)}  ${mark}`)
     }
-    console.log(`\n  cost coverage : ${coverageKnown ? `${callsWithCost}/${calls} calls priced by the provider` : "not reported (pre-coverage profile)"}`)
+    const coverageNote = !coverageKnown
+      ? "not reported (pre-coverage profile)"
+      : coverageComplete
+        ? `${callsWithCost}/${calls} calls priced by the provider (complete)`
+        : `${callsWithCost}/${calls} calls priced (${(coverageRatio * 100).toFixed(2)}%) — cost is a FLOOR`
+    console.log(`\n  cost coverage : ${coverageNote}`)
     console.log(`  log coverage  : ${logs.callsWithCost}/${logs.calls} response entries carry a cost`)
     const backends = Object.entries(logs.providers).sort((a, b) => b[1] - a[1])
     console.log(`  served by     : ${backends.map(([n, c]) => `${n} (${c})`).join(", ") || "(none recorded)"}`)
@@ -174,7 +202,15 @@ async function main() {
       console.log(`  NOTE: more than one serving backend — the cache split is not comparable across runs.`)
       console.log(`        Pin SKVM_OPENROUTER_PROVIDER before a measurement run.`)
     }
-    console.log(`\n  ${ok ? "PASS — profile agrees with its transcripts" : "FAIL — do not publish numbers from this profile"}\n`)
+    if (mismatches.length > 0) {
+      console.log(`\n  FAIL — aggregate disagrees with the transcripts; do not publish numbers from this profile\n`)
+    } else if (!coverageAcceptable) {
+      console.log(`\n  FAIL — cost coverage ${(coverageRatio * 100).toFixed(2)}% is below the ${(minCoverage * 100).toFixed(0)}% threshold\n`)
+    } else if (costIsFloor) {
+      console.log(`\n  PASS (with caveat) — totals agree; ${calls! - callsWithCost!} unpriced call(s), so report cost as a floor\n`)
+    } else {
+      console.log(`\n  PASS — profile agrees with its transcripts\n`)
+    }
   }
 
   process.exit(ok ? 0 : 1)
