@@ -37,6 +37,9 @@
  */
 
 import { z } from "zod"
+import path from "node:path"
+import { tmpdir } from "node:os"
+import { mkdtemp, rename, rm } from "node:fs/promises"
 import { createLogger } from "../../core/logger.ts"
 import {
   registerCustomEvaluator,
@@ -45,6 +48,48 @@ import {
 import { TASK_FILE_DEFAULTS } from "../../core/ui-defaults.ts"
 
 const log = createLogger("junit-grade")
+
+
+/**
+ * Bun config files an agent could have written into the run directory. `[test]
+ * preload` in any of them executes inside the grading process, which is game
+ * over for grading integrity — the hidden test file's path is in `process.argv`.
+ */
+const GRADER_CONFIG_FILES = ["bunfig.toml", "bunfig.test.toml"]
+
+interface QuarantinedConfig {
+  from: string
+  to: string
+}
+
+/** Move agent-authored bun config aside for the duration of the grader run. */
+async function quarantineGraderConfig(workDir: string): Promise<QuarantinedConfig[]> {
+  const moved: QuarantinedConfig[] = []
+  for (const name of GRADER_CONFIG_FILES) {
+    const from = path.join(workDir, name)
+    if (!(await Bun.file(from).exists())) continue
+    const to = `${from}.skvm-quarantined`
+    try {
+      await rename(from, to)
+      moved.push({ from, to })
+      log.warn(`junit-grade: quarantined agent-authored ${name} for the grading run`)
+    } catch (e) {
+      log.warn(`junit-grade: could not quarantine ${name}: ${(e as Error).message}`)
+    }
+  }
+  return moved
+}
+
+/** Put it back, so a preserved workDir still reflects what the agent produced. */
+async function restoreGraderConfig(moved: QuarantinedConfig[]): Promise<void> {
+  for (const { from, to } of moved) {
+    try {
+      await rename(to, from)
+    } catch {
+      /* the grader may have replaced it; the agent's copy is not worth failing over */
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Payload schema
@@ -373,32 +418,60 @@ export const junitGrade: CustomEvaluator = {
     let testFileArg = payload.testFile
     if (payload.testFileFrom === "task") {
       if (!taskDir) {
-        return {
-          pass: false,
-          score: 0.0,
-          details:
-            `junit-grade: payload sets testFileFrom: "task" but the evaluation context has no taskDir. ` +
-            `Pass EvaluatorConfig.taskDir (bench conditions do this automatically) or use testFileFrom: "fixtures".`,
-        }
+        // A harness wiring bug, not a model failure. Scoring it 0 puts a fake
+        // failure into the aggregate and, in an optimizer loop, sends the
+        // optimizer chasing a skill that was never graded. `infraError` is the
+        // project's existing marker for "this run tells you nothing".
+        const message =
+          `junit-grade: payload sets testFileFrom: "task" but the evaluation context has no taskDir. ` +
+          `Pass EvaluatorConfig.taskDir (bench conditions and jit-optimize do this automatically) ` +
+          `or use testFileFrom: "fixtures".`
+        return { pass: false, score: 0.0, details: message, infraError: message }
       }
       testFileArg = (await import("node:path")).join(taskDir, payload.testFile)
     }
 
-    const junitFile = "_junit_results.xml"
-    const proc = Bun.spawn(
-      [
-        "bun",
-        "test",
-        testFileArg,
-        "--reporter=junit",
-        `--reporter-outfile=${junitFile}`,
-      ],
-      {
-        cwd: workDir,
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    )
+    // The grader runs with cwd = workDir so a task's test can read the agent's
+    // output by relative path. That directory is agent-writable, which gives the
+    // agent two ways into the grading process — both closed here:
+    //
+    //   1. Bun reads bunfig.toml from cwd, and `[test] preload` in it executes
+    //      inside the grader BEFORE the test file loads. From there the hidden
+    //      test file's absolute path is readable straight out of process.argv,
+    //      along with any expected/golden file beside it. Agent-authored bunfig
+    //      files are therefore quarantined for the duration of the run.
+    //   2. The results XML used to be written into the workDir and read back. An
+    //      agent that pre-creates a read-only `_junit_results.xml` full of
+    //      passing testcases makes Bun's write fail while `exists()` stays true,
+    //      and the forged file is parsed for full marks. It now goes to a
+    //      harness-owned temp directory the agent cannot reach.
+    //
+    // Moving the test file out of fixtures/ (testFileFrom: "task") hides the
+    // answer key; these two close the paths that make it readable anyway.
+    const quarantined = await quarantineGraderConfig(workDir)
+    const outDir = await mkdtemp(path.join(tmpdir(), "skvm-junit-"))
+    const junitPath = path.join(outDir, "_junit_results.xml")
+    let proc: Bun.Subprocess<"ignore", "pipe", "pipe">
+    try {
+      proc = Bun.spawn(
+        [
+          "bun",
+          "test",
+          testFileArg,
+          "--reporter=junit",
+          `--reporter-outfile=${junitPath}`,
+        ],
+        {
+          cwd: workDir,
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      )
+    } catch (e) {
+      await restoreGraderConfig(quarantined)
+      await rm(outDir, { recursive: true, force: true })
+      return zeroAll(payload, `failed to start bun test: ${(e as Error).message}`)
+    }
 
     // Enforce the payload's timeout. Bun.spawn has no built-in timeout knob,
     // so we race proc.exited against a sleep and SIGKILL on expiry.
@@ -416,6 +489,9 @@ export const junitGrade: CustomEvaluator = {
       proc.exited.then((code) => { clearTimeout(timer); return code }),
       new Response(proc.stderr).text(),
     ])
+    // The agent's own config goes back before anything else looks at the workDir
+    // (a later criterion, a snapshot, or a human reading a preserved run).
+    await restoreGraderConfig(quarantined)
     if (stderr) log.debug(`bun test stderr: ${stderr.slice(0, 500)}`)
 
     if (timedOut) {
@@ -427,7 +503,7 @@ export const junitGrade: CustomEvaluator = {
 
     // Read the junit XML. If it's missing, fall back to the exit-code
     // interpretation (matches the legacy grade.py fallback path).
-    const xmlFile = Bun.file(`${workDir}/${junitFile}`)
+    const xmlFile = Bun.file(junitPath)
     if (!(await xmlFile.exists())) {
       const overall = exitCode === 0 ? 1.0 : 0.0
       return uniformAll(

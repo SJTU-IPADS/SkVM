@@ -63,6 +63,12 @@ export interface RunnableTask {
   workDir: string
   /** Optional fixture directory to copy into workDir before running */
   fixturesDir?: string
+  /**
+   * The task's own directory, when the task came from disk. Criteria that
+   * resolve grading assets against the task rather than the (agent-writable)
+   * workDir need it — see junit-grade's `testFileFrom: "task"`.
+   */
+  taskDir?: string
   /** Per-task timeout (ms) */
   timeoutMs: number
   /** Per-task max steps */
@@ -711,6 +717,7 @@ export async function loadGeneratedTasks(
       // task. Pre-existing interface requires a string.
       workDir: "",
       fixturesDir: fixturesCheck.fileCount > 0 ? fixturesDir : undefined,
+      taskDir,
       timeoutMs: loaded.value.timeoutMs ?? defaultTimeout,
       maxSteps: loaded.value.maxSteps ?? defaultMaxSteps,
     })
@@ -776,11 +783,13 @@ function repointFixturesDirs(
   tasks: readonly RunnableTask[],
   destTasks: string,
 ): RunnableTask[] {
-  return tasks.map((t) =>
-    t.fixturesDir
-      ? { ...t, fixturesDir: path.join(destTasks, t.id, "fixtures") }
-      : { ...t },
-  )
+  return tasks.map((t) => ({
+    ...t,
+    // The task directory moves with its fixtures; grading assets resolved
+    // against it must follow, or they resolve into the old location.
+    ...(t.taskDir ? { taskDir: path.join(destTasks, t.id) } : {}),
+    ...(t.fixturesDir ? { fixturesDir: path.join(destTasks, t.id, "fixtures") } : {}),
+  }))
 }
 
 /** Maximum number of retry attempts when the first attempt produces fewer

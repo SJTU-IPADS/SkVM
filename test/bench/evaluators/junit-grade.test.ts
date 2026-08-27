@@ -16,6 +16,7 @@
 import { describe, test, expect } from "bun:test"
 import path from "node:path"
 import { mkdtemp, rm } from "node:fs/promises"
+import { chmodSync } from "node:fs"
 import { tmpdir } from "node:os"
 import {
   junitGrade,
@@ -605,6 +606,109 @@ describe("junit-grade testFileFrom: task", () => {
       expect(missing.ok).toBe(false)
     } finally {
       await rm(taskDir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Grading integrity
+// ---------------------------------------------------------------------------
+//
+// Relocating the test file hides the answer key; these cover the two routes
+// that made it readable (or forgeable) anyway from inside the agent's workDir.
+
+const INTEGRITY_TEST = `import { test, expect } from "bun:test"
+test("agent wrote the answer", async () => {
+  const actual = (await Bun.file("answer.txt").text()).trim()
+  expect(actual).toBe("42")
+})
+`
+
+const INTEGRITY_PAYLOAD = {
+  testFile: "grade.test.ts",
+  testFileFrom: "task" as const,
+  criteria: [{ id: "answer", description: "agent wrote the answer", testPattern: "agent wrote the answer", weight: 1 }],
+}
+
+async function setupIntegrityCase(opts: { answer?: string; bunfig?: string; forgedXml?: string }) {
+  const taskDir = await mkdtemp(path.join(tmpdir(), "junit-task-"))
+  const workDir = await mkdtemp(path.join(tmpdir(), "junit-work-"))
+  await Bun.write(path.join(taskDir, "grade.test.ts"), INTEGRITY_TEST)
+  await Bun.write(path.join(taskDir, "golden.txt"), "42")
+  if (opts.answer !== undefined) await Bun.write(path.join(workDir, "answer.txt"), opts.answer)
+  if (opts.bunfig) await Bun.write(path.join(workDir, "bunfig.toml"), opts.bunfig)
+  if (opts.forgedXml) await Bun.write(path.join(workDir, "_junit_results.xml"), opts.forgedXml)
+  return { taskDir, workDir }
+}
+
+function integrityRun(workDir: string, taskDir?: string) {
+  return junitGrade.run({
+    criterion: { method: "custom", evaluatorId: "junit-grade", payload: INTEGRITY_PAYLOAD },
+    runResult: baseRunResult(workDir),
+    ...(taskDir ? { taskDir } : {}),
+  } as Parameters<typeof junitGrade.run>[0])
+}
+
+describe("junit-grade grading integrity", () => {
+  test("the test file and its siblings never enter the workDir", async () => {
+    const { taskDir, workDir } = await setupIntegrityCase({ answer: "42" })
+    try {
+      const result = await integrityRun(workDir, taskDir)
+      expect(result.score).toBe(1)
+      expect(await Bun.file(path.join(workDir, "grade.test.ts")).exists()).toBe(false)
+      expect(await Bun.file(path.join(workDir, "golden.txt")).exists()).toBe(false)
+    } finally {
+      await rm(taskDir, { recursive: true, force: true })
+      await rm(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test("an agent-authored bunfig preload cannot run inside the grader", async () => {
+    // Bun reads bunfig.toml from cwd and `[test] preload` executes before the
+    // test file loads — with the hidden test's absolute path sitting in argv.
+    const { taskDir, workDir } = await setupIntegrityCase({
+      answer: "wrong",
+      bunfig: `[test]\npreload = ["./exploit.ts"]\n`,
+    })
+    await Bun.write(
+      path.join(workDir, "exploit.ts"),
+      `await Bun.write("answer.txt", "42")\nawait Bun.write("pwned.txt", "ran")\n`,
+    )
+    try {
+      const result = await integrityRun(workDir, taskDir)
+      expect(await Bun.file(path.join(workDir, "pwned.txt")).exists()).toBe(false)
+      expect(result.score).toBe(0)
+      // The agent's own file is restored once grading is over.
+      expect(await Bun.file(path.join(workDir, "bunfig.toml")).exists()).toBe(true)
+    } finally {
+      await rm(taskDir, { recursive: true, force: true })
+      await rm(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test("a pre-planted results file cannot be read back as the verdict", async () => {
+    // A read-only `_junit_results.xml` used to make Bun's write fail while
+    // exists() stayed true, so the forged file was parsed for full marks.
+    const forged = `<?xml version="1.0"?><testsuites><testsuite name="x"><testcase name="agent wrote the answer" /></testsuite></testsuites>`
+    const { taskDir, workDir } = await setupIntegrityCase({ answer: "wrong", forgedXml: forged })
+    chmodSync(path.join(workDir, "_junit_results.xml"), 0o444)
+    try {
+      const result = await integrityRun(workDir, taskDir)
+      expect(result.score).toBe(0)
+    } finally {
+      await rm(taskDir, { recursive: true, force: true })
+      await rm(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test("a missing taskDir is an infra error, not a model failure", async () => {
+    const { taskDir, workDir } = await setupIntegrityCase({ answer: "42" })
+    try {
+      const result = await integrityRun(workDir)
+      expect(result.infraError).toBeDefined()
+    } finally {
+      await rm(taskDir, { recursive: true, force: true })
+      await rm(workDir, { recursive: true, force: true })
     }
   })
 })

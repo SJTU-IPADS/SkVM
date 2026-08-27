@@ -1292,7 +1292,11 @@ export async function runTasksForRound(params: RunTasksParams): Promise<Evidence
       const evalResults = await evaluateAll(
         task.eval,
         { ...result, workDir: runWorkDir },
-        evalConfig,
+        // The round-shared config has no per-task directory; a criterion that
+        // resolves grading assets against the task (junit-grade
+        // testFileFrom: "task") needs it, and without it every run of such a
+        // task scores 0 while looking like a model failure.
+        { ...evalConfig, taskDir: task.taskDir },
       )
 
       const conversationLog = (await readConversationLog(convLogPath))

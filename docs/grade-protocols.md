@@ -108,10 +108,20 @@ time" path.
 ### 1.3 How matching works
 
 At bench time the evaluator spawns
-`bun test <testFile> --reporter=junit --reporter-outfile=_junit_results.xml`
-from the task's workDir (which already contains the fixtures). It parses
-the emitted junit XML and builds a `{classname > name: pass/fail}` map
-over every `<testcase>`.
+`bun test <testFile> --reporter=junit --reporter-outfile=<tmp>/_junit_results.xml`
+from the task's workDir, so a test can read the agent's output by relative
+path. It parses the emitted junit XML and builds a
+`{classname > name: pass/fail}` map over every `<testcase>`.
+
+Two things about that workDir, which the agent can write to freely:
+
+- The results XML is written to a harness-owned temp directory, never into
+  the workDir. An agent that pre-creates a read-only `_junit_results.xml`
+  full of passing testcases would otherwise have it parsed as the verdict.
+- Agent-authored `bunfig.toml` / `bunfig.test.toml` are moved aside for the
+  duration of the run and restored afterwards. Bun reads bunfig from cwd,
+  and a `[test] preload` entry executes inside the grading process — where
+  the test file's path is visible in `process.argv`.
 
 For each criterion it splits `testPattern` on top-level `|` (respecting
 `\|` as a literal pipe) and runs each alternative as a case-insensitive
@@ -144,15 +154,25 @@ Both work; the difference is pragmatic:
 
 ### 1.5 Authoring a new junit-grade task
 
-1. Write your `.test.ts` file under `fixtures/<task_id>.test.ts` and
-   verify it runs against a reference solution: `cd <workdir> && bun test`.
-2. For each independent sub-check in your test file, pick a short kebab-
+1. Decide where the test file lives. `fixtures/` (the default) is copied
+   into the agent's workDir, so the agent can read the test and any
+   `expected/` or golden files beside it — fine for a test that only
+   inspects the agent's output, wrong when the test embeds the answer. Set
+   `testFileFrom: "task"` to resolve `testFile` and its siblings against the
+   task directory instead, which is never copied into the workDir. Note that
+   `import.meta.dirname` and relative imports then resolve inside the task
+   directory, while `cwd` stays the workDir.
+
+2. Write your `.test.ts` file (under `fixtures/` or at the task root, per
+   step 1) and verify it runs against a reference solution:
+   `cd <workdir> && bun test`.
+3. For each independent sub-check in your test file, pick a short kebab-
    case `id`, a `weight` (all weights must sum to 1.0), a one-sentence
    `description` that reads well to someone who has never seen the task,
    and a `testPattern` regex that uniquely selects the testcase(s) for
    this check via `classname > name` full-name matching.
-3. Put the payload under the `custom` criterion in `task.json`.
-4. Run `bun test` — the integration tests in
+4. Put the payload under the `custom` criterion in `task.json`.
+5. Run `bun test` — the integration tests in
    `test/bench/evaluators/junit-grade-integration.test.ts` load every
    task via `loadTasks` and will fail loudly if your payload doesn't
    schema-validate.
