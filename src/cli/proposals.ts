@@ -349,7 +349,7 @@ export async function runProposalsReport(config: ProposalsReportConfig): Promise
 }
 
 export async function runProposalsServe(config: ProposalsServeConfig): Promise<void> {
-  const { startServer } = await import("../proposals/serve.ts")
+  const { startServer } = await import("../server/index.ts")
   const server = startServer({ port: config.port, host: config.host })
   console.log(`SkVM proposals review server listening on ${server.url}`)
   console.log(`  Press Ctrl+C to stop.`)
