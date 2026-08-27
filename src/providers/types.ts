@@ -2,8 +2,29 @@ import type { TokenUsage } from "../core/types.ts"
 
 /** Message format for LLM conversations */
 export interface LLMMessage {
-  role: "system" | "user" | "assistant"
+  role: "system" | "user" | "assistant" | "tool"
   content: string
+  /**
+   * Tool calls this assistant turn made. Load-bearing for conversation history:
+   * without it, a tool-call turn has to be flattened into prose, and whatever prose
+   * we invent becomes a pattern the model imitates. Emitting a placeholder like
+   * `[Called: write_file]` taught models to reply with that literal string as *text*
+   * and no tool call — which the agent loop reads as "task finished", so the run ends
+   * with the final tool call never made. Providers serialize this as a real
+   * assistant tool-call turn instead.
+   */
+  toolCalls?: LLMToolCall[]
+  /** For `role: "tool"` — which call this result answers. */
+  toolCallId?: string
+  /**
+   * Thinking-mode chain-of-thought belonging to THIS assistant turn's tool calls.
+   *
+   * Deepseek rejects a request (400, "reasoning_content in the thinking mode must be passed back")
+   * when an assistant turn carries tool_calls without it. Before history was structural that could
+   * only ever apply to the most recent turn, so providers echoed it from `previousResponse`; now
+   * that older turns keep their tool_calls, each one has to carry its own.
+   */
+  reasoningContent?: string
 }
 
 /** Tool definition for function calling */

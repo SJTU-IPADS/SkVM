@@ -12,6 +12,8 @@ import {
 interface OAIMessage {
   role: string
   content: string | Array<{ type: string; tool_call_id?: string; [key: string]: unknown }>
+  /** Set on `role: "tool"` messages — which assistant tool call this answers. */
+  tool_call_id?: string
   tool_calls?: Array<{
     id: string
     type: "function"
@@ -151,6 +153,28 @@ export class OpenAICompatibleProvider implements LLMProvider {
     }
     for (const m of params.messages) {
       if (m.role === "system") continue
+      // A tool-call turn must be serialized AS a tool-call turn. Flattening it to prose forces us
+      // to invent a placeholder, and models imitate whatever we invent — emitting it as text with
+      // no tool call, which the agent loop reads as "done" (see agent-loop.ts GHOST_TOOL_CALL).
+      if (m.role === "assistant" && m.toolCalls?.length) {
+        messages.push({
+          role: "assistant",
+          content: m.content ?? "",
+          tool_calls: m.toolCalls.map((tc) => ({
+            id: tc.id,
+            type: "function" as const,
+            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+          })),
+          // Same deepseek contract as the completeWithToolResults path below: a tool-call turn
+          // without its reasoning_content is rejected, and history is full of tool-call turns now.
+          ...(m.reasoningContent ? { reasoning_content: m.reasoningContent } : {}),
+        })
+        continue
+      }
+      if (m.role === "tool") {
+        messages.push({ role: "tool", content: m.content, tool_call_id: m.toolCallId })
+        continue
+      }
       messages.push({ role: m.role, content: m.content })
     }
     return messages

@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test"
-import { runAgentLoop, MAX_CONSECUTIVE_PARSE_FAILURES } from "../../src/core/agent-loop.ts"
+import { runAgentLoop, MAX_CONSECUTIVE_PARSE_FAILURES, MAX_GHOST_RETRIES } from "../../src/core/agent-loop.ts"
 import type { LLMProvider, LLMResponse, CompletionParams, LLMToolResult, LLMMessage } from "../../src/providers/types.ts"
 import { ToolArgumentsParseError, ProviderHttpError } from "../../src/providers/errors.ts"
 
@@ -491,5 +491,192 @@ describe("runAgentLoop malformed tool_call recovery", () => {
     // plus a corrective message.
     expect(completeN).toBe(2)
     expect(completeCalls[1]!.some((m) => m.role === "user" && m.content.includes("JSON"))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Ghost tool calls
+// ---------------------------------------------------------------------------
+
+const GHOST_TEXT = "[Called: execute_command]"
+
+/**
+ * Provider that replies with a scripted sequence of responses, recording the
+ * message history it was handed on every call.
+ */
+function scriptedProvider(script: LLMResponse[]): {
+  provider: LLMProvider
+  seenMessages: LLMMessage[][]
+  calls: () => number
+} {
+  const seenMessages: LLMMessage[][] = []
+  let i = 0
+  const next = (params: CompletionParams): LLMResponse => {
+    seenMessages.push(params.messages.map((m) => ({ ...m })))
+    const r = script[Math.min(i, script.length - 1)]!
+    i++
+    return r
+  }
+  return {
+    provider: {
+      name: "scripted",
+      async complete(params: CompletionParams): Promise<LLMResponse> {
+        return next(params)
+      },
+      async completeWithToolResults(
+        params: CompletionParams,
+        _toolResults: LLMToolResult[],
+        _previousResponse: LLMResponse,
+      ): Promise<LLMResponse> {
+        return next(params)
+      },
+    },
+    seenMessages,
+    calls: () => i,
+  }
+}
+
+function ghostResponse(): LLMResponse {
+  return { text: GHOST_TEXT, toolCalls: [], tokens: EMPTY_TOKENS, durationMs: 1, stopReason: "end_turn" }
+}
+
+describe("runAgentLoop ghost tool calls", () => {
+  test("a named-but-not-called tool is corrected and the model is asked again", async () => {
+    const { provider, seenMessages, calls } = scriptedProvider([
+      ghostResponse(),
+      {
+        text: "",
+        toolCalls: [{ id: "call_1", name: "bash", arguments: { command: "echo hi" } }],
+        tokens: EMPTY_TOKENS,
+        durationMs: 1,
+        stopReason: "tool_use",
+      },
+      { text: "done", toolCalls: [], tokens: EMPTY_TOKENS, durationMs: 1, stopReason: "end_turn" },
+    ])
+
+    const result = await runAgentLoop(
+      {
+        provider,
+        model: "mock",
+        tools: [],
+        executeTool: async () => ({ output: "hi", durationMs: 1 }),
+        system: "",
+        maxIterations: 5,
+        timeoutMs: 5000,
+      },
+      [{ role: "user", content: "run it" }],
+    )
+
+    // The ghost turn did not end the run: the model was re-queried and its tool call ran.
+    expect(calls()).toBeGreaterThanOrEqual(2)
+    expect(result.allToolCalls.map((c) => c.name)).toEqual(["bash"])
+    expect(result.text).toBe("done")
+
+    // The correction actually reached the model on the retry.
+    const retryHistory = seenMessages[1]!
+    expect(retryHistory.at(-2)).toEqual({ role: "assistant", content: GHOST_TEXT })
+    expect(retryHistory.at(-1)!.role).toBe("user")
+    expect(retryHistory.at(-1)!.content).toContain("was not a tool call")
+  })
+
+  test("a model that only ever names tools ends the run instead of spinning", async () => {
+    const { provider, calls } = scriptedProvider([ghostResponse()])
+
+    const result = await runAgentLoop(
+      {
+        provider,
+        model: "mock",
+        tools: [],
+        executeTool: async () => ({ output: "", durationMs: 0 }),
+        system: "",
+        maxIterations: 20,
+        timeoutMs: 5000,
+      },
+      [{ role: "user", content: "run it" }],
+    )
+
+    // MAX_GHOST_RETRIES corrections, then the reply is taken at face value.
+    expect(calls()).toBe(MAX_GHOST_RETRIES + 1)
+    expect(result.text).toBe(GHOST_TEXT)
+    expect(result.allToolCalls).toHaveLength(0)
+  })
+})
+
+describe("runAgentLoop ghost tool calls — mid-run", () => {
+  test("a ghost after a real tool exchange keeps that exchange in history exactly once", async () => {
+    // The ghost branch has to flush `pendingHistory` before appending its correction. If it
+    // stranded or duplicated the staged exchange, the model would lose (or double-see) the tool
+    // call it just made.
+    const seen: LLMMessage[][] = []
+    let n = 0
+    const provider: LLMProvider = {
+      name: "tool-then-ghost",
+      async complete(params: CompletionParams): Promise<LLMResponse> {
+        seen.push(params.messages.map((m) => ({ ...m })))
+        n++
+        if (n === 1) {
+          return {
+            text: "", toolCalls: [{ id: "call_1", name: "bash", arguments: { command: "echo hi" } }],
+            tokens: EMPTY_TOKENS, durationMs: 1, stopReason: "tool_use",
+          }
+        }
+        if (n === 2) return ghostResponse()
+        return { text: "done", toolCalls: [], tokens: EMPTY_TOKENS, durationMs: 1, stopReason: "end_turn" }
+      },
+      async completeWithToolResults(params: CompletionParams): Promise<LLMResponse> {
+        seen.push(params.messages.map((m) => ({ ...m })))
+        n++
+        return ghostResponse()
+      },
+    }
+
+    const result = await runAgentLoop(
+      {
+        provider, model: "mock", tools: [],
+        executeTool: async () => ({ output: "hi", durationMs: 1 }),
+        system: "", maxIterations: 8, timeoutMs: 5000,
+      },
+      [{ role: "user", content: "run it" }],
+    )
+
+    const retry = seen.at(-1)!
+    const assistantCalls = retry.filter((m) => m.role === "assistant" && m.toolCalls?.length)
+    expect(assistantCalls).toHaveLength(1)                                  // staged once, not twice
+    expect(retry.filter((m) => m.role === "tool" && m.toolCallId === "call_1")).toHaveLength(1)
+    expect(retry.at(-1)!.content).toContain("was not a tool call")
+    expect(result.text).toBe("done")
+  })
+
+  test("a placeholder followed by prose is still a ghost", async () => {
+    // The realistic imitation is not a bare placeholder — the model narrates after it.
+    let n = 0
+    const provider: LLMProvider = {
+      name: "chatty-ghost",
+      async complete(): Promise<LLMResponse> {
+        n++
+        if (n === 1) {
+          return {
+            text: "[Called: execute_command]\n\nThe script has been run.",
+            toolCalls: [], tokens: EMPTY_TOKENS, durationMs: 1, stopReason: "end_turn",
+          }
+        }
+        return { text: "done", toolCalls: [], tokens: EMPTY_TOKENS, durationMs: 1, stopReason: "end_turn" }
+      },
+      async completeWithToolResults(): Promise<LLMResponse> {
+        throw new Error("not used")
+      },
+    }
+
+    const result = await runAgentLoop(
+      {
+        provider, model: "mock", tools: [],
+        executeTool: async () => ({ output: "", durationMs: 0 }),
+        system: "", maxIterations: 5, timeoutMs: 5000,
+      },
+      [{ role: "user", content: "run it" }],
+    )
+
+    expect(n).toBeGreaterThanOrEqual(2)   // corrected rather than accepted as "finished"
+    expect(result.text).toBe("done")
   })
 })

@@ -170,13 +170,52 @@ export class AnthropicProvider implements LLMProvider {
     return this.parseResponse(response, durationMs)
   }
 
+  /**
+   * Serialize history, keeping tool-call turns structural.
+   *
+   * Flattening a tool-call turn into prose forces us to invent a placeholder for it, and models
+   * imitate whatever we invent — replying with the placeholder as *text* and no tool call, which
+   * the agent loop reads as "task finished" (see agent-loop.ts GHOST_TOOL_CALL). Anthropic wants
+   * tool_use blocks on the assistant turn and tool_result blocks on a USER turn, so consecutive
+   * `role: "tool"` messages are merged into one user message.
+   */
   private toAnthropicMessages(messages: LLMMessage[]): Anthropic.MessageParam[] {
-    return messages
-      .filter((m) => m.role !== "system")
-      .map((m) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      }))
+    const out: Anthropic.MessageParam[] = []
+
+    for (const m of messages) {
+      if (m.role === "system") continue
+
+      if (m.role === "tool") {
+        const block: Anthropic.ContentBlockParam = {
+          type: "tool_result",
+          tool_use_id: m.toolCallId ?? "",
+          content: m.content,
+        }
+        const prev = out[out.length - 1]
+        // Merge into the open user turn when the previous message was also a tool result.
+        if (prev && prev.role === "user" && Array.isArray(prev.content) &&
+            prev.content.every((b) => typeof b === "object" && (b as { type?: string }).type === "tool_result")) {
+          ;(prev.content as Anthropic.ContentBlockParam[]).push(block)
+        } else {
+          out.push({ role: "user", content: [block] })
+        }
+        continue
+      }
+
+      if (m.role === "assistant" && m.toolCalls?.length) {
+        const content: Anthropic.ContentBlockParam[] = []
+        if (m.content) content.push({ type: "text", text: m.content })
+        for (const tc of m.toolCalls) {
+          content.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.arguments })
+        }
+        out.push({ role: "assistant", content })
+        continue
+      }
+
+      out.push({ role: m.role as "user" | "assistant", content: m.content })
+    }
+
+    return out
   }
 
   private parseResponse(response: Anthropic.Message, durationMs: number): LLMResponse {

@@ -15,11 +15,15 @@ const PROVIDER_NAME = "openrouter"
 interface OpenRouterMessage {
   role: string
   content: string | Array<{ type: string; tool_call_id?: string; [key: string]: unknown }>
+  /** Set on `role: "tool"` messages — which assistant tool call this answers. */
+  tool_call_id?: string
   tool_calls?: Array<{
     id: string
     type: "function"
     function: { name: string; arguments: string }
   }>
+  /** Thinking-mode chain-of-thought for an assistant turn that issued tool calls. */
+  reasoning_content?: string
 }
 
 function toOpenAIToolChoice(tc: ToolChoice | undefined): unknown | undefined {
@@ -136,6 +140,26 @@ export class OpenRouterProvider implements LLMProvider {
     }
     for (const m of params.messages) {
       if (m.role === "system") continue
+      // A tool-call turn must be serialized AS a tool-call turn. Flattening it to prose forces us
+      // to invent a placeholder, and models imitate whatever we invent — emitting it as text with
+      // no tool call, which the agent loop reads as "done" (see agent-loop.ts GHOST_TOOL_CALL).
+      if (m.role === "assistant" && m.toolCalls?.length) {
+        messages.push({
+          role: "assistant",
+          content: m.content ?? "",
+          tool_calls: m.toolCalls.map((tc) => ({
+            id: tc.id,
+            type: "function" as const,
+            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+          })),
+          ...(m.reasoningContent ? { reasoning_content: m.reasoningContent } : {}),
+        })
+        continue
+      }
+      if (m.role === "tool") {
+        messages.push({ role: "tool", content: m.content, tool_call_id: m.toolCallId })
+        continue
+      }
       messages.push({ role: m.role, content: m.content })
     }
     return messages

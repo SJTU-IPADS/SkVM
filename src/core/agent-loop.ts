@@ -17,6 +17,20 @@ const log = createLogger("agent-loop")
  */
 export const MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
+/**
+ * A model reply that *names* a tool instead of calling it — e.g. the bare text
+ * `[Called: execute_command]` with no tool_calls and stopReason `end_turn`.
+ *
+ * This is imitation, not intent: the loop used to stage past tool-call turns in history as that
+ * exact string, so models learned to emit it as prose. Read literally it means "the task is
+ * finished", which ends the run mid-task — silently, with exit 0 and a score of 0. The history no
+ * longer contains the pattern, so this should not fire; it remains as a guard because the failure
+ * mode is invisible in every log except the final score.
+ */
+export const GHOST_TOOL_CALL = /^\[Called:[^\]]*\]/
+/** How many ghost turns to correct before accepting that the model is done. */
+export const MAX_GHOST_RETRIES = 2
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -120,13 +134,15 @@ export async function runAgentLoop(
   let totalCostUsd: number | undefined = 0
   let llmDurationMs = 0
   let finalText = ""
+  // See the "ghost tool call" guard below.
+  let ghostTurns = 0
   const allToolCalls: ToolCall[] = []
 
   let response: LLMResponse | undefined
   let iteration = 0
   let loopError: Error | undefined
   let timedOut = false
-  let pendingHistory: Array<{ role: "system" | "user" | "assistant"; content: string }> | undefined
+  let pendingHistory: LLMMessage[] | undefined
   let lastActionSig = ""
   let repeatCount = 0
   let consecutiveParseFailures = 0
@@ -237,6 +253,38 @@ export async function runAgentLoop(
         timestamp: Date.now(),
       })
 
+      // A "ghost" turn: the model echoed our own history placeholder as prose instead of calling
+      // the tool. Historically we staged tool-call turns as the literal text `[Called: <tool>]`
+      // (see below), and models learned to reply with exactly that — no tool call, stopReason
+      // end_turn. Taking it at face value ends the run silently, mid-task, with the deliverable
+      // unwritten. The history no longer contains that pattern, so this should not fire; it stays
+      // as a guard because the failure is invisible (exit 0, runStatus ok, score 0) and any future
+      // history flattening could reintroduce it.
+      if (response.toolCalls.length === 0 && GHOST_TOOL_CALL.test(response.text.trim())) {
+        ghostTurns++
+        log.warn(`Ghost tool call: model wrote "${response.text.trim().slice(0, 60)}" as text instead of calling the tool`)
+        if (ghostTurns <= MAX_GHOST_RETRIES) {
+          // Same shape as the parse-error retry: commit the staged exchange, append the
+          // correction, and drop back to a plain complete() so the model actually sees it.
+          if (pendingHistory) {
+            params.messages.push(...pendingHistory)
+            pendingHistory = undefined
+          }
+          params.messages.push(
+            { role: "assistant", content: response.text },
+            {
+              role: "user",
+              content:
+                "That was not a tool call — it was text. Do not describe or name the tool; " +
+                "actually invoke it. Continue the task.",
+            },
+          )
+          response = undefined
+          continue
+        }
+        log.warn(`Ghost tool call repeated ${ghostTurns}x — ending run`)
+      }
+
       // If no tool calls or end_turn, we're done
       if (response.toolCalls.length === 0 || response.stopReason === "end_turn") {
         finalText = response.text
@@ -307,11 +355,31 @@ export async function runAgentLoop(
       if (pendingHistory) {
         params.messages.push(...pendingHistory)
       }
-      // Stage current exchange for next iteration
+      // Stage current exchange for next iteration.
+      //
+      // The assistant turn carries its tool calls STRUCTURALLY (providers serialize them as a real
+      // tool-call turn). It used to be flattened to the literal string `[Called: write_file]` when
+      // the model returned no prose — which qwen-class models do on nearly every step. The model
+      // then saw a history in which every assistant turn was that string, imitated it, and emitted
+      // `[Called: execute_command]` as TEXT with no tool call. The loop reads a text-only reply as
+      // "task finished", so the run ended having written the script but never run it. Skills that
+      // say "write a script, then execute it" made the dropped call the one that produced the
+      // deliverable, so they scored 0 while the same task passed without the skill.
       const actionSig = response.toolCalls.map(tc => `${tc.name}(${JSON.stringify(tc.arguments)})`).sort().join("|")
       pendingHistory = [
-        { role: "assistant", content: response.text || `[Called: ${response.toolCalls.map(tc => tc.name).join(", ")}]` },
-        { role: "user", content: toolResults.map(tr => tr.content.slice(0, 2000)).join("\n---\n") },
+        {
+          role: "assistant",
+          content: response.text,
+          toolCalls: response.toolCalls,
+          // Thinking-mode models require this echoed back on any turn that issued tool calls, and
+          // every staged turn now issues them.
+          ...(response.reasoningContent ? { reasoningContent: response.reasoningContent } : {}),
+        },
+        ...toolResults.map((tr): LLMMessage => ({
+          role: "tool",
+          content: tr.content.slice(0, 2000),
+          toolCallId: tr.toolCallId,
+        })),
       ]
 
       // Loop detection: break if the same action signature repeats 3+ times consecutively
