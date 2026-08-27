@@ -50,6 +50,7 @@ export const SolidifyCasesFileSchema = z.object({
 })
 
 export type SolidifyCasesFile = z.infer<typeof SolidifyCasesFileSchema>
+export type SolidifyCaseSpec = z.infer<typeof SolidifyCaseSchema>
 
 // ---------------------------------------------------------------------------
 // Records
@@ -129,6 +130,11 @@ export interface RefinementEvent {
 export interface SolidifyRunResult {
   records: InvocationRecord[]
   refinements: RefinementEvent[]
+  /**
+   * Cases that threw. Their records up to the failure are still in `records`;
+   * the run is partial, and the caller must not report it as a clean sweep.
+   */
+  failures: Array<{ case: string; error: string }>
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +172,26 @@ export async function runSolidifyExperiment(opts: SolidifyRunOptions): Promise<S
   const records: InvocationRecord[] = []
   const refinements: RefinementEvent[] = []
 
+  // One failing case must not discard the ones that already ran. A non-zero
+  // `_setup.sh`, or a 429 on a refinement call at invocation 3 of 5, used to
+  // throw straight out of this function — ending a multi-hour run with no CSV
+  // written at all. Failures are recorded and the remaining cases still run;
+  // the caller decides what a partial result is worth.
+  const failures: Array<{ case: string; error: string }> = []
+
   for (const caseSpec of spec.cases) {
+    try {
+      await runCase(caseSpec)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      log.error(`[${caseSpec.id}] case failed: ${message}`)
+      failures.push({ case: caseSpec.id, error: message })
+    }
+  }
+
+  return { records, refinements, failures }
+
+  async function runCase(caseSpec: SolidifyCaseSpec): Promise<void> {
     const skillDir = path.resolve(specDir, caseSpec.skill)
     const skill = await loadSkill(skillDir)
     const candidates = await loadBoostCandidates(skill.skillId)
@@ -240,17 +265,28 @@ export async function runSolidifyExperiment(opts: SolidifyRunOptions): Promise<S
         solidifier?.finalizeRun()
         const promoted = solidifier?.getEntries()[0]?.state.promoted ?? false
         const serve = serves[0]
-        // Served rows carry the FULL serve path: param extraction (regex or
-        // LLM) plus template execution — anything less overstates the saving.
-        const latencyMs = Math.round(serve ? serve.durationMs + serve.extractionMs : runResult.durationMs)
+        // Served rows carry the FULL serve path: param extraction (regex or LLM)
+        // plus template execution — anything less overstates the saving.
+        //
+        // And they ADD to the run's own usage rather than replacing it. The hook
+        // fires before every provider call, so a serve can land at step k > 0,
+        // after the loop has already spent tokens (an extraction that misses,
+        // then a tool call that creates the file the template needed, then a
+        // serve). Reporting only the extraction cost there credited the run with
+        // a saving it did not make: one probe recorded 4 tokens for a run that
+        // really cost 1000 in / 50 out. For a first-call serve the run's own
+        // usage is zero, so summing is always right.
+        const latencyMs = Math.round(
+          serve ? runResult.durationMs + serve.durationMs + serve.extractionMs : runResult.durationMs,
+        )
 
         records.push({
           case: caseSpec.id,
           invocation: i + 1,
           method: serve ? "JIT" : "LLM",
           latency_ms: latencyMs,
-          tokens_in: serve ? serve.extractionTokens.input : runResult.tokens.input,
-          tokens_out: serve ? serve.extractionTokens.output : runResult.tokens.output,
+          tokens_in: runResult.tokens.input + (serve?.extractionTokens.input ?? 0),
+          tokens_out: runResult.tokens.output + (serve?.extractionTokens.output ?? 0),
           purpose: caseSpec.purposeId,
           skill: skill.skillId,
           runStatus: runResult.runStatus ?? "ok",
@@ -291,8 +327,6 @@ export async function runSolidifyExperiment(opts: SolidifyRunOptions): Promise<S
       }
     }
   }
-
-  return { records, refinements }
 }
 
 // ---------------------------------------------------------------------------

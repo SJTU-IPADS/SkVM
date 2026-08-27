@@ -36,7 +36,10 @@ export const BoostCandidateSchema = z.object({
   /** Regex pattern matching LLM-generated code structure */
   codeSignature: z.string(),
   /** Executable code with ${param} placeholders */
-  functionTemplate: z.string(),
+  // Non-empty: an empty template instantiates to "", passes the
+  // unfilled-placeholder scan, exits 0 under `sh -c`, and serves the empty
+  // string as the agent's answer.
+  functionTemplate: z.string().min(1),
   /** Input/output parameter definitions: param name → type string or rich ParamDef */
   params: z.record(ParamValueSchema),
   materializationType: z.enum(["shell", "python"]),

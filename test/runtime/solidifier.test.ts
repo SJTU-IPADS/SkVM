@@ -672,3 +672,62 @@ describe("Solidifier - configurable monitor scope", () => {
     expect(solidifier.getEntries()[0]!.state.hitCount).toBe(1)
   })
 })
+
+describe("Solidifier — retro credit matches the live gate", () => {
+  test("credit is not given for matches in tools the candidate does not monitor", async () => {
+    // afterLLM only tests a candidate against its monitoredTools. Replaying the
+    // gate without that filter is MORE permissive than the gate it replays, so a
+    // candidate could promote on evidence its own live path rejects.
+    const candidate: BoostCandidate = {
+      ...RUN_GRANULARITY_CANDIDATE,
+      monitoredTools: ["execute_command"],
+    }
+    const solidifier = new Solidifier([candidate], { matchGranularity: "run", monitoredTools: new Set(["execute_command", "web_fetch"]) })
+    const hook = solidifier.createAfterLLMHook()
+
+    // Three runs of web_fetch — observed, but not on a tool this candidate watches.
+    for (const city of ["London", "Paris", "Rome"]) {
+      await hook({
+        response: makeLLMResponse([{ name: "web_fetch", args: { url: `https://wttr.in/${city}` } }]),
+        iteration: 1, workDir: "/tmp",
+      })
+      solidifier.finalizeRun()
+    }
+    expect(solidifier.getEntries()[0]!.state.consecutiveMatches).toBe(0)
+
+    solidifier.replaceCandidate("fetch-current-weather", {
+      ...candidate,
+      codeSignature: "wttr\\.in",
+    }, { creditObservedRuns: true })
+
+    const entry = solidifier.getEntries()[0]!
+    expect(entry.state.consecutiveMatches).toBe(0)
+    expect(entry.state.promoted).toBe(false)
+  })
+})
+
+describe("Solidifier — extraction rejects empty params", () => {
+  test("a whitespace-only capture is not an extraction", async () => {
+    // `match[1]` is truthy for "  ", and trimming afterwards produced an empty
+    // param that still counted as complete — so a template ran with nothing
+    // substituted where a real argument belonged.
+    const candidate: BoostCandidate = {
+      ...RUN_GRANULARITY_CANDIDATE,
+      functionTemplate: 'echo "city=${city}"',
+      params: {
+        city: { type: "string", description: "city", extractPattern: "weather in (.*) please" },
+      },
+    }
+    const solidifier = new Solidifier([candidate], { matchGranularity: "run", promotionThreshold: 1 })
+    const hook = solidifier.createAfterLLMHook()
+    await hook({ response: makeLLMResponse([wttrCommand("London")]), iteration: 1, workDir: "/tmp" })
+    solidifier.finalizeRun()
+    expect(solidifier.getEntries()[0]!.state.promoted).toBe(true)
+
+    const before = solidifier.createBeforeLLMHook()
+    const served = await before({ prompt: "weather in   please", messages: [], workDir: "/tmp", iteration: 1 } as never)
+
+    // No serve: the param did not extract, so the agent handles it.
+    expect(served?.action).not.toBe("replace")
+  })
+})

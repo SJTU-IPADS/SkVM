@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test"
-import { JIT_BOOST_COMPILE_FLAGS, JIT_BOOST_RUN_FLAGS, runJitBoost } from "../../src/cli/jit-boost.ts"
+import { JIT_BOOST_COMPILE_FLAGS, JIT_BOOST_RUN_FLAGS, runJitBoost, runJitBoostRun } from "../../src/cli/jit-boost.ts"
 import { UsageError } from "../../src/cli/flags.ts"
 
 function parseCompileError(argv: string[]): UsageError {
@@ -136,5 +136,57 @@ describe("runJitBoost routing", () => {
     }
     expect(err).toBeInstanceOf(UsageError)
     expect((err as UsageError).message).toContain("--online-refine requires --match-granularity=run")
+  })
+})
+
+describe("jit-boost run — dependent flags", () => {
+  const parsed = () => JIT_BOOST_RUN_FLAGS.parse(["--cases=/nonexistent.json", "--model=openrouter/x"])
+
+  test("refinement knobs without --online-refine are rejected before any side effect", async () => {
+    // Each of these is read only inside the online-refine branch, so passing one
+    // without it silently does nothing — invisible in a scripted sweep.
+    for (const extra of [
+      { "retro-promote": true },
+      { "refine-model": "anthropic/claude-sonnet-4.6" },
+      { "refine-after-misses": 5 },
+      { "max-refines": 3 },
+    ]) {
+      const config = parsed()
+      if (config.help) throw new Error("unexpected help parse")
+      await expect(
+        runJitBoostRun({ ...config, ...extra } as never),
+      ).rejects.toThrow(/no effect without --online-refine/)
+    }
+  })
+
+  test("the same knobs are accepted with --online-refine and run granularity", async () => {
+    const config = parsed()
+    if (config.help) throw new Error("unexpected help parse")
+    // Fails on the missing cases file — i.e. it got past the cross-flag gate.
+    await expect(
+      runJitBoostRun({
+        ...config,
+        "online-refine": true, "match-granularity": "run", "retro-promote": true,
+      } as never),
+    ).rejects.toThrow(/cases file not found/)
+  })
+})
+
+describe("jit-boost overview", () => {
+  test("the bare-command overview lists every run flag, generated from the definitions", async () => {
+    // The hand-written version had already drifted: it omitted all five
+    // refinement flags.
+    const lines: string[] = []
+    const realLog = console.log
+    console.log = (...args: unknown[]) => { lines.push(args.join(" ")) }
+    try {
+      await runJitBoost([])
+    } finally {
+      console.log = realLog
+    }
+    const out = lines.join("\n")
+    for (const flag of ["--online-refine", "--retro-promote", "--refine-model", "--refine-after-misses", "--max-refines"]) {
+      expect(out).toContain(flag)
+    }
   })
 })

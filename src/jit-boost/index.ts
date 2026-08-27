@@ -34,6 +34,18 @@ export interface BoostConfig {
   demotionThreshold?: number
   /** Model for LLM-based param extraction (e.g., "anthropic/claude-haiku-4.5"). If set, enables LLM fallback. */
   extractModel?: string
+  /**
+   * How consecutive matches are counted for promotion.
+   *
+   * `"run"` counts per agent RUN: a real transcript wraps its signature-bearing
+   * call in setup noise (`pip install`, `ls`), and per-tool-call counting can
+   * never accumulate a streak through that — the gate essentially never fires.
+   * `"tool-call"` (the default, unchanged) counts per matching call.
+   *
+   * With `"run"`, the hooks close each run via the runtime's `afterRun`, so an
+   * adapter that installs them needs no extra wiring.
+   */
+  matchGranularity?: "tool-call" | "run"
 }
 
 export interface BoostHookResult {
@@ -77,11 +89,17 @@ export async function createBoostHooks(config: BoostConfig): Promise<BoostHookRe
     promotionThreshold: config.promotionThreshold,
     demotionThreshold: config.demotionThreshold,
     llmProvider,
+    matchGranularity: config.matchGranularity,
   })
 
   const hooks: RuntimeHooks = {
     beforeLLM: [solidifier.createBeforeLLMHook()],
     afterLLM: [solidifier.createAfterLLMHook()],
+    // finalizeRun must happen exactly once per run, and it is a no-op unless
+    // matchGranularity is "run". Owning it here is what makes the run-granular
+    // gate usable from an adapter — otherwise every caller has to remember, and
+    // the one production path (bench) simply never called it.
+    afterRun: [async () => { solidifier.finalizeRun() }],
   }
 
   log.info(`Boost hooks created for ${skillId} (${candidates.length} candidates)`)

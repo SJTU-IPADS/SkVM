@@ -150,7 +150,14 @@ export const jitBoostRunner: ConditionRunner = {
     // -----------------------------------------------------------------------
     // Step 3: Create boost hooks and run remaining iterations
     // -----------------------------------------------------------------------
-    const boost = await createBoostHooks({ skillId, extractModel: adapterConfig.model })
+    // Run granularity: a real transcript wraps the signature-bearing call in
+    // setup noise, and the per-tool-call gate cannot accumulate a streak through
+    // that — it essentially never promotes on real runs.
+    const boost = await createBoostHooks({
+      skillId,
+      extractModel: adapterConfig.model,
+      matchGranularity: "run",
+    })
 
     for (let i = 1; i < jitRuns; i++) {
       log.info(`[jit-boost] ${task.id} run ${i + 1}/${jitRuns} (with hooks)`)

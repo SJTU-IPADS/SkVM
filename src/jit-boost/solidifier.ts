@@ -177,6 +177,17 @@ export class Solidifier {
    * Only meaningful in "run" granularity — a no-op otherwise. Call once after
    * each agent run; a run with zero matches resets the consecutive counter.
    */
+  /**
+   * Close one agent run: fold this run's marks into the counters.
+   *
+   * Call it EXACTLY once per run. A run with no marks is a real miss (the agent
+   * made no monitored tool call) and must reset the streak, so this cannot infer
+   * from emptiness whether a run happened — skipping it credits this run's marks
+   * to the next one, and calling it twice invents an empty run that breaks any
+   * retro-promotion streak spanning it. `createBoostHooks` wires it to the
+   * runtime's `afterRun` hook so callers do not have to remember; drivers that
+   * construct a Solidifier directly own the call.
+   */
   finalizeRun(): void {
     if (this.matchGranularity !== "run") return
     this.runCounter++
@@ -247,9 +258,17 @@ export class Solidifier {
       const observations = this.missLog.get(purposeId)?.observations ?? []
       try {
         const regex = new RegExp(candidate.codeSignature, "i")
+        // Same tool filter the live gate applies in afterLLM. Without it the
+        // replay is MORE permissive than the gate it replays: a candidate that
+        // only monitors execute_command could be credited for matches found in
+        // web_fetch calls, promoting on evidence its own live path rejects.
+        const monitored = candidate.monitoredTools?.length
+          ? new Set(candidate.monitoredTools)
+          : this.defaultMonitoredTools
         const coveredByRun = new Map<number, boolean>()
         for (const o of observations) {
-          coveredByRun.set(o.run, (coveredByRun.get(o.run) ?? false) || regex.test(o.content))
+          const covered = monitored.has(o.tool) && regex.test(o.content)
+          coveredByRun.set(o.run, (coveredByRun.get(o.run) ?? false) || covered)
         }
         // Credit only a gap-free streak of covered runs ending at the most
         // recent completed run. A run with no observations (the agent made no
@@ -269,7 +288,9 @@ export class Solidifier {
 
     entry.candidate = candidate
     entry.state.consecutiveMatches = credited
-    entry.state.hitCount += credited
+    // hitCount is not incremented here: those runs were already counted as they
+    // happened (finalizeRun), and adding them again double-counts the same
+    // executions in the stat the driver reports.
     entry.state.promoted = false
     entry.state.fallbackCount = 0
     entry.promotedAt = undefined
@@ -487,6 +508,10 @@ export async function extractParamsFromPrompt(
       if (llm.params && Object.keys(llm.params).length === paramEntries.length) {
         return { params: llm.params, complete: true, method: "llm", tokens: llm.tokens }
       }
+      // A failed extraction still called the model. Returning its tokens keeps
+      // that spend on the record instead of charging it to nobody — the whole
+      // point of accounting the serve path is that it is not free.
+      return { params: {}, complete: false, method: "llm", tokens: llm.tokens }
     } catch (err) {
       runtimeExtractionFailureCount++
       log.error(`LLM param extraction failed (runtime): ${err} — total failures: ${runtimeExtractionFailureCount}`)
@@ -510,8 +535,13 @@ function extractViaRegex(
     if (!def.extractPattern) continue
     try {
       const match = prompt.match(new RegExp(def.extractPattern, "i"))
-      if (match?.[1]) {
-        params[name] = match[1].trim()
+      // A whitespace-only capture is not an extraction. `match[1]` is truthy for
+      // "  ", and trimming it afterwards produced an empty param that still
+      // counted as complete — so `search for  in the repo` served
+      // `grep -r '' .` and dumped unrelated files as the answer.
+      const value = match?.[1]?.trim()
+      if (value) {
+        params[name] = value
       }
     } catch {
       // Invalid regex, skip
@@ -566,7 +596,12 @@ ${paramDescriptions.join("\n")}`
   for (const [name] of Object.entries(defs)) {
     const value = (result as Record<string, unknown>)[name]
     if (value === null || value === undefined) return { params: null, tokens: spent }
-    params[name] = String(value)
+    // Same rule as the regex path: an empty or whitespace-only value is not an
+    // extraction, and serving a template with one substitutes nothing where a
+    // real argument belonged.
+    const text = String(value).trim()
+    if (text.length === 0) return { params: null, tokens: spent }
+    params[name] = text
   }
 
   return { params, tokens: spent }

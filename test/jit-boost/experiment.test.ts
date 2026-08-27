@@ -277,6 +277,51 @@ describe("runSolidifyExperiment", () => {
     expect(refinements.length).toBe(0)
     expect(records.every((r) => r.method === "LLM")).toBe(true)
   })
+
+describe("runSolidifyExperiment — served rows account for the whole run", () => {
+  test("a serve after the first provider call adds to the run's usage, it does not replace it", async () => {
+    // Reporting only the extraction cost here credited the run with a saving it
+    // never made: one probe recorded 4 tokens for a run that really cost 1000/50.
+    const { records } = await runSolidifyExperiment({
+      specPath,
+      model: "openrouter/fake/model",
+      adapter: new LateServeAdapter(),
+      matchGranularity: "run",
+      promotionThreshold: 1,
+    })
+
+    const served = records.find((r) => r.method === "JIT")
+    expect(served).toBeDefined()
+    expect(served!.tokens_in).toBeGreaterThanOrEqual(1000)
+    expect(served!.tokens_out).toBeGreaterThanOrEqual(50)
+    expect(served!.latency_ms).toBeGreaterThanOrEqual(900)
+  })
+})
+
+describe("runSolidifyExperiment — failure containment", () => {
+  test("one broken case does not discard the records of the cases that ran", async () => {
+    // A non-zero `_setup.sh`, or a 429 on a refinement call at invocation 3 of 5,
+    // used to throw out of the driver entirely — a long run ending with no CSV.
+    const twoCases = {
+      cases: [
+        { id: "weather-current", purposeId: "fetch-current-weather", skill: "./weather", prompts: ["What is the current weather in London?"] },
+        { id: "broken", purposeId: "fetch-current-weather", skill: "./no-such-skill", prompts: ["What is the current weather in Paris?"] },
+      ],
+    }
+    const twoCasePath = path.join(root, "two-cases.json")
+    await Bun.write(twoCasePath, JSON.stringify(twoCases))
+
+    const result = await runSolidifyExperiment({
+      specPath: twoCasePath,
+      model: "openrouter/fake/model",
+      adapter: new FakeAdapter([['curl -s "wttr.in/London?format=3"']]),
+      matchGranularity: "run",
+    })
+
+    expect(result.records.map((r) => r.case)).toEqual(["weather-current"])
+    expect(result.failures.map((f) => f.case)).toEqual(["broken"])
+  })
+})
 })
 
 describe("invocationRecordsToCsv", () => {
@@ -291,4 +336,56 @@ describe("invocationRecordsToCsv", () => {
       "pdf-extract,4,JIT,108,0,0,extract-pdf-text-tables,document-pdf,ok,true\n",
     )
   })
+
 })
+
+
+/**
+ * An adapter whose serve lands AFTER the run has already spent tokens: the
+ * agent makes a matching tool call, and only the next provider call is served.
+ * This is the ordinary shape once a candidate is promoted mid-run — beforeLLM
+ * fires before every provider call, not just the first.
+ */
+class LateServeAdapter implements AgentAdapter {
+  readonly name = "bare-agent"
+  private hooks: RuntimeHooks = {}
+
+  setHooks(hooks: RuntimeHooks) { this.hooks = hooks }
+  async setup(_config: AdapterConfig): Promise<void> {}
+  async teardown(): Promise<void> {}
+
+  async run(task: { prompt: string; workDir: string; skill?: SkillBundle }): Promise<RunResult> {
+    // Step 1: a real LLM turn that emits the matching call — real tokens spent.
+    if (this.hooks.afterLLM) {
+      for (const hook of this.hooks.afterLLM) {
+        await hook({
+          response: {
+            text: "done",
+            toolCalls: [{ id: "tc-0", name: "execute_command", arguments: { command: 'curl -s "wttr.in/London?format=3"' } }],
+            tokens: { input: 1000, output: 50, cacheRead: 0, cacheWrite: 0 },
+            durationMs: 900,
+            stopReason: "tool_use",
+          },
+          iteration: 1,
+          workDir: task.workDir,
+        })
+      }
+    }
+    // Step 2: the next provider call is intercepted and served.
+    if (this.hooks.beforeLLM) {
+      for (const hook of this.hooks.beforeLLM) {
+        await hook({ prompt: task.prompt, workDir: task.workDir, iteration: 1, previousToolCalls: [] })
+      }
+    }
+    return {
+      text: "served",
+      steps: [],
+      tokens: { input: 1000, output: 50, cacheRead: 0, cacheWrite: 0 },
+      cost: 0,
+      durationMs: 900,
+      llmDurationMs: 900,
+      workDir: task.workDir,
+      runStatus: "ok",
+    }
+  }
+}

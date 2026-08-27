@@ -123,6 +123,27 @@ export async function runJitBoostRun(config: JitBoostRunConfig): Promise<void> {
       JIT_BOOST_RUN_FLAGS.help,
     )
   }
+  // The converse: every refinement knob is read only inside the online-refine
+  // branch, so passing one without it is a silent no-op — the run completes and
+  // the flag did nothing, which is exactly the shape a scripted sweep cannot
+  // notice.
+  if (!config["online-refine"]) {
+    // Detected by value rather than by "was it typed": a flag left at its
+    // default is indistinguishable from an unset one here, which is fine — the
+    // point is to catch a value the user chose and would never see applied.
+    const dependent: string[] = []
+    if (config["refine-model"]) dependent.push("--refine-model")
+    if (config["refine-after-misses"] !== 3) dependent.push("--refine-after-misses")
+    if (config["max-refines"] !== 1) dependent.push("--max-refines")
+    if (config["retro-promote"]) dependent.push("--retro-promote")
+    if (dependent.length > 0) {
+      throw new UsageError(
+        `jit-boost run: ${dependent.join(", ")} ` +
+        `${dependent.length > 1 ? "have" : "has"} no effect without --online-refine`,
+        JIT_BOOST_RUN_FLAGS.help,
+      )
+    }
+  }
   const casesPath = path.resolve(config.cases)
   if (!(await Bun.file(casesPath).exists())) {
     throw new UsageError(`jit-boost run: cases file not found: ${casesPath}`, JIT_BOOST_RUN_FLAGS.help)
@@ -132,7 +153,7 @@ export async function runJitBoostRun(config: JitBoostRunConfig): Promise<void> {
   const adapter = createAdapter(config.adapter)
 
   const { runSolidifyExperiment, invocationRecordsToCsv } = await import("../jit-boost/experiment.ts")
-  const { records, refinements } = await runSolidifyExperiment({
+  const { records, refinements, failures } = await runSolidifyExperiment({
     specPath: casesPath,
     model: config.model,
     adapter,
@@ -183,10 +204,14 @@ export async function runJitBoostRun(config: JitBoostRunConfig): Promise<void> {
   // Post-side-effect failure: the CSV is already written (partial data is
   // still useful for diagnosis), so console.error + exit(1) instead of UsageError.
   const bad = records.filter((r) => r.runStatus !== "ok")
+  if (failures.length > 0) {
+    for (const f of failures) console.error(`ERROR: case "${f.case}" did not complete: ${f.error}`)
+    console.error(`WARNING: ${failures.length} case(s) failed — the CSV covers only the cases that finished`)
+  }
   if (bad.length > 0) {
     console.error(`WARNING: ${bad.length} invocation(s) had runStatus != ok — CSV rows are tainted`)
-    process.exit(1)
   }
+  if (bad.length > 0 || failures.length > 0) process.exit(1)
 }
 
 /**
@@ -216,16 +241,19 @@ export async function runJitBoost(args: string[]): Promise<void> {
   }
 }
 
+/**
+ * Overview for a bare `skvm jit-boost`. The per-action option lists come from
+ * the flag definitions rather than being restated here — the hand-written
+ * version had already drifted, omitting every refinement flag.
+ */
 function printJitBoostOverview(): void {
   console.log(`skvm jit-boost - Code solidification: compile boost candidates, run invocation-sequence cases
 
-Usage:
-  skvm jit-boost compile --skill=<dir> [--model=<id>] [--timeout-ms=<n>]
-  skvm jit-boost run     --cases=<file> --model=<id> [--adapter=bare-agent]
-                         [--invocations=<n>] [--promotion-threshold=<n>] [--demotion-threshold=<n>]
-                         [--match-granularity=run|tool-call] [--extract-model=<id>]
-                         [--out=<file>] [--json-out=<file>] [--timeout-ms=<n>] [--max-steps=<n>]
-                         [--keep-workdirs]
+Actions:
+  skvm jit-boost compile   Generate boost candidates for a skill
+  skvm jit-boost run       Drive an invocation sequence with solidification hooks
 
-Run 'skvm jit-boost <action> --help' for per-action details.`)
+${JIT_BOOST_COMPILE_FLAGS.help()}
+
+${JIT_BOOST_RUN_FLAGS.help()}`)
 }

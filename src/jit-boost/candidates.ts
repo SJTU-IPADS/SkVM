@@ -364,9 +364,17 @@ Return {"candidates": [<the single rewritten candidate>]}.`
           return { candidate: null, cost }
         }
       }
-      const servablePrompts = args.prompts.filter((p) =>
-        paramRegexes.every(([, re]) => re.exec(p)?.[1]),
-      ).length
+      // `[].every()` is true for every prompt, so a zero-param candidate used to
+      // clear this check without extracting anything — and a zero-param
+      // candidate serves a CONSTANT, which is exactly the shape that answers
+      // "weather in Berlin" with the London template it was refined from.
+      const servablePrompts = paramRegexes.length === 0
+        ? 0
+        : args.prompts.filter((p) => paramRegexes.every(([, re]) => re.exec(p)?.[1])).length
+      if (paramRegexes.length === 0) {
+        log.warn(`Refinement rejected for ${args.candidate.purposeId}: refined candidate has no params, so it would serve a constant response to every triggering prompt`)
+        return { candidate: null, cost }
+      }
       const promptsRequired = Math.min(args.prompts.length, Math.floor(args.prompts.length / 2) + 1)
       if (servablePrompts < promptsRequired) {
         log.warn(`Refinement rejected for ${args.candidate.purposeId}: all params extract together from only ${servablePrompts}/${args.prompts.length} triggering prompts`)
@@ -374,8 +382,20 @@ Return {"candidates": [<the single rewritten candidate>]}.`
       }
     }
 
+    // Every generator's output goes through the mechanical gate; a refined
+    // candidate is no different, and it is the one that reaches production
+    // WITHOUT a human ever seeing it. Skipping the gate here let an empty
+    // template through (functionTemplate had no minimum length): it instantiates
+    // to "", clears the unfilled-placeholder scan, `sh -c ""` exits 0, and the
+    // empty string is served as the agent's answer.
+    const [gated] = filterServableCandidates([refined], { requireTemplate: true })
+    if (!gated) {
+      log.warn(`Refinement rejected for ${args.candidate.purposeId}: refined candidate failed the servability gate`)
+      return { candidate: null, cost }
+    }
+
     log.info(`Refined candidate ${args.candidate.purposeId} (signature covers ${matchedRuns.size}/${allRuns.size} observed runs, cost=$${cost.toFixed(4)})`)
-    return { candidate: refined, cost }
+    return { candidate: gated, cost }
   } catch (err) {
     if (isProviderError(err) || isHeadlessAgentError(err)) throw err
     log.warn(`Candidate refinement failed: ${err}`)
