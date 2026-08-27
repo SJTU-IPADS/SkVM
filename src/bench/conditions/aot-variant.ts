@@ -27,6 +27,37 @@ export function aotConditionNeedsTcp(condition: string): boolean {
 }
 
 /**
+ * Is a usable compiled variant already on disk for this (harness, model, skill,
+ * condition)?
+ *
+ * The scheduler skips a TCP-consuming AOT condition when no profile is
+ * available — correct when it would have to compile, wrong when the variant is
+ * already cached and nothing will be compiled at all. That gap blocked the whole
+ * "pre-compile the proposals, then bench them" workflow for the default
+ * `aot-compiled` condition, which is precisely the one that needs pass 1.
+ *
+ * "Usable" means the same thing the runner means by it: SKILL.md plus a readable
+ * meta.json. A half-written variant directory is a cache miss, so the condition
+ * still needs its profile.
+ */
+export async function hasUsableCachedVariant(
+  harness: string,
+  model: string,
+  skillId: string,
+  condition: string,
+): Promise<boolean> {
+  const passes = parseAotPasses(condition)
+  if (!passes) return false
+  const candidates = [getVariantDir(harness, model, skillId, toPassTag(passes))]
+  if (toPassTag(passes) === "p1p2p3") candidates.push(getVariantDir(harness, model, skillId))
+  for (const dir of candidates) {
+    if (!(await Bun.file(path.join(dir, "SKILL.md")).exists())) continue
+    if ((await readVariantGuardPassed(dir)) !== "unusable") return true
+  }
+  return false
+}
+
+/**
  * Whether a compiled AOT variant should be discarded in favour of the original
  * skill: only when it failed the compiler guard AND the operator did not opt
  * into `use-anyway`. Keeping this a pure predicate makes the gate unit-testable
@@ -37,19 +68,31 @@ export function shouldFallbackToOriginal(guardPassed: boolean, mode: AotFallback
 }
 
 /**
- * Read a compiled variant's guard verdict from its `meta.json`
- * (`guardPassed`). Conservative on the absence of a clear FAIL: a missing,
- * malformed, or pre-guard (`guardPassed` absent) meta returns `true` so we
- * never fall back on an artifact we can't prove failed the guard.
+ * A cached variant's guard verdict, read from its `meta.json`.
+ *
+ * - `"pass"` / `"fail"` — the recorded verdict.
+ * - `"unusable"` — SKILL.md is on disk but its meta is missing or unreadable.
+ *   `writeVariant` always writes SKILL.md and meta.json together, and
+ *   `compileSkill`'s workDir IS the published variant directory, so a variant
+ *   with no meta is a compile that crashed, timed out, or was interrupted
+ *   partway. Treating that as a pass (the previous behaviour) benched an
+ *   uncompiled or half-patched skill under the `aot-compiled` label — silently,
+ *   and scoring 1.0 in a probe. It is a cache miss instead.
+ *
+ * A meta that parses but has no `guardPassed` key still counts as a pass: the
+ * field has been written since the first public release, so its absence means
+ * an artifact from a build that predates it rather than a crashed one.
  */
-export async function readVariantGuardPassed(variantDir: string): Promise<boolean> {
+export type CachedGuardVerdict = "pass" | "fail" | "unusable"
+
+export async function readVariantGuardPassed(variantDir: string): Promise<CachedGuardVerdict> {
   const metaFile = Bun.file(path.join(variantDir, "meta.json"))
-  if (!(await metaFile.exists())) return true
+  if (!(await metaFile.exists())) return "unusable"
   try {
     const meta = JSON.parse(await metaFile.text()) as { guardPassed?: boolean }
-    return meta.guardPassed !== false
+    return meta.guardPassed === false ? "fail" : "pass"
   } catch {
-    return true
+    return "unusable"
   }
 }
 
@@ -85,19 +128,28 @@ export const aotVariantRunner: ConditionRunner = {
 
     try {
       const existing = Bun.file(compiledPath)
-      if (await existing.exists()) {
+      const cachedVerdict = (await existing.exists())
+        ? await readVariantGuardPassed(path.dirname(compiledPath))
+        : undefined
+      if (cachedVerdict === "unusable") {
+        log.warn(`[${condition}] cached ${passTag} variant for ${skillId} has no readable meta.json — treating as an incomplete compile`)
+      }
+      if (cachedVerdict !== undefined && cachedVerdict !== "unusable") {
         compiledContent = await existing.text()
         loadedSkillPath = compiledPath
-        guardPassed = await readVariantGuardPassed(path.dirname(compiledPath))
+        guardPassed = cachedVerdict === "pass"
         log.info(`[${condition}] Using cached ${passTag} variant for ${skillId}`)
       } else if (passTag === "p1p2p3") {
         // Check legacy flat path (backward compatibility)
         const legacyPath = path.join(getVariantDir(harness, adapterConfig.model, skillId), "SKILL.md")
         const legacyFile = Bun.file(legacyPath)
-        if (await legacyFile.exists()) {
+        const legacyVerdict = (await legacyFile.exists())
+          ? await readVariantGuardPassed(path.dirname(legacyPath))
+          : undefined
+        if (legacyVerdict !== undefined && legacyVerdict !== "unusable") {
           compiledContent = await legacyFile.text()
           loadedSkillPath = legacyPath
-          guardPassed = await readVariantGuardPassed(path.dirname(legacyPath))
+          guardPassed = legacyVerdict === "pass"
           log.info(`[${condition}] Using legacy cached variant for ${skillId}`)
         } else {
           throw new Error("not cached")
@@ -173,6 +225,7 @@ export const aotVariantRunner: ConditionRunner = {
           skillPath,
           skillContentHash: contentHash(skillContent),
           aotFallback: true,
+          aotGuardPassed: false,
         },
       })
     }
@@ -201,6 +254,7 @@ export const aotVariantRunner: ConditionRunner = {
         skillId,
         skillPath: loadedSkillPath,
         skillContentHash: contentHash(compiledContent),
+        aotGuardPassed: guardPassed,
       },
     })
   },

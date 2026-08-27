@@ -15,7 +15,7 @@ import type { BenchTask, AotFallbackMode } from "../../src/bench/types.ts"
 // A guard-failing compiled AOT variant should not be shipped: the aot-compiled
 // condition falls back to the original skill (aotFallback=original, the
 // default) unless the operator explicitly opts into 'use-anyway' for A/B
-// diagnosis. See handoff task 2.
+// diagnosis.
 
 describe("shouldFallbackToOriginal", () => {
   test("guard passed → never falls back, regardless of mode", () => {
@@ -39,29 +39,33 @@ describe("readVariantGuardPassed", () => {
     return dir
   }
 
-  test("meta.json with guardPassed:false → false", async () => {
+  test("meta.json with guardPassed:false → fail", async () => {
     const dir = await dirWithMeta(JSON.stringify({ guardPassed: false }))
-    expect(await readVariantGuardPassed(dir)).toBe(false)
+    expect(await readVariantGuardPassed(dir)).toBe("fail")
   })
 
-  test("meta.json with guardPassed:true → true", async () => {
+  test("meta.json with guardPassed:true → pass", async () => {
     const dir = await dirWithMeta(JSON.stringify({ guardPassed: true }))
-    expect(await readVariantGuardPassed(dir)).toBe(true)
+    expect(await readVariantGuardPassed(dir)).toBe("pass")
   })
 
-  test("meta.json without a guardPassed field → true (pre-guard artifact, don't fall back)", async () => {
+  test("meta.json without a guardPassed field → pass (predates the field, don't fall back)", async () => {
     const dir = await dirWithMeta(JSON.stringify({ model: "x", harness: "bare-agent" }))
-    expect(await readVariantGuardPassed(dir)).toBe(true)
+    expect(await readVariantGuardPassed(dir)).toBe("pass")
   })
 
-  test("missing meta.json → true (can't prove a failure, so keep the variant)", async () => {
+  test("missing meta.json → unusable (a variant dir always gets SKILL.md and meta together)", async () => {
+    // compileSkill's workDir IS the published variant dir: SKILL.md is written
+    // first, then the passes run, then meta.json. SKILL.md with no meta is a
+    // compile that died partway — benching it as a pass ran an uncompiled skill
+    // under the aot-compiled label.
     const dir = await dirWithMeta(null)
-    expect(await readVariantGuardPassed(dir)).toBe(true)
+    expect(await readVariantGuardPassed(dir)).toBe("unusable")
   })
 
-  test("malformed meta.json → true (don't crash the run on a parse error)", async () => {
+  test("malformed meta.json → unusable (don't guess at a verdict we cannot read)", async () => {
     const dir = await dirWithMeta("{not valid json")
-    expect(await readVariantGuardPassed(dir)).toBe(true)
+    expect(await readVariantGuardPassed(dir)).toBe("unusable")
   })
 })
 

@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test"
 import { averageConditionResults } from "../../src/bench/orchestrator.ts"
 import type { ConditionResult, TaskReport } from "../../src/bench/types.ts"
-import { generateReport } from "../../src/bench/reporter.ts"
+import { generateReport, generateMarkdown } from "../../src/bench/reporter.ts"
 
 function makeResult(overrides: Partial<ConditionResult>): ConditionResult {
   return {
@@ -208,5 +208,63 @@ describe("reporter summary — empty-denominator sentinel", () => {
     expect(original?.passRate).toBe(1)
     expect(original?.taintedCount).toBe(1)
     expect(original?.evaluableCount).toBe(1)
+  })
+})
+
+describe("guard fallbacks are visible in the aggregates", () => {
+  const fallbackTasks = (): TaskReport[] => [
+    {
+      taskId: "t1", taskName: "t1", category: "c", gradingType: "automated",
+      conditions: [
+        makeResult({ condition: "original", score: 0.8 }),
+        makeResult({ condition: "aot-compiled", score: 0.8, aotFallback: true }),
+      ],
+    },
+    {
+      taskId: "t2", taskName: "t2", category: "c", gradingType: "automated",
+      conditions: [
+        makeResult({ condition: "original", score: 0.4 }),
+        makeResult({ condition: "aot-compiled", score: 0.9 }),
+      ],
+    },
+  ]
+
+  test("the summary counts rows that ran the original skill", () => {
+    // Without this, an aot-compiled column half-filled with original-skill runs
+    // reports "AOT vs Original: +x%" with nothing saying what it is comparing.
+    const report = generateReport("test", {
+      model: "m", adapter: "a", conditions: ["original", "aot-compiled"],
+    } as never, fallbackTasks())
+
+    expect(report.summary.perCondition["aot-compiled"]?.fallbackCount).toBe(1)
+    expect(report.summary.perCondition.original?.fallbackCount).toBe(0)
+  })
+
+  test("the markdown marks the score and lists the rows", () => {
+    const report = generateReport("test", {
+      model: "m", adapter: "a", conditions: ["original", "aot-compiled"],
+    } as never, fallbackTasks())
+    const md = generateMarkdown(report)
+
+    expect(md).toContain("↩1 original")
+    expect(md).toContain("## Guard fallbacks")
+    expect(md).toContain("| t1 | aot-compiled |")
+  })
+
+  test("a fallback in any repetition marks the averaged row", () => {
+    // Compilation is nondeterministic: with runsPerTask > 1 one repetition can
+    // pass the guard and another fail it. Taking provenance from runs[0] made
+    // the marker depend on which finished first.
+    const compiledFirst = averageConditionResults([
+      makeResult({ condition: "aot-compiled", score: 0.9 }),
+      makeResult({ condition: "aot-compiled", score: 0.5, aotFallback: true }),
+    ])
+    const fallbackFirst = averageConditionResults([
+      makeResult({ condition: "aot-compiled", score: 0.5, aotFallback: true }),
+      makeResult({ condition: "aot-compiled", score: 0.9 }),
+    ])
+
+    expect(compiledFirst.aotFallback).toBe(true)
+    expect(fallbackFirst.aotFallback).toBe(true)
   })
 })

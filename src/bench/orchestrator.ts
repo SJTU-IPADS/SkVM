@@ -16,7 +16,8 @@ import type { ResolvedSkill } from "../core/skill-loader.ts"
 // Side-effect import: ensures every custom evaluator registers at module load.
 import "./evaluators/index.ts"
 import { CONDITION_RUNNERS, resolveConditionKind } from "./conditions/index.ts"
-import { aotConditionNeedsTcp } from "./conditions/aot-variant.ts"
+import { aotConditionNeedsTcp, hasUsableCachedVariant } from "./conditions/aot-variant.ts"
+import { combinedSkillId } from "./conditions/staging.ts"
 import { generateReport, printSummary, printMultiModelSummary, generateMultiModelMarkdown, printMultiAdapterSummary, generateMultiAdapterMarkdown } from "./reporter.ts"
 import { type AdapterName, createAdapter } from "../adapters/registry.ts"
 import { getBenchLogDir, safeModelName } from "../core/config.ts"
@@ -292,9 +293,15 @@ async function prepareBenchSession(config: BenchRunConfig): Promise<{
     for (const condition of config.conditions) {
       if (!hasSkill && condition !== "no-skill") continue
       // AOT conditions only need the TCP when a selected pass consumes it
-      // (pass 1). Cached variants and profile-free passes (2/3) run without
-      // one — mirrors the per-pass gate in compileSkill/aot-compile.
-      if (isAotCondition(condition) && !tcp && aotConditionNeedsTcp(condition)) continue
+      // (pass 1) AND there is nothing cached to run. Skipping on the pass set
+      // alone blocked the pre-compile-then-bench workflow for `aot-compiled`,
+      // where the variant is already on disk and nothing gets compiled.
+      if (isAotCondition(condition) && !tcp && aotConditionNeedsTcp(condition)) {
+        const cached = hasSkill && await hasUsableCachedVariant(
+          config.adapter, config.model, combinedSkillId(skills), condition,
+        )
+        if (!cached) continue
+      }
 
       const done = completedRunCount(progress, task.id, condition)
       if (done >= runsPerTask) {
@@ -460,8 +467,16 @@ export function averageConditionResults(runs: ConditionResult[]): ConditionResul
         : 0)
     : 0
 
+  // Compilation is nondeterministic, so with runsPerTask > 1 one repetition can
+  // pass the guard and another fail it. Taking provenance from runs[0] made the
+  // averaged row's marker depend on which finished first.
+  const anyFallback = runs.some(r => r.aotFallback === true)
+  const anyGuardFail = runs.some(r => r.aotGuardPassed === false)
+
   return {
     ...runs[0]!,
+    ...(anyFallback ? { aotFallback: true } : {}),
+    ...(anyGuardFail ? { aotGuardPassed: false } : {}),
     score: avgScore,
     pass: allOk && avgScore >= 0.5,
     // Tainted aggregate ⇒ no eval breakdown. Otherwise the markdown

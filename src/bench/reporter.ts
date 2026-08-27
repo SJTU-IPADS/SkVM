@@ -85,6 +85,7 @@ function computeSummary(tasks: TaskReport[], conditions: BenchCondition[]): Benc
       avgLlmDurationMs: avg(results.map(r => r.llmDurationMs)),
       evaluableCount: evaluable.length,
       taintedCount: results.length - evaluable.length,
+      fallbackCount: results.filter(r => r.aotFallback === true).length,
       byStatus,
     }
   }
@@ -176,11 +177,11 @@ export function printSummary(report: BenchReport): void {
     const s = summary.perCondition[cond]
     if (!s) return "     -    "
     const tainted = s.taintedCount ?? 0
+    const fellBack = s.fallbackCount ?? 0
     if (s.avgScore === null) return `⚠${tainted} tainted`.padStart(10)
-    const str = tainted > 0
-      ? `${s.avgScore.toFixed(2)} ⚠${tainted}`
-      : s.avgScore.toFixed(2)
-    return str.padStart(10)
+    // `↩N` = N of these rows ran the original skill, not a compiled variant.
+    const marks = `${tainted > 0 ? ` ⚠${tainted}` : ""}${fellBack > 0 ? ` ↩${fellBack}` : ""}`
+    return `${s.avgScore.toFixed(2)}${marks}`.padStart(10)
   })
   console.log(`${"Avg Score".padEnd(28)} | ${avgScores.join(" | ")}`)
 
@@ -318,10 +319,11 @@ export function generateMarkdown(report: BenchReport): string {
     // how many rows were dropped from the denominator. When every row is
     // tainted, avgScore is null — show ⚠ only, never a fake 0.00.
     const tainted = s.taintedCount ?? 0
+    const fellBack = s.fallbackCount ?? 0
     if (s.avgScore === null) return `⚠ ${tainted} tainted, none evaluable`
-    return tainted > 0
-      ? `${s.avgScore.toFixed(2)} (⚠${tainted})`
-      : s.avgScore.toFixed(2)
+    const marks = [tainted > 0 ? `⚠${tainted}` : "", fellBack > 0 ? `↩${fellBack} original` : ""]
+      .filter(Boolean).join(", ")
+    return marks ? `${s.avgScore.toFixed(2)} (${marks})` : s.avgScore.toFixed(2)
   })
   lines.push(`| Avg Score | ${avgRow.join(" | ")} |`)
 
@@ -376,6 +378,32 @@ export function generateMarkdown(report: BenchReport): string {
     lines.push(`| ${task.taskId} | ${task.category} | ${scores.join(" | ")} |`)
   }
   lines.push("")
+
+  // Guard fallbacks — rows in an AOT column that actually ran the original
+  // skill. They belong in the average (an unusable compile is a real outcome),
+  // but "AOT vs Original: +1.2%" over a column that is 40% original is a
+  // measurement nobody can interpret without this table.
+  const fallbackRows: Array<{ taskId: string; cond: ConditionResult }> = []
+  for (const task of tasks) {
+    for (const cond of task.conditions) {
+      if (cond.aotFallback === true) fallbackRows.push({ taskId: task.taskId, cond })
+    }
+  }
+  if (fallbackRows.length > 0) {
+    lines.push("## Guard fallbacks")
+    lines.push("")
+    lines.push(
+      `${fallbackRows.length} row(s) ran the ORIGINAL skill because the compiled variant failed the compiler guard. ` +
+      "They are included in Avg Score / Pass Rate, and marked ↩ in the summary tables above.",
+    )
+    lines.push("")
+    lines.push("| Task | Condition | Skill |")
+    lines.push("|------|-----------|-------|")
+    for (const { taskId, cond } of fallbackRows) {
+      lines.push(`| ${taskId} | ${cond.condition} | ${cond.skillId ?? "-"} |`)
+    }
+    lines.push("")
+  }
 
   // Tainted runs section — lets readers see which rows were dropped and why.
   const taintedRows: Array<{ taskId: string; cond: ConditionResult }> = []

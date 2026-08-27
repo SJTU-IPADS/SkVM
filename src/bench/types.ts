@@ -190,6 +190,13 @@ export interface ConditionResult {
    * artifact was NOT run. Absent/false means the compiled variant was used.
    */
   aotFallback?: boolean
+  /**
+   * The compiler guard verdict for the variant this row is about, when the
+   * condition is an AOT one. Recorded even when `--aot-fallback=use-anyway`
+   * ran the failing artifact deliberately — otherwise a diagnostic run's rows
+   * are indistinguishable from clean-compile rows.
+   */
+  aotGuardPassed?: boolean
   jitRuns?: JitRunReport[]
   jitPromotions?: number
   /** Individual run scores when runsPerTask > 1 */
@@ -246,6 +253,13 @@ export interface ConditionSummary {
   evaluableCount?: number
   /** Rows excluded from avgScore / passRate due to runStatus !== 'ok'. */
   taintedCount?: number
+  /**
+   * Rows in this condition that ran the ORIGINAL skill because the compiled
+   * variant failed the guard. They are averaged in — an unusable compile is a
+   * real outcome for the (skill, model) pair — but a reader comparing an AOT
+   * column against `original` has to know how much of it IS `original`.
+   */
+  fallbackCount?: number
   /** Counts per runStatus value for this condition. */
   byStatus?: Partial<Record<RunStatus, number>>
 }
