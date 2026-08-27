@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test"
-import { runSubprocess } from "../../src/core/subprocess.ts"
+import { runSubprocess, escalateKill } from "../../src/core/subprocess.ts"
 
 describe("runSubprocess: exit + output", () => {
   test("captures stdout/stderr and exit code 0 on success", async () => {
@@ -110,5 +110,49 @@ describe("runSubprocess: env overlay", () => {
     } finally {
       delete process.env.SKVM_SUBPROC_INHERIT
     }
+  })
+})
+
+describe("runSubprocess kill escalation", () => {
+  test("a SIGTERM-immune child's children are reaped, not left running", async () => {
+    // The escalation exists for a tree that ignores SIGTERM. Spawning pkill
+    // without awaiting it made this a no-op: the SIGKILL below landed first, the
+    // children reparented to init, and pkill then scanned for a parent that no
+    // longer had any.
+    const marker = `skvm-escalate-${process.pid}-${Math.round(performance.now())}`
+    const result = await runSubprocess(
+      ["sh", "-c", `trap "" TERM; sh -c 'exec -a ${marker} sleep 30' & sleep 30`],
+      { timeoutMs: 200, killGraceMs: 300, drainGraceMs: 300 },
+    )
+    expect(result.timedOut).toBe(true)
+
+    const survivors = await runSubprocess(["sh", "-c", `pgrep -f ${marker} | wc -l`], { timeoutMs: 5000 })
+    // pgrep matches its own shell too, so "1" means only the probe itself.
+    expect(Number(survivors.stdout.trim())).toBeLessThanOrEqual(1)
+  })
+
+  test("a host without pkill degrades to SIGKILL instead of crashing", async () => {
+    // Bun.spawn throws SYNCHRONOUSLY on a missing binary, and this runs from a
+    // timer callback — unguarded, it takes the whole process down on any host
+    // without pkill (Windows, distroless images). A wedged lane is bad; a dead
+    // CLI is worse.
+    const proc = Bun.spawn(["sh", "-c", "sleep 5"], { stdout: "ignore", stderr: "ignore" })
+    await escalateKill(proc, "skvm-no-such-reaper-binary")
+    expect(await proc.exited).not.toBe(0)
+  })
+
+  test("drainTruncated says when output was cut short", async () => {
+    const quick = await runSubprocess(["sh", "-c", "echo hello"], { timeoutMs: 5000 })
+    expect(quick.stdout.trim()).toBe("hello")
+    expect(quick.drainTruncated).toBeFalsy()
+
+    // A grandchild still writing after the child exits is exactly the case the
+    // drain bound gives up on — the caller must be able to tell.
+    const late = await runSubprocess(
+      ["sh", "-c", "(sleep 2; echo late) & echo early"],
+      { timeoutMs: 5000, drainGraceMs: 150 },
+    )
+    expect(late.stdout.trim()).toBe("early")
+    expect(late.drainTruncated).toBe(true)
   })
 })

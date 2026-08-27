@@ -48,8 +48,11 @@ const TOOLS: LLMTool[] = [...AGENT_TOOLS, LIST_DIRECTORY_TOOL, WEB_FETCH_TOOL]
 // Tool Execution
 // ---------------------------------------------------------------------------
 
-export function createToolExecutor(workDir: string) {
-  const sharedExecutor = createAgentToolExecutor(workDir)
+export function createToolExecutor(
+  workDir: string,
+  opts?: { commandTimeoutCapMs?: () => number },
+) {
+  const sharedExecutor = createAgentToolExecutor(workDir, opts)
 
   return async (toolCall: LLMToolCall): Promise<{ output: string; exitCode?: number; durationMs: number }> => {
     // Delegate shared tools (read_file, write_file, execute_command)
@@ -259,7 +262,13 @@ Available skills:
         provider: wrappedProvider,
         model: this.model,
         tools: TOOLS,
-        executeTool: createToolExecutor(task.workDir),
+        // A tool call cannot be interrupted once it starts — the loop only
+        // checks its deadline between iterations — so the run's remaining budget
+        // has to cap the tool's own timeout, or a 600s command inside a 120s run
+        // simply runs to 600s and is labelled timed-out afterwards.
+        executeTool: createToolExecutor(task.workDir, {
+          commandTimeoutCapMs: () => (task.timeoutMs ?? this.timeoutMs) - (performance.now() - startMs),
+        }),
         system,
         maxIterations: this.maxSteps,
         timeoutMs: task.timeoutMs ?? this.timeoutMs,

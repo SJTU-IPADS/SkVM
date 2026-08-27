@@ -15,6 +15,12 @@
  */
 
 export interface SubprocessResult {
+  /**
+   * True when the drain deadline cut output short — a surviving grandchild was
+   * still writing. Without it, a caller parsing stdout cannot tell "no more
+   * output" from "we stopped listening".
+   */
+  drainTruncated?: boolean
   exitCode: number
   stdout: string
   stderr: string
@@ -26,6 +32,8 @@ export interface SubprocessResult {
 const KILL_GRACE_MS = 5_000
 /** How long to keep draining output after the direct child has exited. */
 const DRAIN_GRACE_MS = 1_500
+/** Cap on waiting for `pkill` itself, so a hung reaper cannot delay the SIGKILL. */
+const PKILL_TIMEOUT_MS = 2_000
 
 export interface SubprocessOptions {
   /** Working directory for the child process. */
@@ -66,31 +74,77 @@ export async function runSubprocess(
     killTimer = setTimeout(() => {
       timedOut = true
       proc.kill()
-      escalateTimer = setTimeout(() => {
-        // Reap the child's own children first: once the child dies they
-        // reparent to init and `pkill -P` can no longer find them.
-        Bun.spawn(["pkill", "-KILL", "-P", String(proc.pid)], {
-          stdout: "ignore",
-          stderr: "ignore",
-        })
-        try { proc.kill("SIGKILL") } catch { /* already gone */ }
-      }, killGraceMs)
+      escalateTimer = setTimeout(() => { void escalateKill(proc) }, killGraceMs)
     }, opts.timeoutMs)
   }
 
-  const exited = proc.exited.then((code) => {
+  const clearTimers = () => {
     if (killTimer) clearTimeout(killTimer)
     if (escalateTimer) clearTimeout(escalateTimer)
+  }
+  const exited = proc.exited.then((code) => {
+    clearTimers()
     return code
   })
 
   const drainGraceMs = opts?.drainGraceMs ?? DRAIN_GRACE_MS
-  const [exitCode, stdout, stderr] = await Promise.all([
-    exited,
-    drainBounded(proc.stdout, exited, drainGraceMs),
-    drainBounded(proc.stderr, exited, drainGraceMs),
-  ])
-  return { exitCode, stdout, stderr, durationMs: Date.now() - start, timedOut }
+  try {
+    const [exitCode, out, err] = await Promise.all([
+      exited,
+      drainBounded(proc.stdout, exited, drainGraceMs),
+      drainBounded(proc.stderr, exited, drainGraceMs),
+    ])
+    return {
+      exitCode,
+      stdout: out.text,
+      stderr: err.text,
+      durationMs: Date.now() - start,
+      timedOut,
+      drainTruncated: out.truncated || err.truncated,
+    }
+  } finally {
+    // A rejected drain (stream error, reader failure) would otherwise leave the
+    // kill timers armed, keeping the event loop alive and eventually signalling
+    // a pid that may have been recycled.
+    clearTimers()
+  }
+}
+
+/**
+ * SIGTERM has already been sent and ignored. Reap the child's own children
+ * FIRST — once the parent dies they reparent to init and `pkill -P` can no
+ * longer find them — then SIGKILL the parent.
+ *
+ * Both halves are guarded: `Bun.spawn` throws *synchronously* when the binary
+ * is missing, and this runs from a timer callback, so an unguarded throw here
+ * takes down the whole process on any host without `pkill` (Windows, distroless
+ * containers). Losing the escalation is a wedged lane; throwing is a dead run.
+ */
+export async function escalateKill(proc: Bun.Subprocess, reaperBin = "pkill"): Promise<void> {
+  try {
+    // Awaited: without this the SIGKILL below lands first, the tree reparents,
+    // and pkill scans for a parent that no longer has children — which is to
+    // say it reaps nothing at all.
+    const reaper = Bun.spawn([reaperBin, "-KILL", "-P", String(proc.pid)], {
+      stdout: "ignore",
+      stderr: "ignore",
+    })
+    let reaperTimer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        reaper.exited,
+        new Promise((resolve) => {
+          reaperTimer = setTimeout(resolve, PKILL_TIMEOUT_MS)
+          reaperTimer.unref?.()
+        }),
+      ])
+    } finally {
+      if (reaperTimer) clearTimeout(reaperTimer)
+    }
+  } catch {
+    /* no pkill on this host — fall through to SIGKILL */
+  }
+  try { proc.kill("SIGKILL") } catch { /* already gone */ }
 }
 
 const DRAIN_DEADLINE = Symbol("drain-deadline")
@@ -104,20 +158,39 @@ async function drainBounded(
   stream: ReadableStream<Uint8Array>,
   exited: Promise<unknown>,
   graceMs: number,
-): Promise<string> {
+): Promise<{ text: string; truncated: boolean }> {
   const reader = stream.getReader()
+  // The timer is created only once the child has exited, and cleared as soon as
+  // the drain ends — an uncleared 1.5s timer per call kept the event loop alive
+  // and delayed process exit for every command skvm ran.
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+  let finished = false
   const deadline = exited
-    .then(() => new Promise<void>((resolve) => setTimeout(resolve, graceMs)))
+    .then(() => new Promise<void>((resolve) => {
+      // The stream can finish before the child's exit resolves this chain, in
+      // which case the timer must never be created at all — it would be armed
+      // after the drain's cleanup already ran, and keep the event loop alive.
+      if (finished) { resolve(); return }
+      deadlineTimer = setTimeout(resolve, graceMs)
+      deadlineTimer.unref?.()
+    }))
     .then(() => DRAIN_DEADLINE)
   const decoder = new TextDecoder()
   let text = ""
-  while (true) {
-    const next = await Promise.race([reader.read(), deadline])
-    if (typeof next === "symbol" || next.done) break
-    text += decoder.decode(next.value, { stream: true })
+  let truncated = false
+  try {
+    while (true) {
+      const next = await Promise.race([reader.read(), deadline])
+      if (typeof next === "symbol") { truncated = true; break }
+      if (next.done) break
+      text += decoder.decode(next.value, { stream: true })
+    }
+  } finally {
+    finished = true
+    if (deadlineTimer) clearTimeout(deadlineTimer)
+    reader.cancel().catch(() => {})
   }
-  reader.cancel().catch(() => {})
-  return text + decoder.decode()
+  return { text: text + decoder.decode(), truncated }
 }
 
 function mergeEnv(

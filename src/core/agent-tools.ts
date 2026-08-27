@@ -2,6 +2,7 @@ import path from "node:path"
 import { mkdir } from "node:fs/promises"
 import type { LLMTool, LLMToolCall } from "../providers/types.ts"
 import type { ToolResult } from "./agent-loop.ts"
+import { runSubprocess } from "./subprocess.ts"
 
 // ---------------------------------------------------------------------------
 // Shared Tool Definitions
@@ -53,17 +54,32 @@ export const AGENT_TOOLS: LLMTool[] = [
 export const DEFAULT_COMMAND_TIMEOUT_MS = 30_000
 export const MAX_COMMAND_TIMEOUT_MS = 600_000
 
+/** Shortest timeout worth honouring — below this, nothing can finish. */
+const MIN_COMMAND_TIMEOUT_MS = 1_000
+
 /**
  * Resolve the model-provided `timeout_seconds` argument to a millisecond
- * budget. Invalid values (non-number, NaN, <= 0) fall back to the default
- * rather than erroring — a malformed timeout should never fail a command
- * that would otherwise run.
+ * budget. Invalid values (non-numeric, NaN, <= 0) fall back to the default
+ * rather than erroring — a malformed timeout should never fail a command that
+ * would otherwise run. Numeric strings are accepted, because models emit them
+ * routinely and silently getting the default instead of the 60s you asked for
+ * is worse than parsing the string.
+ *
+ * `capMs` is the caller's own remaining budget. The static 600s ceiling bounds a
+ * single call, but a run has a deadline too, and the agent loop can only check
+ * it BETWEEN iterations — an in-flight tool call is never interrupted. Without
+ * this, `timeout_seconds: 600` inside a 120s run runs to completion and the run
+ * is retroactively labelled timed-out.
  */
-export function resolveCommandTimeoutMs(timeoutSeconds: unknown): number {
-  if (typeof timeoutSeconds !== "number" || !Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
-    return DEFAULT_COMMAND_TIMEOUT_MS
+export function resolveCommandTimeoutMs(timeoutSeconds: unknown, capMs?: number): number {
+  const raw = typeof timeoutSeconds === "string" ? Number(timeoutSeconds) : timeoutSeconds
+  const ceiling = capMs !== undefined && capMs > 0
+    ? Math.min(MAX_COMMAND_TIMEOUT_MS, capMs)
+    : MAX_COMMAND_TIMEOUT_MS
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+    return Math.max(MIN_COMMAND_TIMEOUT_MS, Math.min(DEFAULT_COMMAND_TIMEOUT_MS, ceiling))
   }
-  return Math.min(Math.round(timeoutSeconds * 1000), MAX_COMMAND_TIMEOUT_MS)
+  return Math.max(MIN_COMMAND_TIMEOUT_MS, Math.min(Math.round(raw * 1000), ceiling))
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +89,12 @@ export function resolveCommandTimeoutMs(timeoutSeconds: unknown): number {
 export interface AgentToolExecutorOptions {
   /** Require read_file before write_file for existing files */
   requireReadBeforeWrite?: boolean
+  /**
+   * Milliseconds left in the caller's own budget, evaluated per call. A tool
+   * call cannot be interrupted once it starts, so the run's deadline has to
+   * bound the tool's timeout up front rather than after the fact.
+   */
+  commandTimeoutCapMs?: () => number
 }
 
 export function createAgentToolExecutor(
@@ -124,34 +146,28 @@ export function createAgentToolExecutor(
               durationMs: performance.now() - start,
             }
           }
-          const toolTimeoutMs = resolveCommandTimeoutMs(args.timeout_seconds)
+          const toolTimeoutMs = resolveCommandTimeoutMs(args.timeout_seconds, opts?.commandTimeoutCapMs?.())
           const timeoutLabel = `${Math.round(toolTimeoutMs / 1000)}s`
-          const READ_TIMEOUT_MS = 2_000
-          const proc = Bun.spawn(["sh", "-c", cmd], {
+          // Route through runSubprocess rather than spawning here: it escalates
+          // SIGTERM -> reap children -> SIGKILL, and bounds its drains on child
+          // exit. The hand-rolled version SIGTERM'd once and returned from its
+          // catch without ever reading the pipes — which is the exact shape that
+          // wedges on a SIGTERM-immune tree holding stdout open, and `sh -c`
+          // forks routinely.
+          const result = await runSubprocess(["sh", "-c", cmd], {
             cwd: workDir,
-            stdout: "pipe",
-            stderr: "pipe",
-            env: { ...process.env, HOME: process.env.HOME },
+            timeoutMs: toolTimeoutMs,
           })
-          const timeout = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error(`command timed out after ${timeoutLabel}`)), toolTimeoutMs),
-          )
-          try {
-            const exitCode = await Promise.race([proc.exited, timeout])
-            const readWithTimeout = <T>(p: Promise<T>, fallback: T): Promise<T> =>
-              Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), READ_TIMEOUT_MS))])
-            const stdout = await readWithTimeout(new Response(proc.stdout).text(), "")
-            const stderr = await readWithTimeout(new Response(proc.stderr).text(), "")
-            const output = [
-              stdout ? `stdout:\n${stdout}` : "",
-              stderr ? `stderr:\n${stderr}` : "",
-              `exit code: ${exitCode}`,
-            ].filter(Boolean).join("\n")
-            return { output, exitCode, durationMs: performance.now() - start }
-          } catch {
-            proc.kill()
+          if (result.timedOut) {
             return { output: `Error: command timed out after ${timeoutLabel}`, durationMs: performance.now() - start }
           }
+          const output = [
+            result.stdout ? `stdout:\n${result.stdout}` : "",
+            result.stderr ? `stderr:\n${result.stderr}` : "",
+            result.drainTruncated ? "(output truncated: a background process was still writing)" : "",
+            `exit code: ${result.exitCode}`,
+          ].filter(Boolean).join("\n")
+          return { output, exitCode: result.exitCode, durationMs: performance.now() - start }
         }
 
         default:

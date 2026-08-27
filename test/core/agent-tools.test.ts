@@ -34,11 +34,33 @@ describe("resolveCommandTimeoutMs", () => {
     expect(resolveCommandTimeoutMs(99_999)).toBe(MAX_COMMAND_TIMEOUT_MS)
   })
 
-  test("rejects non-positive and non-numeric values back to default", () => {
+  test("rejects non-positive and unparseable values back to default", () => {
     expect(resolveCommandTimeoutMs(0)).toBe(DEFAULT_COMMAND_TIMEOUT_MS)
     expect(resolveCommandTimeoutMs(-5)).toBe(DEFAULT_COMMAND_TIMEOUT_MS)
-    expect(resolveCommandTimeoutMs("60")).toBe(DEFAULT_COMMAND_TIMEOUT_MS)
+    expect(resolveCommandTimeoutMs("soon")).toBe(DEFAULT_COMMAND_TIMEOUT_MS)
     expect(resolveCommandTimeoutMs(Number.NaN)).toBe(DEFAULT_COMMAND_TIMEOUT_MS)
+    expect(resolveCommandTimeoutMs(undefined)).toBe(DEFAULT_COMMAND_TIMEOUT_MS)
+  })
+
+  test("a numeric string is honoured, not silently downgraded", () => {
+    // Models emit "60" routinely; silently giving them 30s is worse than parsing.
+    expect(resolveCommandTimeoutMs("60")).toBe(60_000)
+  })
+
+  test("a sub-second request is floored rather than made unrunnable", () => {
+    // 1e-9 rounded to 0ms produced "command timed out after 0s" before anything ran.
+    expect(resolveCommandTimeoutMs(1e-9)).toBe(1_000)
+    expect(resolveCommandTimeoutMs(0.001)).toBe(1_000)
+  })
+
+  test("the caller's remaining budget caps the request", () => {
+    // A tool call is not interruptible once started, so a 600s command inside a
+    // 20s run would otherwise run to completion past the run's own deadline.
+    expect(resolveCommandTimeoutMs(600, 20_000)).toBe(20_000)
+    expect(resolveCommandTimeoutMs(5, 20_000)).toBe(5_000)
+    // An exhausted budget still leaves the floor — never a 0ms timeout.
+    expect(resolveCommandTimeoutMs(600, -1)).toBe(MAX_COMMAND_TIMEOUT_MS)
+    expect(resolveCommandTimeoutMs(600, 10)).toBe(1_000)
   })
 })
 
