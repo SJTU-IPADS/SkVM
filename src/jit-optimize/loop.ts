@@ -204,6 +204,15 @@ export async function runLoop(
   const targetModel = config.targetAdapter.model
   const harness = config.targetAdapter.harness
 
+  // Cached capability profile of the target (nullable — profiles are keyed
+  // by (model, harness)). Feeds the optimizer's profile-derived edit
+  // philosophy; absence degrades gracefully to the conservative default.
+  const { loadProfile } = await import("../profiler/index.ts")
+  const targetTcp = await loadProfile(targetModel, harness)
+  const optimizerTarget = { model: targetModel, harness, tcp: targetTcp ?? undefined }
+  if (targetTcp) log.info(`Loaded target capability profile for optimizer (${targetModel} -- ${harness})`)
+  else log.info(`No cached capability profile for ${targetModel} -- ${harness}; optimizer runs profile-blind`)
+
   const optimizerDriver = getHeadlessAgentConfig().driver
   const proposal = opts.proposal ?? await createProposal({
     skillName,
@@ -577,6 +586,12 @@ export async function runLoop(
             skillDir: currentSkillDir,
             evidences: prevTrainEvidences,
             history: history.length > 0 ? history : undefined,
+            target: optimizerTarget,
+            // A gate the optimizer can be told to lean on has to be a real gate. With no separate
+            // test set, per-task scoring runs on the very tasks the evidence came from — weaker
+            // protection than a holdout, and not something to hand a deletion licence on the
+            // strength of. `testIsSeparate` is that distinction.
+            evaluated: testIsSeparate,
           },
           {
             model: optimizerModel,
@@ -1057,12 +1072,23 @@ async function runLogOnly(
   }
   log.info(`Loaded ${preEvidences.length} evidence(s) from execution log(s)`)
 
+  // Same profile-derived optimizer context as the round loop.
+  const { loadProfile } = await import("../profiler/index.ts")
+  const logTcp = await loadProfile(config.targetAdapter.model, config.targetAdapter.harness)
+  const logTarget = {
+    model: config.targetAdapter.model,
+    harness: config.targetAdapter.harness,
+    tcp: logTcp ?? undefined,
+  }
+
   const logOptSp = createSpinner("Optimizing skill from execution logs...")
   const optimizerRecordDir = roundOptimizerDir(proposal.dir, 1)
   let optimizeResult: Awaited<ReturnType<typeof runOptimizer>>
   try {
     optimizeResult = await runOptimizer(
-      { skillDir, evidences: preEvidences },
+      // evaluated: false — log-only runs have no regression gate; the prompt
+      // must not license deletions on the promise of one.
+      { skillDir, evidences: preEvidences, target: logTarget, evaluated: false },
       {
         model: config.optimizer.model,
         recordDir: optimizerRecordDir,

@@ -14,10 +14,12 @@ import type {
   OptimizeConfig,
   OptimizeResult,
   OptimizeSubmission,
+  OptimizerTarget,
 } from "./types.ts"
 import { OptimizeSubmissionSchema } from "./types.ts"
 import { runHeadlessAgent } from "../core/headless-agent/index.ts"
 import { createLogger } from "../core/logger.ts"
+import { deriveDirectives } from "../compiler/passes/rewrite-skill/directives.ts"
 import {
   createWorkspace,
   serializeContext,
@@ -54,7 +56,7 @@ export async function runOptimizer(
   )
 
   // 3. Build the prompt
-  const prompt = buildOptimizerPrompt(input.evidences.length, (input.history ?? []).length)
+  const prompt = buildOptimizerPrompt(input.evidences.length, (input.history ?? []).length, input.target, input.evaluated ?? false)
 
   // 4. Run the headless agent with the workspace as its cwd
   const absWorkspace = path.resolve(workspace.dir)
@@ -230,8 +232,97 @@ function emptySubmission(reason: string): OptimizeSubmission {
 // Prompt
 // ---------------------------------------------------------------------------
 
-export function buildOptimizerPrompt(evidenceCount: number, historyCount: number): string {
-  return `You are a skill optimization agent.
+export type { OptimizerTarget } from "./types.ts"
+
+export function buildOptimizerPrompt(
+  evidenceCount: number,
+  historyCount: number,
+  target?: OptimizerTarget,
+  evaluated = false,
+): string {
+  // Profile-derived edit philosophy (mirrors pass-1's directives module):
+  // a weak profile flips deletion from forbidden to first-class — for a
+  // model whose profile marks long instruction documents unreliable, an
+  // additive-only optimizer is structurally unable to fix the dominant
+  // failure mode. How far the license goes depends on `evaluated`: only a
+  // gated run (per-task regression scoring with bestRound selection) can
+  // catch a deletion that turned out to be wrong.
+  const directives = target?.tcp ? deriveDirectives(target.tcp) : undefined
+  // Switch on the tier the directives module publishes, not on a threshold
+  // re-derived here. `sizeBudgetFraction < 1.0` also caught the MODERATE tier,
+  // so an L2 target was handed the cut-weight posture and the "no systematic
+  // weaknesses, make only evidence-targeted edits" line in the same prompt.
+  const tier = directives?.tier ?? "keep"
+  const cutWeight = tier === "deep"
+  const trim = tier === "moderate"
+
+  const targetSection = target
+    ? `
+## Target Model
+
+You are optimizing this skill for ONE specific target:
+- Model: ${target.model}
+- Harness: ${target.harness}
+${directives ? `
+Its measured capability profile derives these directives (each with the
+measurement that triggered it) — treat them as hard requirements for the
+optimized skill:
+${directives.rules.length > 0
+    ? directives.rules.map((r) => `- ${r.directive}\n  [evidence: ${r.evidence}]`).join("\n")
+    : tier === "keep"
+      ? "- None — the profile shows no systematic weaknesses; make only evidence-targeted edits."
+      : "- None beyond the size posture below."}
+
+Size posture: ${directives.budgetRationale}.` : `
+No capability profile is cached for this target — optimize from the run
+evidence alone.`}
+`
+    : ""
+
+  const deletionGuidance = cutWeight
+    ? (evaluated
+      ? `Deleting rules, sections, or examples that the evidence shows to be dead
+      weight or misleading for THIS target model is a first-class fix — the
+      engine's per-task regression gate protects passing tasks, so do not
+      self-censor deletions the evidence supports.`
+      : `Deleting rules, sections, or examples is allowed when the run evidence
+      directly implicates them for THIS target model — but this run has NO
+      evaluation gate: nothing re-checks your output. Delete only on direct
+      evidence; where the evidence is indirect, rewrite tighter instead of
+      removing.`)
+    : trim
+      ? `Deleting a rule, section, or example is allowed when the run evidence
+      directly implicates it for THIS target model${evaluated ? "" : " — and this run has NO evaluation gate, so delete only on direct evidence"}.
+      Otherwise prefer rewriting tighter over removing.`
+      : `Do NOT delete existing rules unless you can show they directly
+      contradict the fix. If you're unsure whether a rule still applies,
+      leave it.`
+
+  const budgetRule = cutWeight
+    ? `**Budget.** This target's capability profile marks long instruction
+      documents unreliable: removing weight is the highest-yield fix class,
+      and a net NEGATIVE diff is the expected shape of a good round. Treat
+      any addition beyond ~20 lines as a signal your diagnosis is wrong.`
+    : trim
+      ? `**Budget.** This target follows long documents only moderately well:
+      keep the round net-neutral in size — trim as much as you add. If your
+      diagnosis needs more than ~20 net added lines, go back to step 4.`
+      : `**Budget.** Aim for a net diff under ~50 added lines across all
+      files for this round. If your diagnosis needs more than that, the
+      root cause is probably wrong — go back to step 4.`
+
+  const concisenessRule = cutWeight
+    ? `- **Cut weight**: prefer deleting and rewriting over appending. Every
+  instruction costs tokens, and this target's profile marks long documents
+  unreliable.`
+    : trim
+      ? `- **Trim as you go**: prefer rewriting existing sections over appending
+  new ones, and cut what the evidence shows this target does not use.`
+      : `- **Be concise**: prefer rewriting existing sections to appending new ones.
+  Every instruction costs tokens. Do NOT delete existing rules unless you can
+  show they contradict your fix.`
+
+  return `You are a skill optimization agent.${targetSection}
 
 A "skill" is a markdown instruction file (SKILL.md) plus optional bundle files
 (scripts, references) that guide an LLM agent when performing tasks. Your job
@@ -304,13 +395,9 @@ ${historyCount > 0 ? `- \`.optimize/history.md\` — ${historyCount} previous op
       new section below it. Appending a second rule that overlaps with an
       existing one is the most common way skills accumulate dead weight.
 
-      Do NOT delete existing rules unless you can show they directly
-      contradict the fix. If you're unsure whether a rule still applies,
-      leave it.
+      ${deletionGuidance}
 
-   c) **Budget.** Aim for a net diff under ~50 added lines across all
-      files for this round. If your diagnosis needs more than that, the
-      root cause is probably wrong — go back to step 4.
+   c) ${budgetRule}
 
    d) **No-trade-off test.** List every task in \`PER_TASK_SUMMARY.md\` with
       status \`PASSING\`. For each one, ask yourself: "Could the change I'm
@@ -419,9 +506,7 @@ Rules for \`infraBlocked\`:
   If the only diagnosis you have requires a trade-off, emit
   \`noChanges: true\` and state the trade-off in \`rootCause\`.
 - **Preserve scope**: do not narrow the skill's capabilities.
-- **Be concise**: prefer rewriting existing sections to appending new ones.
-  Every instruction costs tokens. Do NOT delete existing rules unless you can
-  show they contradict your fix.
+${concisenessRule}
 - **Diagnose before prescribing**: know the root cause before you write any
   edits. A fix without a clear diagnosis is a guess.
 - **Do not delete evidence**: the \`.optimize/\` directory is read-only to you

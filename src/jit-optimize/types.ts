@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod"
-import type { AdapterConfig, EvalResult, EvalCriterion, TokenUsage, RunStatus, SkillMode } from "../core/types.ts"
+import type { AdapterConfig, EvalResult, EvalCriterion, TokenUsage, RunStatus, SkillMode, TCP } from "../core/types.ts"
 import { addTokenUsage, TokenUsageSchema, RunStatusSchema } from "../core/types.ts"
 import type { LLMProvider } from "../providers/types.ts"
 import type { AgentAdapter } from "../core/types.ts"
@@ -319,6 +319,27 @@ export interface OptimizeInput {
   evidences: Evidence[]
   /** Previous rounds' history, for context / anti-oscillation */
   history?: HistoryEntry[]
+  /**
+   * Target model context (identity + cached capability profile). When set,
+   * the optimizer prompt derives its edit philosophy from the profile
+   * instead of the model-agnostic conservative default.
+   */
+  target?: OptimizerTarget
+  /**
+   * Whether this run's rounds are re-scored under the engine's per-task
+   * regression gate (bestRound selection). Log-only runs are not: nothing
+   * re-checks the optimizer's output, so destructive edit guidance is
+   * softened. Defaults to false — the safe assumption.
+   */
+  evaluated?: boolean
+}
+
+/** Target-model context for profile-aware optimization. */
+export interface OptimizerTarget {
+  model: string
+  harness: string
+  /** Capability profile; when present, edit philosophy is derived from it. */
+  tcp?: TCP
 }
 
 export interface OptimizeConfig {
