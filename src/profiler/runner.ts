@@ -91,8 +91,8 @@ async function runLevel(
   let totalDurationMs = 0
   let totalCostUsd = 0
   let totalTokens = emptyTokenUsage()
-  let totalLlmCalls = 0
-  let totalLlmCallsWithCost = 0
+  let totalLlmCalls: number | undefined = 0
+  let totalLlmCallsWithCost: number | undefined = 0
 
   for (let i = 0; i < instanceCount; i++) {
     const inst = generator.generate(level)
@@ -103,8 +103,13 @@ async function runLevel(
     totalDurationMs += result.durationMs
     totalCostUsd += result.costUsd
     totalTokens = addTokenUsage(totalTokens, result.tokens)
-    totalLlmCalls += result.llmCalls
-    totalLlmCallsWithCost += result.llmCallsWithCost
+    // One unreported instance makes the level's coverage unknown, not partial.
+    totalLlmCalls = totalLlmCalls !== undefined && result.llmCalls !== undefined
+      ? totalLlmCalls + result.llmCalls
+      : undefined
+    totalLlmCallsWithCost = totalLlmCallsWithCost !== undefined && result.llmCallsWithCost !== undefined
+      ? totalLlmCallsWithCost + result.llmCallsWithCost
+      : undefined
   }
 
   // A level passes when every instance that actually ran passed. Skipped
@@ -151,8 +156,8 @@ async function runInstance(
   // skipped run is still money spent.
   let costUsd = 0
   let tokens = emptyTokenUsage()
-  let llmCalls = 0
-  let llmCallsWithCost = 0
+  let llmCalls: number | undefined
+  let llmCallsWithCost: number | undefined
 
   // Create per-instance conversation log and save eval script if convLogDir is set
   let convLog: ConversationLog | undefined
@@ -180,8 +185,12 @@ async function runInstance(
     const runResult = await adapter.run({ prompt: inst.prompt, workDir, taskId: `${primitiveId}-${level}-${index}`, convLog })
     costUsd = runResult.cost
     tokens = runResult.tokens
-    llmCalls = runResult.llmCalls ?? 0
-    llmCallsWithCost = runResult.llmCallsWithCost ?? 0
+    // Left undefined when the adapter does not report coverage. Coercing to 0
+    // here made an unreported run indistinguishable from a run that genuinely
+    // made no priced calls, so every profile from a CLI-wrapping adapter would
+    // have claimed measured coverage it never had.
+    llmCalls = runResult.llmCalls
+    llmCallsWithCost = runResult.llmCallsWithCost
     await writeFile(path.join(workDir, "response.txt"), runResult.text)
 
     // Adapter-level gate (mirrors src/framework/runner.ts): when the run
@@ -262,7 +271,9 @@ async function runInstance(
     const partial = readPartialUsage(err)
     if (partial) {
       tokens = partial.tokens
-      costUsd = partial.costUsd ?? 0
+      // Measured floor, not a re-estimate: an aborted run's priced calls are
+      // real spend, and the unpriced ones are missing rather than free.
+      costUsd = partial.costUsd ?? partial.pricedCostUsd
       llmCalls = partial.llmCalls
       llmCallsWithCost = partial.llmCallsWithCost
       const total = partial.tokens.input + partial.tokens.output + partial.tokens.cacheRead
@@ -292,19 +303,22 @@ async function runInstance(
 export function sumProfileCost(details: TCP["details"]): {
   totalUsd: number
   totalTokens: TokenUsage
-  llmCalls: number
-  llmCallsWithCost: number
+  /** Undefined when any level did not report coverage — see LevelResult.llmCalls. */
+  llmCalls?: number
+  llmCallsWithCost?: number
 } {
   let totalUsd = 0
   let totalTokens = emptyTokenUsage()
-  let llmCalls = 0
-  let llmCallsWithCost = 0
+  let llmCalls: number | undefined = 0
+  let llmCallsWithCost: number | undefined = 0
   for (const d of details) {
     for (const lr of d.levelResults) {
       totalUsd += lr.costUsd
       totalTokens = addTokenUsage(totalTokens, lr.tokens)
-      llmCalls += lr.llmCalls ?? 0
-      llmCallsWithCost += lr.llmCallsWithCost ?? 0
+      llmCalls = llmCalls !== undefined && lr.llmCalls !== undefined ? llmCalls + lr.llmCalls : undefined
+      llmCallsWithCost = llmCallsWithCost !== undefined && lr.llmCallsWithCost !== undefined
+        ? llmCallsWithCost + lr.llmCallsWithCost
+        : undefined
     }
   }
   return { totalUsd, totalTokens, llmCalls, llmCallsWithCost }

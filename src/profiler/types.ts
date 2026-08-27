@@ -35,8 +35,9 @@ export interface InstanceResult {
    * without this, a fallback that silently prices at $0 is indistinguishable
    * from a genuinely cheap run.
    */
-  llmCalls: number
-  llmCallsWithCost: number
+  /** `undefined` when the adapter does not report coverage — never coerce to 0. */
+  llmCalls?: number
+  llmCallsWithCost?: number
   /** True when the instance was skipped for an environment reason (e.g. a
    *  missing dependency) and must NOT count as a pass or a failure. */
   skipped?: boolean
@@ -59,9 +60,13 @@ export interface LevelResult {
   durationMs: number
   costUsd: number
   tokens: TokenUsage
-  /** Summed over the level's instances; see `InstanceResult.llmCalls`. */
-  llmCalls: number
-  llmCallsWithCost: number
+  /**
+   * Summed over the level's instances; see `InstanceResult.llmCalls`. Undefined
+   * when ANY instance did not report coverage — a partial sum would read as a
+   * complete one, and "unknown" must not decay into "measured zero".
+   */
+  llmCalls?: number
+  llmCallsWithCost?: number
 }
 
 /** Result of profiling one primitive (all levels) */

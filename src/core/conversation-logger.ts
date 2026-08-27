@@ -109,7 +109,7 @@ export class ConversationLog {
       tokens: response.tokens,
       // Per-call billing. This makes the transcript a second, independent
       // record of what a run cost: totals computed from the log must match the
-      // profile's `cost` block, which is what scripts/reconcile-profile-cost.ts
+      // profile's `cost` block, which is what `skvm profile --reconcile`
       // checks. Absent when the provider reported no cost for the call.
       ...(response.costUsd !== undefined ? { costUsd: response.costUsd } : {}),
       durationMs: response.durationMs,

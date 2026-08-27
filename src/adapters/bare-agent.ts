@@ -6,7 +6,7 @@ import type { LLMProvider, LLMTool, LLMToolCall, LLMToolResult, LLMResponse, Com
 import type { RuntimeHooks } from "../runtime/types.ts"
 import { runAgentLoop } from "../core/agent-loop.ts"
 import { AGENT_TOOLS, createAgentToolExecutor } from "../core/agent-tools.ts"
-import { estimateCost } from "../core/cost.ts"
+import { resolveRunCost } from "../core/cost.ts"
 import { createLogger } from "../core/logger.ts"
 import { ConversationSession, type ConversationLog } from "../core/conversation-logger.ts"
 import { LoggingProvider } from "../core/logging-provider.ts"
@@ -324,7 +324,14 @@ Available skills:
       text: loopResult.text,
       steps: loopResult.steps,
       tokens: loopResult.tokens,
-      cost: estimateCost(this.model, loopResult.tokens, loopResult.totalCostUsd),
+      // Full coverage → the provider's total; partial → the priced calls only, as a
+      // floor; none → the local pricing table. Never re-price a partially-measured
+      // run from the table: that discards real measurements and inflates the total.
+      cost: resolveRunCost(this.model, loopResult.tokens, {
+        pricedCostUsd: loopResult.pricedCostUsd,
+        llmCalls: loopResult.llmCalls,
+        llmCallsWithCost: loopResult.llmCallsWithCost,
+      }),
       durationMs,
       llmDurationMs: loopResult.llmDurationMs,
       llmCalls: loopResult.llmCalls,

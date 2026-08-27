@@ -25,12 +25,12 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   "openai/gpt-5.6-sol": { input: 5, output: 30 },
   "openai/gpt-5.6-luna": { input: 0.1, output: 0.6 },
   "openai/gpt-5.4-mini": { input: 0.75, output: 4.5 },
-  // Anthropic
-  "claude-opus-4.6": { input: 15, output: 75 },
-  "claude-opus-4-6": { input: 15, output: 75 },
+  // Anthropic — first-party API rates per MTok.
+  "claude-opus-4.6": { input: 5, output: 25 },
+  "claude-opus-4-6": { input: 5, output: 25 },
   "claude-sonnet-4.6": { input: 3, output: 15 },
-  "claude-haiku-4.5": { input: 0.8, output: 4 },
-  "claude-haiku-4-5": { input: 0.8, output: 4 },
+  "claude-haiku-4.5": { input: 1, output: 5 },
+  "claude-haiku-4-5": { input: 1, output: 5 },
   // OpenAI
   "gpt-5.5": { input: 5, output: 30 },
   "gpt-5.4": { input: 2.5, output: 10 },
@@ -86,6 +86,49 @@ export function estimateCost(
   // Cache reads are typically cheaper (e.g., 10% of input cost)
   const cacheCost = (tokens.cacheRead / 1_000_000) * pricing.input * 0.1
   return inputCost + outputCost + cacheCost
+}
+
+/**
+ * Cost coverage for a completed run: how many LLM calls it made, and how many
+ * of those the provider priced.
+ */
+export interface CostCoverage {
+  /** Sum of the provider's own per-call costs, over the calls that reported one. */
+  pricedCostUsd: number
+  /** LLM calls issued. `undefined` when the adapter does not report coverage. */
+  llmCalls?: number
+  /** Of those, how many carried an authoritative cost. */
+  llmCallsWithCost?: number
+}
+
+/**
+ * Resolve what a whole run cost, preferring measurement over estimation.
+ *
+ * The subtlety is partial coverage. `estimateCost` is per-call and all-or-nothing:
+ * hand it an undefined cost and it re-prices from the local table. Applied to a
+ * RUN, that is badly wrong — one response missing `usage.cost` used to discard
+ * every measured dollar the run had already accumulated and re-price the entire
+ * token count from the table, which over-reported a measured $0.001 as $0.618 in
+ * one profile. Worse, it is silently wrong: the total still looks like a
+ * measurement.
+ *
+ * So:
+ * - **Full coverage** — every call priced: report the provider's total. A
+ *   measurement.
+ * - **Partial coverage** — report the sum of the priced calls. A FLOOR: the
+ *   unpriced calls are missing, not estimated. Callers that publish the number
+ *   must say so, which is what the `cost_source` column exists for.
+ * - **No coverage** — nothing to measure, so fall back to the pricing table.
+ * - **Unknown coverage** — an adapter that does not report call counts: keep the
+ *   previous behaviour and estimate.
+ */
+export function resolveRunCost(model: string, tokens: TokenUsage, coverage: CostCoverage): number {
+  const { pricedCostUsd, llmCalls, llmCallsWithCost } = coverage
+  if (llmCalls === undefined || llmCallsWithCost === undefined) {
+    return estimateCost(model, tokens)
+  }
+  if (llmCallsWithCost === 0) return estimateCost(model, tokens)
+  return pricedCostUsd
 }
 
 /** Track cumulative cost across multiple LLM calls */

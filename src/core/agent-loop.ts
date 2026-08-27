@@ -73,6 +73,12 @@ export interface AgentLoopResult {
    */
   llmCalls: number
   llmCallsWithCost: number
+  /**
+   * Sum of the provider's own per-call costs, over the calls that reported one.
+   * Unlike `totalCostUsd` this is never discarded, so a run with partial pricing
+   * coverage can still publish a measured floor instead of a table estimate.
+   */
+  pricedCostUsd: number
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +126,7 @@ export async function runAgentLoop(
   // fallback must be legible as such rather than passing for a measurement.
   let llmCalls = 0
   let llmCallsWithCost = 0
+  let pricedCostUsd = 0
   let llmDurationMs = 0
   let finalText = ""
   const allToolCalls: ToolCall[] = []
@@ -151,7 +158,10 @@ export async function runAgentLoop(
 
       totalTokens = addTokenUsage(totalTokens, response.tokens)
       llmCalls++
-      if (response.costUsd !== undefined) llmCallsWithCost++
+      if (response.costUsd !== undefined) {
+        llmCallsWithCost++
+        pricedCostUsd += response.costUsd
+      }
       if (totalCostUsd !== undefined && response.costUsd !== undefined) {
         totalCostUsd += response.costUsd
       } else {
@@ -284,6 +294,7 @@ export async function runAgentLoop(
       throw attachPartialUsage(err, {
         tokens: totalTokens,
         costUsd: totalCostUsd,
+        pricedCostUsd,
         llmCalls,
         llmCallsWithCost,
       })
@@ -311,6 +322,7 @@ export async function runAgentLoop(
     steps,
     tokens: totalTokens,
     totalCostUsd,
+    pricedCostUsd,
     llmCalls,
     llmCallsWithCost,
     llmDurationMs,

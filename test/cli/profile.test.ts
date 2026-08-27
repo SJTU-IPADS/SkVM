@@ -44,6 +44,10 @@ describe("PROFILE_FLAGS.parse — typed config", () => {
       "timeout-ms": TIMEOUT_DEFAULTS.taskExec,
       "export-cost": undefined,
       "export-all-versions": false,
+      reconcile: false,
+      tolerance: 0.005,
+      "min-coverage": 0.99,
+      json: false,
     })
   })
 
@@ -73,6 +77,10 @@ describe("PROFILE_FLAGS.parse — typed config", () => {
       "timeout-ms": 60000,
       "export-cost": undefined,
       "export-all-versions": false,
+      reconcile: false,
+      tolerance: 0.005,
+      "min-coverage": 0.99,
+      json: false,
     })
   })
 
@@ -172,7 +180,16 @@ Options:
                            Reads the cache only — no LLM calls.
   --export-all-versions    With --export-cost, emit every archived profile run, not just
                            the latest, so repeat runs can be compared (rows are keyed
-                           by the profiled_at column).`,
+                           by the profiled_at column).
+  --reconcile              Check the cached profile's cost block against its conversation
+                           transcripts, then exit. Non-zero when they disagree, or when
+                           cost coverage is below --min-coverage. Reads the cache only.
+  --tolerance=<n>          With --reconcile, the largest relative gap between a profile
+                           metric and its transcripts that still counts as agreement (default: 0.005)
+  --min-coverage=<n>       With --reconcile, the share of LLM calls the provider must have
+                           priced. Below this the cost is too incomplete to publish as a
+                           floor; above it the run passes with the floor stated. (default: 0.99)
+  --json                   With --reconcile, emit the result as JSON on stdout and nothing else`,
     )
   })
 })

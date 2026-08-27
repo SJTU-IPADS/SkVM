@@ -18,7 +18,7 @@ import { resolveAdapterConfigMode } from "../core/config.ts"
 import { AdapterConfigModeSchema, type TCP } from "../core/types.ts"
 import { CLI_DEFAULTS } from "../core/ui-defaults.ts"
 import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
-import { c, noColor } from "../core/logger.ts"
+import { c, noColor, setLogLevel } from "../core/logger.ts"
 
 export const PROFILE_FLAGS = defineFlags(
   "profile",
@@ -82,6 +82,28 @@ export const PROFILE_FLAGS = defineFlags(
       kind: "bool",
       help: "With --export-cost, emit every archived profile run, not just\nthe latest, so repeat runs can be compared (rows are keyed\nby the profiled_at column).",
     },
+    reconcile: {
+      kind: "bool",
+      help: "Check the cached profile's cost block against its conversation\ntranscripts, then exit. Non-zero when they disagree, or when\ncost coverage is below --min-coverage. Reads the cache only.",
+    },
+    tolerance: {
+      kind: "float",
+      min: 0,
+      max: 1,
+      default: 0.005,
+      help: "With --reconcile, the largest relative gap between a profile\nmetric and its transcripts that still counts as agreement",
+    },
+    "min-coverage": {
+      kind: "float",
+      min: 0,
+      max: 1,
+      default: 0.99,
+      help: "With --reconcile, the share of LLM calls the provider must have\npriced. Below this the cost is too incomplete to publish as a\nfloor; above it the run passes with the floor stated.",
+    },
+    json: {
+      kind: "bool",
+      help: "With --reconcile, emit the result as JSON on stdout and nothing else",
+    },
   },
   {
     usage: [
@@ -138,6 +160,46 @@ export async function runProfile(config: ProfileConfig): Promise<void> {
     adapters = [...ALL_ADAPTERS]
   } else {
     adapters = [CLI_DEFAULTS.adapter]
+  }
+
+  // Flags that only mean something in another mode must not be silently ignored:
+  // a typo here otherwise starts a full 26-primitive profiling run.
+  if (config["export-all-versions"] && !config["export-cost"]) {
+    throw new UsageError("profile: --export-all-versions requires --export-cost", PROFILE_FLAGS.help)
+  }
+  if (config.json && !config.reconcile) {
+    throw new UsageError("profile: --json requires --reconcile", PROFILE_FLAGS.help)
+  }
+
+  // Reconcile mode: verify a cached profile against its transcripts and exit.
+  if (config.reconcile) {
+    const { loadProfile } = await import("../profiler/index.ts")
+    const { reconcileProfileCost, formatReconcileResult } = await import("../profiler/reconcile.ts")
+    // JSON is a machine-readable contract: profile loading logs at info level,
+    // which would put prose on stdout ahead of it.
+    if (config.json) setLogLevel("error")
+
+    let failed = false
+    for (const model of models) {
+      for (const harness of adapters) {
+        const label = `${model} -- ${harness}`
+        const tcp = await loadProfile(model, harness)
+        if (!tcp) {
+          // Post-argument-parse failure: exit directly rather than a UsageError,
+          // which would print usage for a well-formed invocation.
+          console.error(`profile: no cached profile for ${label}; run 'skvm profile' first`)
+          process.exit(1)
+        }
+        const result = await reconcileProfileCost(tcp, {
+          tolerance: config.tolerance,
+          minCoverage: config["min-coverage"],
+        })
+        console.log(config.json ? JSON.stringify({ label, ...result }, null, 2) : formatReconcileResult(result, label))
+        if (!result.ok) failed = true
+      }
+    }
+    if (failed) process.exit(1)
+    return
   }
 
   // Export mode: emit the profiling-cost CSV from cached profiles and exit.

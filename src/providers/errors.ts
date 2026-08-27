@@ -173,6 +173,8 @@ export interface PartialUsage {
   tokens: TokenUsage
   /** Undefined when at least one call did not report an authoritative cost. */
   costUsd?: number
+  /** Sum over the calls that DID report one — a measured floor, never discarded. */
+  pricedCostUsd: number
   /** LLM calls issued before the abort, and how many reported a cost. */
   llmCalls: number
   llmCallsWithCost: number

@@ -35,18 +35,30 @@ function usd(n: number): string {
 /**
  * How trustworthy a row's `cost_usd` is.
  *
- * - `measured`  — the provider priced every call.
- * - `partial`   — some calls were priced, some were not; the figure is a floor.
+ * - `measured`  — the provider priced every call. A level that made no calls at
+ *                 all (every instance skipped by the environment gate) is also
+ *                 measured: its $0 is a fact, not an absence of data.
+ * - `partial`   — some calls were priced, some were not; the figure is a floor,
+ *                 carrying only the priced calls.
  * - `estimated` — no call was priced; the figure came from the local pricing
  *                 table, or is $0 because the table had no entry.
- * - `unknown`   — the profile predates coverage tracking and cannot say.
+ * - `unknown`   — coverage was not reported (a profile predating coverage
+ *                 tracking, or an adapter that does not report call counts).
  */
 function costSource(calls: number | undefined, withCost: number | undefined): string {
   if (calls === undefined || withCost === undefined) return "unknown"
-  if (calls === 0) return "unknown"
   if (withCost === calls) return "measured"
   if (withCost === 0) return "estimated"
   return "partial"
+}
+
+/**
+ * CSV-quote a field that could contain a comma or a quote. Model ids and harness
+ * names are free-form strings; one comma in an id shifts every column after it,
+ * silently, in a file whose whole purpose is being read by something else.
+ */
+function csvField(value: string): string {
+  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value
 }
 
 export function profileCostCsv(tcps: TCP[]): string {
@@ -83,10 +95,10 @@ export function profileCostCsv(tcps: TCP[]): string {
       }
 
       rows.push([
-        tcp.model,
-        tcp.harness,
-        tcp.profiledAt,
-        d.primitiveId,
+        csvField(tcp.model),
+        csvField(tcp.harness),
+        csvField(tcp.profiledAt),
+        csvField(d.primitiveId),
         d.highestLevel,
         `"${levelsRun.join(",")}"`,
         String(run),

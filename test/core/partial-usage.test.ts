@@ -18,6 +18,7 @@ import {
 } from "../../src/providers/errors.ts"
 import type { LLMProvider, LLMResponse } from "../../src/providers/types.ts"
 import { emptyTokenUsage } from "../../src/core/types.ts"
+import { estimateCost, resolveRunCost } from "../../src/core/cost.ts"
 
 function response(over: Partial<LLMResponse> = {}): LLMResponse {
   return {
@@ -63,6 +64,7 @@ describe("partial usage carrier", () => {
     const usage: PartialUsage = {
       tokens: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0 },
       costUsd: 0.5,
+      pricedCostUsd: 0.5,
       llmCalls: 2,
       llmCallsWithCost: 2,
     }
@@ -163,5 +165,33 @@ describe("runAgentLoop — cost coverage on the success path", () => {
     expect(result.llmCalls).toBe(1)
     expect(result.llmCallsWithCost).toBe(1)
     expect(result.totalCostUsd).toBeCloseTo(0.001, 10)
+  })
+})
+
+describe("resolveRunCost — measurement beats estimation", () => {
+  const model = "anthropic/claude-opus-4.6"
+  const tokens = { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 }
+
+  test("full coverage reports the provider's own total", () => {
+    expect(resolveRunCost(model, tokens, { pricedCostUsd: 0.42, llmCalls: 3, llmCallsWithCost: 3 })).toBe(0.42)
+  })
+
+  test("partial coverage reports the priced calls as a floor, never a table re-estimate", () => {
+    // The bug this exists for: one response missing usage.cost used to discard
+    // every measured dollar and re-price the whole token count from the table,
+    // turning a measured $0.001 into $0.618 while still looking like a measurement.
+    const floor = resolveRunCost(model, tokens, { pricedCostUsd: 0.001, llmCalls: 3, llmCallsWithCost: 2 })
+    expect(floor).toBe(0.001)
+    expect(floor).toBeLessThan(estimateCost(model, tokens))
+  })
+
+  test("no coverage falls back to the pricing table", () => {
+    const estimated = resolveRunCost(model, tokens, { pricedCostUsd: 0, llmCalls: 3, llmCallsWithCost: 0 })
+    expect(estimated).toBe(estimateCost(model, tokens))
+    expect(estimated).toBeGreaterThan(0)
+  })
+
+  test("unknown coverage keeps the previous estimate behaviour", () => {
+    expect(resolveRunCost(model, tokens, { pricedCostUsd: 0 })).toBe(estimateCost(model, tokens))
   })
 })
