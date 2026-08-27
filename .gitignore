@@ -37,6 +37,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # skvm data is a git submodule (skillvm-data)
 skvm-logs/
 .skvm
+# private venv a pass-2 env-binding script may build next to a skill
+.skvm-env/
 .claude
 .clawdhub
 

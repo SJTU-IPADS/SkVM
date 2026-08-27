@@ -82,8 +82,23 @@ Rules:
 - Do NOT include repository refresh or upgrade operations (no apt-get update/upgrade, apt update/upgrade, yum update, dnf update/upgrade, brew update/upgrade).
 - Output ONLY the bash script, nothing else`,
     temperature: 0,
-    maxTokens: 4096,
+    // The template's helper block alone is ~50 lines the model is told to copy
+    // verbatim, before a single dependency block. 4096 truncated a long script
+    // mid-line, and a truncated script fails `bash -n` — which the repair loop
+    // then treats as a content error and tries to fix, burning attempts on
+    // output that was never wrong, only cut off.
+    maxTokens: 8192,
   })
+
+  // A response that hit the cap is truncated, not broken. Saying so is the
+  // difference between one clear failure and five repair attempts against a
+  // syntax error that has no cause in the script's content.
+  if (response.stopReason === "max_tokens") {
+    throw new Error(
+      "pass2: the generated env-binding script hit the output token cap and is truncated. " +
+      "Reduce the dependency count for this skill, or raise the cap.",
+    )
+  }
 
   let script = response.text.trim()
 

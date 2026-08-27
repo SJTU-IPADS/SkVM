@@ -15,7 +15,7 @@ describe("pass2 env-binding template", () => {
   })
 
   test("bootstraps the venv onto PATH so later processes inherit it", () => {
-    expect(TEMPLATE).toContain('PATH="$ENV_DIR/bin:$PATH"')
+    expect(TEMPLATE).toContain('PATH="$SKVM_ENV_DIR/bin:$PATH"')
     expect(TEMPLATE).toContain("export PATH")
   })
 

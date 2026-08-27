@@ -8,29 +8,71 @@ log() { echo "[env-bind] $*"; }
 warn() { echo "[env-bind] WARNING: $*" >&2; }
 
 # --- python runtime resolution ---------------------------------------------
-# Prefer an already-active conda/venv. Otherwise use system python3/python.
-# When no usable pip exists (module absent, or installs into the system
-# interpreter are blocked, e.g. PEP 668), bootstrap a private venv at
-# $SKVM_ENV_DIR (default: ./.skvm-env) and prepend its bin to PATH, so that
-# processes started after this script inherit the bound environment.
+# Prefer an already-active conda/venv, then a private venv this script created
+# on an earlier run, then system python3/python. When no usable pip exists
+# (module absent, or installs into the system interpreter are blocked, e.g.
+# PEP 668), bootstrap a private venv at $SKVM_ENV_DIR (default: ./.skvm-env)
+# and prepend its bin to PATH.
+#
+# The PATH export applies to THIS script and the commands it runs. A parent
+# shell that ran `bash env-setup.sh` does not inherit it; source the script, or
+# add "$SKVM_ENV_DIR/bin" to PATH yourself, if you need the bound environment
+# afterwards.
 PY=""
+SKVM_ENV_DIR="${SKVM_ENV_DIR:-$PWD/.skvm-env}"
+
+# A venv is only usable if its interpreter can actually install things. A tree
+# built by `python3 -m venv --without-pip`, or one whose ensurepip step failed
+# (Debian's python3-venv split), or one left half-written by an interrupted run
+# all have bin/python and no pip — and the old probe accepted every one of them,
+# then dead-ended with no retry and no diagnostic.
+venv_is_usable() {
+  [ -x "$1/bin/python" ] && "$1/bin/python" -m pip --version >/dev/null 2>&1
+}
+
+use_venv() {
+  PATH="$SKVM_ENV_DIR/bin:$PATH"
+  export PATH
+  PY="$SKVM_ENV_DIR/bin/python"
+  log "python: $PY"
+}
 
 bootstrap_venv() {
-  ENV_DIR="${SKVM_ENV_DIR:-$PWD/.skvm-env}"
-  if [ ! -x "$ENV_DIR/bin/python" ]; then
-    log "bootstrapping private venv at $ENV_DIR"
-    "$PY" -m venv "$ENV_DIR" || { warn "venv creation failed"; return 1; }
+  if venv_is_usable "$SKVM_ENV_DIR"; then
+    use_venv
+    return 0
   fi
-  PATH="$ENV_DIR/bin:$PATH"
-  export PATH
-  PY="$ENV_DIR/bin/python"
-  log "python: $PY"
+  if [ -e "$SKVM_ENV_DIR" ]; then
+    warn "existing $SKVM_ENV_DIR has no working pip; rebuilding it"
+    rm -rf "$SKVM_ENV_DIR"
+  fi
+  log "bootstrapping private venv at $SKVM_ENV_DIR"
+  # Diagnostics go to stderr on purpose: the caller wraps dependency CHECKS in
+  # >/dev/null 2>&1, and the first check is what triggers the bootstrap, so a
+  # silent failure here surfaces to the user as a bare "No module named pip".
+  if ! "$PY" -m venv "$SKVM_ENV_DIR" >&2; then
+    warn "venv creation failed for $PY — on Debian/Ubuntu this usually means the python3-venv package is missing"
+    rm -rf "$SKVM_ENV_DIR"
+    return 1
+  fi
+  if ! venv_is_usable "$SKVM_ENV_DIR"; then
+    warn "venv at $SKVM_ENV_DIR was created without a working pip"
+    return 1
+  fi
+  use_venv
 }
 
 ensure_python() {
   if [ -n "$PY" ]; then return 0; fi
   if [ -n "${CONDA_DEFAULT_ENV:-}" ] || [ -n "${VIRTUAL_ENV:-}" ]; then
     PY="$(command -v python || command -v python3)" || { warn "no python in active environment"; return 1; }
+    return 0
+  fi
+  # A venv from an earlier run of this script wins over the system interpreter:
+  # otherwise a rerun re-resolves system python, reports venv-installed packages
+  # as missing, and reinstalls all of them.
+  if venv_is_usable "$SKVM_ENV_DIR"; then
+    use_venv
     return 0
   fi
   PY="$(command -v python3 || command -v python)" || { warn "no python interpreter found"; return 1; }
@@ -50,10 +92,14 @@ pip_install() {
   # System-interpreter installs can be rejected (PEP 668 externally-managed,
   # or missing write permission) — retry once inside the private venv.
   case "$PY" in
-    "${SKVM_ENV_DIR:-$PWD/.skvm-env}"/*) return 1 ;;
+    "$SKVM_ENV_DIR"/*) return 1 ;;
   esac
   warn "pip install failed on $PY; retrying inside a private venv"
   bootstrap_venv || return 1
+  # Anything already found in the system interpreter is invisible from inside
+  # the venv, so re-install every dependency here rather than leaving the run
+  # split across two interpreters — which reported success while the bound
+  # environment was missing packages the script had just certified.
   "$PY" -m pip install "$@"
 }
 
@@ -66,6 +112,15 @@ install_system_pkg() {
   fi
 
   if command -v apt-get >/dev/null 2>&1; then
+    # This script never refreshes package lists: the simulate-time policy
+    # rejects repo-refresh commands outright, because they mutate the host
+    # during compilation. On an image whose lists are empty apt cannot resolve
+    # anything, so say that plainly rather than fail with "Unable to locate
+    # package" and leave the operator guessing.
+    if [ -z "$(ls -A /var/lib/apt/lists 2>/dev/null)" ]; then
+      warn "apt package lists are empty; refresh them during the image build, not from this script"
+      return 1
+    fi
     apt-get install -y "$pkg"
     return
   fi

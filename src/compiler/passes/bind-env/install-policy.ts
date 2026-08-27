@@ -66,6 +66,28 @@ export function createInstallPolicy(platform: PlatformContext): InstallPolicy {
   }
 }
 
+/**
+ * Route a pip command through the template's helpers.
+ *
+ * An empty command gets the canonical form. A command that already invokes the
+ * helper is left alone (idempotent — this runs on repair passes too). Anything
+ * that shells out to pip directly (`pip install x`, `python -m pip show x`,
+ * `python3 -m pip install --user x`) is replaced, because the helper is the only
+ * form that works when the interpreter has no pip or refuses to install into it.
+ * A command doing something else entirely is preserved.
+ */
+export function rewritePipCommand(
+  command: string | undefined,
+  canonical: string,
+  helper: string,
+): string {
+  const trimmed = (command ?? "").trim()
+  if (trimmed.length === 0) return canonical
+  if (new RegExp(`(^|[;&|]\\s*)${helper}\\b`).test(trimmed)) return trimmed
+  const invokesPipDirectly = /(^|[;&|]\s*)(\S*python[0-9.]*\s+-m\s+pip|pip[0-9.]*)\b/.test(trimmed)
+  return invokesPipDirectly ? canonical : trimmed
+}
+
 export function normalizeDependenciesForPlatform(
   dependencies: DependencyEntry[],
   platform: PlatformContext,
@@ -74,13 +96,23 @@ export function normalizeDependenciesForPlatform(
 
   return dependencies.map((dep) => {
     if (dep.type === "pip") {
-      // Quote package specs containing version operators to prevent shell redirection
-      const needsQuote = /[><=!~]/.test(dep.name)
+      // Quote package specs containing version operators to prevent shell
+      // redirection: `pip_check reportlab>=4.0 >/dev/null` otherwise parses as
+      // `pip_check reportlab` plus a redirect, checking the wrong package and
+      // leaving a file named `=4.0` behind.
+      const needsQuote = /[><=!~ ]/.test(dep.name)
       const quotedName = needsQuote ? `'${dep.name}'` : dep.name
+      // REWRITE rather than fill in the blanks. The extractor populates these
+      // fields on essentially every dependency — the prompt asks for
+      // `pip show`/`pip install`, and the import-hint path hardcodes
+      // `python -m pip …` — so a `dep.checkCommand || …` fallback only ever
+      // fired for the version-spec case that leaves them empty. On the
+      // pip-less/PEP 668 hosts this policy exists for, everything else went
+      // out as raw pip and failed exactly as before.
       return {
         ...dep,
-        checkCommand: dep.checkCommand || `${policy.pipCheckPrefix} ${dep.name}`,
-        installCommand: dep.installCommand || `${policy.pipInstallPrefix} ${quotedName}`,
+        checkCommand: rewritePipCommand(dep.checkCommand, `${policy.pipCheckPrefix} ${quotedName}`, policy.pipCheckPrefix),
+        installCommand: rewritePipCommand(dep.installCommand, `${policy.pipInstallPrefix} ${quotedName}`, policy.pipInstallPrefix),
       }
     }
 

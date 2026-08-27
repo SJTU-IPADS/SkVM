@@ -106,7 +106,12 @@ export const aotVariantRunner: ConditionRunner = {
           SKIP_FILES.has(relPath)
           // Skip compiler-internal directories (e.g. _artifacts/scr.json,
           // _artifacts/_meta/*.json) — they are not part of the skill bundle.
-          || relPath.split(path.sep).some((seg) => seg === ARTIFACT_DIR))
+          || relPath.split(path.sep).some((seg) => seg === ARTIFACT_DIR)
+          // …and anything dotted, matching copyBundleFromDir. A successful pass-2
+          // compile can leave a real `.skvm-env` in the variant directory, and
+          // copying hundreds of megabytes of site-packages into every task's
+          // workDir, on every run, is not a skill bundle.
+          || relPath.split(path.sep).some((seg) => seg.startsWith(".")))
       },
       resultMeta: {
         skillId,

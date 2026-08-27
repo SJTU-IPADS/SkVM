@@ -102,6 +102,10 @@ ${opts.currentScript}`,
     maxTokens: 8192,
   })
 
+  if (response.stopReason === "max_tokens") {
+    throw new Error("pass2: the repaired env-binding script hit the output token cap and is truncated")
+  }
+
   let script = response.text.trim()
   script = script.replace(/^```(?:bash)?\s*\n?/, "").replace(/\n?```\s*$/, "").trim()
   if (!script.startsWith("#!/bin/bash")) {

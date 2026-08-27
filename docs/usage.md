@@ -296,6 +296,7 @@ skvm logs --type=aot-compile
 | `OPENROUTER_API_KEY` | Agent execution and profiling via OpenRouter |
 | `ANTHROPIC_API_KEY` | Compiler backend via the Anthropic API |
 | `SKVM_DATA_DIR` | Override the `skvm-data/` input-dataset root |
+| `SKVM_ENV_DIR` | Where a pass-2 env-binding script builds its private venv when the system interpreter has no usable pip (default: `./.skvm-env` relative to the script's working directory) |
 | `SKVM_CACHE` | Override the runtime-cache root (default `~/.skvm/`) |
 | `SKVM_PROFILES_DIR` | Override the cached-TCP directory |
 | `SKVM_LOGS_DIR` | Override the runtime-log directory |
