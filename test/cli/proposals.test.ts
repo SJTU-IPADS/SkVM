@@ -356,7 +356,7 @@ Options:
 
   test("serve help matches the canonical layout", () => {
     expect(PROPOSALS_SERVE_FLAGS.help()).toBe(
-      `skvm proposals serve - Serve the review UI
+      `skvm proposals serve - Serve the review UI (deprecated: use 'skvm ui')
 
 Usage:
   skvm proposals serve [--port=<n>] [--host=<h>] [--no-open]

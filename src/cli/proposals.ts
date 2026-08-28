@@ -62,7 +62,7 @@ export const PROPOSALS_REPORT_FLAGS = defineFlags("proposals report", "Write an 
   out: { kind: "string", placeholder: "<path>", help: "Output path (default: <jit-optimize-dir>/report.html)" },
 }, { usage: ["skvm proposals report [filters] [--out=<path>]"] })
 
-export const PROPOSALS_SERVE_FLAGS = defineFlags("proposals serve", "Serve the review UI", {
+export const PROPOSALS_SERVE_FLAGS = defineFlags("proposals serve", "Serve the review UI (deprecated: use 'skvm ui')", {
   port: { kind: "int", min: 1, max: 65535, default: CLI_DEFAULTS.reportPort, help: "Port" },
   host: { kind: "string", placeholder: "<h>", default: CLI_DEFAULTS.reportHost, help: "Host" },
   "no-open": { kind: "bool", help: "Do not open a browser" },
@@ -349,28 +349,11 @@ export async function runProposalsReport(config: ProposalsReportConfig): Promise
 }
 
 export async function runProposalsServe(config: ProposalsServeConfig): Promise<void> {
-  const { startServer } = await import("../server/index.ts")
-  const server = startServer({ port: config.port, host: config.host })
-  console.log(`SkVM proposals review server listening on ${server.url}`)
-  console.log(`  Press Ctrl+C to stop.`)
-  if (!config["no-open"]) {
-    const openCmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open"
-    try {
-      Bun.spawn([openCmd, server.url], { stdin: "ignore", stdout: "ignore", stderr: "ignore" })
-    } catch {
-      // ignore — user can still navigate manually
-    }
-  }
-  // Keep the process alive until SIGINT/SIGTERM.
-  await new Promise<void>((resolve) => {
-    const shutdown = () => {
-      console.log("\nShutting down…")
-      server.stop()
-      resolve()
-    }
-    process.on("SIGINT", shutdown)
-    process.on("SIGTERM", shutdown)
-  })
+  // Deprecated alias (#115): one server, one canonical entry point. The flag
+  // surface is identical, so the parsed config passes straight through.
+  console.error("warning: 'skvm proposals serve' is deprecated; use 'skvm ui'")
+  const { runUi } = await import("./ui.ts")
+  await runUi(config)
 }
 
 export async function runProposalsAccept(config: ProposalsAcceptConfig, id: string | undefined): Promise<void> {
