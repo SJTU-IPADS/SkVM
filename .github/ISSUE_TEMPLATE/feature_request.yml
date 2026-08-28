@@ -1,12 +1,12 @@
 name: Feature request
-description: Propose a new feature, refactor, or breaking change. Required before sending a PR for non-trivial changes.
+description: Propose a new feature, refactor, or breaking change — optionally before writing the code.
 title: "[feature] <short summary>"
 labels: ["enhancement", "needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Per [`CONTRIBUTING.md`](../blob/main/CONTRIBUTING.md), please open this issue **before** starting work on a feature, refactor, or change that touches public CLI flags, on-disk layouts, or the adapter / provider interfaces. The goal is to align on design before code is written.
+        Use this when you want to align on design before writing code, or when you are proposing something you do not plan to implement yourself. It is **not** a prerequisite for a pull request — see [`CONTRIBUTING.md`](../blob/main/CONTRIBUTING.md); you are welcome to open a PR directly for any change.
 
   - type: textarea
     id: problem

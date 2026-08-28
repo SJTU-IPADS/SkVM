@@ -1,17 +1,13 @@
 <!--
 Thanks for sending a pull request! Before you submit, please make sure:
 
-  - For new features / refactors / breaking changes: a tracking issue exists.
-    See CONTRIBUTING.md — PRs without an issue may be put on hold.
   - `bunx tsc --noEmit` and `bun test` pass locally.
   - The PR is focused on one logical change.
 -->
 
 ## Linked issue
 
-<!-- Required for features and non-trivial refactors. Use "Closes #123" to auto-close on merge. -->
-
-Closes #
+<!-- Optional — delete this section if there is no issue. Use "Closes #123" to auto-close on merge. -->
 
 ## Summary
 
@@ -46,7 +42,6 @@ Delete the section if there's nothing to add.
 
 ## Checklist
 
-- [ ] Linked an issue (or this is a bug fix / docs / small cleanup)
 - [ ] Commit messages follow `<scope>: <summary>` style (see `CONTRIBUTING.md`)
 - [ ] Added or updated tests where appropriate
 - [ ] Updated `README.md` / `README.zh-CN.md` / `docs/skvm/` if user-visible behavior changed
