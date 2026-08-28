@@ -66,6 +66,30 @@ export function estimateCost(
   return inputCost + outputCost + cacheCost
 }
 
+/**
+ * Resolve what a multi-call operation cost, preferring measurement to estimation.
+ *
+ * `estimateCost` is per-call and all-or-nothing: hand it an undefined cost and
+ * it re-prices from the local table. Applied to an operation made of several
+ * calls that is wrong, because one unpriced retry discards every measured dollar
+ * the others reported and re-prices the WHOLE token count — silently, and the
+ * result still looks like a measurement.
+ *
+ * - every call priced   → the provider's own total.
+ * - some calls priced   → the priced subtotal, i.e. a FLOOR. The unpriced calls
+ *                         are missing from it, not estimated into it.
+ * - no call priced      → the local pricing table, as before.
+ */
+export function resolveMeasuredCost(
+  model: string,
+  tokens: TokenUsage,
+  usage: { costUsd?: number; pricedCostUsd?: number },
+): number {
+  if (usage.costUsd !== undefined) return usage.costUsd
+  if (usage.pricedCostUsd !== undefined && usage.pricedCostUsd > 0) return usage.pricedCostUsd
+  return estimateCost(model, tokens)
+}
+
 /** Track cumulative cost across multiple LLM calls */
 export class CostTracker {
   private _totalUsd = 0

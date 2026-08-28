@@ -21,7 +21,7 @@ export interface EvaluatorConfig {
    * provider-reported cost when available; callers should prefer it over
    * `estimateCost(model, tokens)` when present.
    */
-  onJudgeUsage?: (tokens: TokenUsage, costUsd?: number) => void
+  onJudgeUsage?: (tokens: TokenUsage, costUsd?: number, pricedCostUsd?: number) => void
 }
 
 export interface EvaluateAllOptions {
@@ -443,6 +443,12 @@ export interface JudgeCallResult {
   tokens: TokenUsage
   /** Authoritative cost from the provider, when available. */
   costUsd?: number
+  /**
+   * Sum over the calls that DID report a cost. Undefined `costUsd` with a
+   * positive subtotal means partial pricing: the measured part is a floor, and
+   * re-pricing the whole thing from the local table would overstate it.
+   */
+  pricedCostUsd: number
 }
 
 /**
@@ -480,7 +486,7 @@ ${trace}
 ${finalOutput}
 ${workDirFiles ? `\n## Files Created in Working Directory\n${workDirFiles}` : ""}`
 
-  const { result, tokens, costUsd } = await extractStructured({
+  const { result, tokens, costUsd, pricedCostUsd } = await extractStructured({
     provider: llmProvider,
     schema: JudgeResponseSchema,
     schemaName: "submit_score",
@@ -495,7 +501,7 @@ ${workDirFiles ? `\n## Files Created in Working Directory\n${workDirFiles}` : ""
 
   const clamped = Math.max(0, Math.min(maxScore, result.score))
   const normalizedScore = maxScore > 0 ? clamped / maxScore : 0
-  return { normalizedScore, reasoning: result.reasoning || "No reasoning provided", tokens, costUsd }
+  return { normalizedScore, reasoning: result.reasoning || "No reasoning provided", tokens, costUsd, pricedCostUsd }
 }
 
 async function evaluateLLMJudge(
@@ -517,7 +523,7 @@ async function evaluateLLMJudge(
   log.debug(`LLM judge: workDir=${runResult.workDir}, fileContents=${fileContents.length} chars, trace=${trace.length} chars`)
 
   try {
-    const { normalizedScore, reasoning, tokens, costUsd } = await callJudge({
+    const { normalizedScore, reasoning, tokens, costUsd, pricedCostUsd } = await callJudge({
       llmProvider: config.llmProvider,
       rubric: renderRubric(criterion.rubric),
       maxScore: criterion.maxScore,
@@ -526,7 +532,7 @@ async function evaluateLLMJudge(
       workDirFiles: fileContents,
     })
 
-    config.onJudgeUsage?.(tokens, costUsd)
+    config.onJudgeUsage?.(tokens, costUsd, pricedCostUsd)
     log.debug(`LLM judge: normalized=${normalizedScore}`)
 
     // Monolithic-rubric llm-judge emits a single top-level score; no

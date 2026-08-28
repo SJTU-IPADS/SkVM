@@ -240,3 +240,66 @@ describe("extractStructured", () => {
     expect(result.purposes[0]!.primitives).toContain("gen.code.python")
   })
 })
+
+// ---------------------------------------------------------------------------
+// Cost accounting across retries
+// ---------------------------------------------------------------------------
+
+/** Prompt+parse provider whose Nth attempt succeeds; per-attempt costs scripted. */
+function createRetryProvider(costs: Array<number | undefined>, succeedOn: number): LLMProvider {
+  let attempt = 0
+  return {
+    name: "mock-retry",
+    async complete(_params: CompletionParams): Promise<LLMResponse> {
+      attempt++
+      return {
+        text: attempt >= succeedOn ? '{"name": "Dana", "age": 31}' : "not json at all",
+        toolCalls: [],
+        tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+        ...(costs[attempt - 1] !== undefined ? { costUsd: costs[attempt - 1] } : {}),
+        durationMs: 0,
+        stopReason: "end_turn",
+      }
+    },
+    async completeWithToolResults(): Promise<LLMResponse> {
+      throw new Error("not needed")
+    },
+  }
+}
+
+const PERSON = z.object({ name: z.string(), age: z.number() })
+
+describe("extractStructured cost accounting", () => {
+  // Layer 1 (tool_use) consumes the first response — it has no tool call, so it
+  // throws and layer 2 takes over. Only the layer-2 attempts accumulate cost,
+  // so the scripts below start with a throwaway probe response.
+  test("every attempt priced: costUsd is the total and pricedCostUsd matches it", async () => {
+    const { costUsd, pricedCostUsd } = await extractStructured({
+      provider: createRetryProvider([0.5, 0.001, 0.002], 3),
+      schema: PERSON, schemaName: "p", schemaDescription: "d", prompt: "go",
+    })
+    expect(costUsd).toBeCloseTo(0.003, 6)
+    expect(pricedCostUsd).toBeCloseTo(0.003, 6)
+  })
+
+  test("one unpriced attempt clears costUsd but keeps the measured subtotal", async () => {
+    // costUsd going undefined is what made callers re-price the ENTIRE token
+    // count from the local table — turning a measured figure into an estimate
+    // that still looked measured. The subtotal is what lets them report a floor.
+    const { costUsd, pricedCostUsd } = await extractStructured({
+      provider: createRetryProvider([0.5, undefined, 0.002], 3),
+      schema: PERSON, schemaName: "p", schemaDescription: "d", prompt: "go",
+    })
+    expect(costUsd).toBeUndefined()
+    expect(pricedCostUsd).toBeCloseTo(0.002, 6)
+  })
+
+  test("no attempt priced: the subtotal is zero, so callers fall back to the table", async () => {
+    const { costUsd, pricedCostUsd } = await extractStructured({
+      provider: createRetryProvider([0.5, undefined, undefined], 3),
+      schema: PERSON, schemaName: "p", schemaDescription: "d", prompt: "go",
+    })
+    expect(costUsd).toBeUndefined()
+    expect(pricedCostUsd).toBe(0)
+  })
+})
