@@ -9,7 +9,7 @@ import type {
 } from "../core/types.ts"
 import { createLogger } from "../core/logger.ts"
 import { getAdapterRepoDir, getAdapterSettings } from "../core/config.ts"
-import { envForRoute, resolveRoute, validateModelIdForRoute } from "../providers/registry.ts"
+import { envForRoute, resolveRoute, resolveBackendModel, validateModelIdForRoute } from "../providers/registry.ts"
 import { runSubprocess } from "../core/subprocess.ts"
 import { subprocessVerdict } from "./subprocess-verdict.ts"
 import { TASK_FILE_DEFAULTS } from "../core/ui-defaults.ts"
@@ -21,10 +21,11 @@ import {
   type Sandbox,
 } from "../core/adapter-sandbox.ts"
 import {
-  parsePiNDJSON,
-  piEventsToRunRecord,
+  piBuildRunRecordFromNDJSON,
+  piBuildRunRecordFromFile,
   toPiModel,
   renderPiBaseUrlOverride,
+  renderPiModelRegistration,
 } from "../core/pi-runtime.ts"
 
 const log = createLogger("pi")
@@ -186,7 +187,16 @@ export class PiAdapter implements AgentAdapter {
       // is needed to redirect the endpoint. Auth flows in via env vars derived
       // from the route — no auth.json needed.
       const route = resolveRoute(config.model)
-      const doc = renderPiBaseUrlOverride(route)
+      // For openai-compatible routes (DeepSeek, vLLM, any OpenAI proxy), the
+      // baseUrl-only override is NOT enough: pi's `openai` provider defaults
+      // custom models to `openai-responses` (POST {baseUrl}/responses), which
+      // non-OpenAI backends don't implement -> 404. Register the model
+      // explicitly with `api: openai-completions` so pi uses /chat/completions.
+      // Matches the headless library driver's behavior (see pi-runtime.ts).
+      const modelId = resolveBackendModel(config.model)
+      const doc = route.kind === "openai-compatible"
+        ? renderPiModelRegistration(route, modelId)
+        : renderPiBaseUrlOverride(route)
       if (doc) await Bun.write(path.join(root, "models.json"), doc)
     }
 
@@ -247,10 +257,16 @@ export class PiAdapter implements AgentAdapter {
     const envOverlay: Record<string, string> = { ...this.routeEnv }
     if (this.piAgentDir) envOverlay.PI_CODING_AGENT_DIR = this.piAgentDir
 
+    // Stream pi's NDJSON stdout straight to the convLog file instead of
+    // buffering it (agentic transcripts reach 0.3–1.7 GB → OOM). When a
+    // convLog path exists, streaming IS the convLog write; the file parser
+    // then reads it back. No convLog → fall back to the string path.
+    const convLogPath = task.convLog?.filePath
     const { stdout, stderr, exitCode, timedOut } = await runSubprocess(cmd, {
       cwd: task.workDir,
       timeoutMs: task.timeoutMs ?? this.timeoutMs,
       env: envOverlay,
+      stdoutSink: convLogPath,
     })
 
     const durationMs = performance.now() - startMs
@@ -259,18 +275,9 @@ export class PiAdapter implements AgentAdapter {
       log.warn(`pi exited with code ${exitCode}: ${stderr.slice(0, 200)}`)
     }
 
-    if (task.convLog && stdout.trim()) {
-      try {
-        const destDir = path.dirname(task.convLog.filePath)
-        await mkdir(destDir, { recursive: true })
-        await Bun.write(task.convLog.filePath, stdout)
-      } catch (err) {
-        log.warn(`Failed to save pi NDJSON: ${err}`)
-      }
-    }
-
-    const events = parsePiNDJSON(stdout)
-    const builder = piEventsToRunRecord(events)
+    const builder = convLogPath
+      ? await piBuildRunRecordFromFile(convLogPath)
+      : piBuildRunRecordFromNDJSON(stdout)
 
     if (task.skill && skillLoaded === false) {
       const skillSnippet = task.skill.content.replace(/^#.*\n/m, "").trim().slice(0, 60)
