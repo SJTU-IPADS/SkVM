@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test"
-import { runCondition } from "../../src/bench/conditions/run-condition.ts"
+import { runCondition, toConditionResult } from "../../src/bench/conditions/run-condition.ts"
 import type { AgentAdapter, AdapterConfig, RunResult } from "../../src/core/types.ts"
 import { emptyTokenUsage } from "../../src/core/types.ts"
 import type { BenchTask } from "../../src/bench/types.ts"
@@ -153,5 +153,42 @@ describe("bench/conditions runCondition scaffold", () => {
     // The staged workDir is the one the adapter ran in
     expect(staged).toHaveLength(1)
     expect(adapter.seenWorkDirs).toEqual(staged)
+  })
+})
+
+describe("toConditionResult — evaluator infra errors", () => {
+  const okRun = {
+    text: "", steps: [], tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost: 0, durationMs: 0, llmDurationMs: 0, workDir: "/tmp/x", runStatus: "ok" as const,
+  }
+
+  test("an evaluator that could not evaluate taints the row", () => {
+    // Otherwise a broken grader is indistinguishable from a failing agent, and
+    // its fabricated 0 lands in the model's average.
+    const result = toConditionResult("original", okRun as never, [
+      { pass: false, score: 0, details: "grader died", infraError: "grader did not run to completion" },
+    ])
+
+    expect(result.runStatus).toBe("tainted")
+    expect(result.statusDetail).toContain("did not run to completion")
+  })
+
+  test("an ordinary failing criterion still scores normally", () => {
+    const result = toConditionResult("original", okRun as never, [
+      { pass: false, score: 0, details: "assertion failed" },
+    ])
+
+    expect(result.runStatus).toBe("ok")
+    expect(result.score).toBe(0)
+  })
+
+  test("a run that already failed keeps its own status", () => {
+    const timedOut = { ...okRun, runStatus: "timeout" as const, statusDetail: "killed at 120s" }
+    const result = toConditionResult("original", timedOut as never, [
+      { pass: false, score: 0, details: "grader died", infraError: "grader did not run to completion" },
+    ])
+
+    expect(result.runStatus).toBe("timeout")
+    expect(result.statusDetail).toBe("killed at 120s")
   })
 })

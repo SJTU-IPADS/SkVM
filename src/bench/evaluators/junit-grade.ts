@@ -393,16 +393,17 @@ export const junitGrade: CustomEvaluator = {
       )
     }
 
-    // Read the junit XML. If it's missing, fall back to the exit-code
-    // interpretation (matches the legacy grade.py fallback path).
+    // No results file means the grader did not run to completion — a crashed
+    // or early-exiting `bun test`, a broken install, a preload that called
+    // process.exit. That is an absence of evidence, not evidence of success:
+    // reading `exitCode === 0` as full marks turned every such failure into a
+    // perfect score on every criterion, silently, and would do so across a
+    // whole grid at once. Report it as an infrastructure failure so the row is
+    // excluded from aggregates rather than scored.
     const xmlFile = Bun.file(`${workDir}/${junitFile}`)
     if (!(await xmlFile.exists())) {
-      const overall = exitCode === 0 ? 1.0 : 0.0
-      return uniformAll(
-        payload,
-        overall,
-        `junit xml not produced (exitCode=${exitCode})`,
-      )
+      const reason = `junit xml not produced (exitCode=${exitCode}) — the grader did not run to completion, so this run cannot be scored`
+      return { ...zeroAll(payload, reason), infraError: reason }
     }
 
     let xml: string
