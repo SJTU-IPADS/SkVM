@@ -753,3 +753,108 @@ table.heat td.heat-empty { color: var(--border); }
   0%, 100% { transform: scaleX(0.3); opacity: 0.4; }
   50%      { transform: scaleX(1); opacity: 1; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Top nav (shell — shared by all pages)
+   ═══════════════════════════════════════════════════════════════════════ */
+.ph-left {
+  display: flex;
+  align-items: baseline;
+  gap: 22px;
+}
+.topnav {
+  display: flex;
+  gap: 14px;
+}
+.topnav a {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-mid);
+}
+.topnav a:hover { color: var(--accent); text-decoration: none; }
+.topnav a.active { color: var(--fg); font-weight: 600; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Runs page — session statuses, file list, log tail viewer
+   ═══════════════════════════════════════════════════════════════════════ */
+.c-status.s-running           { color: var(--accent); }
+.c-status.s-running::before   { background: var(--accent); }
+.c-status.s-completed         { color: var(--good); }
+.c-status.s-completed::before { background: var(--good); }
+.c-status.s-failed            { color: var(--bad); }
+.c-status.s-failed::before    { background: var(--bad); }
+.c-status.s-stale             { color: var(--fg-dim); font-style: italic; }
+.c-status.s-stale::before     { background: var(--border); }
+
+.session-detail-grid {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 24px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .session-detail-grid { grid-template-columns: 1fr; }
+}
+
+.error-block {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--bad);
+  background: var(--bad-bg);
+  border-radius: 4px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.file-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 3px;
+  color: var(--fg-mid);
+}
+.file-row:hover { background: var(--bg-subtle); color: var(--fg); }
+.file-row.active { background: var(--accent-soft); color: var(--accent); }
+.file-row .fsize { color: var(--fg-dim); white-space: nowrap; }
+.file-row .fname { word-break: break-all; }
+
+.log-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.log-head label { cursor: pointer; user-select: none; }
+.log-view {
+  background: var(--bg-elev);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: 12px 14px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  height: 420px;
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log-view.empty { color: var(--fg-dim); }
