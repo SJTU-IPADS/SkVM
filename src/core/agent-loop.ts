@@ -119,6 +119,27 @@ export async function runAgentLoop(
   let lastActionSig = ""
   let repeatCount = 0
 
+  /**
+   * Book a response's usage the moment it is received.
+   *
+   * Tokens and cost used to be accumulated at the TOP of the loop body while
+   * `completeWithToolResults` fetches at the bottom, so a response was only
+   * counted once the next iteration began. A loop that exited instead — step
+   * budget exhausted, deadline hit, loop detection — silently dropped its final
+   * response, which the provider had billed and ConversationLog had already
+   * written to the transcript. That is the run's most expensive turn, on
+   * exactly the runs that cost the most.
+   */
+  const account = (r: LLMResponse): void => {
+    totalTokens = addTokenUsage(totalTokens, r.tokens)
+    if (totalCostUsd !== undefined && r.costUsd !== undefined) {
+      totalCostUsd += r.costUsd
+    } else {
+      totalCostUsd = undefined
+    }
+    llmDurationMs += r.durationMs
+  }
+
   try {
     while (iteration < maxIterations) {
       if (performance.now() > deadline) {
@@ -132,16 +153,9 @@ export async function runAgentLoop(
       // --- LLM call ---
       if (!response) {
         response = await provider.complete(params)
-        llmDurationMs += response.durationMs
+        account(response)
       }
       // (else: response was already set by completeWithToolResults at end of previous iteration)
-
-      totalTokens = addTokenUsage(totalTokens, response.tokens)
-      if (totalCostUsd !== undefined && response.costUsd !== undefined) {
-        totalCostUsd += response.costUsd
-      } else {
-        totalCostUsd = undefined
-      }
 
       // --- After-LLM callback ---
       if (config.onAfterLLM) {
@@ -254,7 +268,7 @@ export async function runAgentLoop(
 
       // Next LLM call with tool results
       response = await provider.completeWithToolResults(params, toolResults, response)
-      llmDurationMs += response.durationMs
+      account(response)
     }
   } catch (err) {
     // Infrastructure errors (provider down, auth, rate-limit exhausted)

@@ -200,3 +200,95 @@ describe("runAgentLoop ILP dispatch", () => {
     ])
   })
 })
+
+// ---------------------------------------------------------------------------
+// Usage accounting
+// ---------------------------------------------------------------------------
+
+const TOKENS = (n: number) => ({ input: n, output: n, cacheRead: 0, cacheWrite: 0 })
+
+/** Always asks for another tool call, so the loop can only end at maxIterations. */
+function neverFinishesProvider(): { provider: LLMProvider; calls: () => number } {
+  let n = 0
+  const next = (): LLMResponse => {
+    n++
+    return {
+      text: "",
+      toolCalls: [{ id: `call_${n}`, name: "bash", arguments: { command: `echo ${n}` } }],
+      tokens: TOKENS(10),
+      costUsd: 0.001,
+      durationMs: 5,
+      stopReason: "tool_use",
+    }
+  }
+  return {
+    provider: {
+      name: "never-finishes",
+      async complete(): Promise<LLMResponse> { return next() },
+      async completeWithToolResults(): Promise<LLMResponse> { return next() },
+    },
+    calls: () => n,
+  }
+}
+
+describe("runAgentLoop usage accounting", () => {
+  test("the final response is counted when the loop ends at maxIterations", async () => {
+    // Usage used to be booked at the top of the loop body while the next
+    // response was fetched at the bottom, so the last one — already billed, and
+    // already in the transcript — was dropped whenever the loop exited instead
+    // of continuing.
+    const { provider, calls } = neverFinishesProvider()
+    const result = await runAgentLoop(
+      {
+        provider, model: "mock", tools: [],
+        executeTool: async () => ({ output: "ok", durationMs: 1 }),
+        system: "", maxIterations: 3, timeoutMs: 5000,
+      },
+      [{ role: "user", content: "go" }],
+    )
+
+    expect(result.tokens.input).toBe(calls() * 10)
+    expect(result.totalCostUsd).toBeCloseTo(calls() * 0.001, 6)
+    expect(result.llmDurationMs).toBe(calls() * 5)
+  })
+
+  test("a response received before a timeout is still counted", async () => {
+    const { provider, calls } = neverFinishesProvider()
+    const result = await runAgentLoop(
+      {
+        provider, model: "mock", tools: [],
+        executeTool: async () => {
+          await new Promise((r) => setTimeout(r, 60))
+          return { output: "ok", durationMs: 60 }
+        },
+        system: "", maxIterations: 20, timeoutMs: 120,
+      },
+      [{ role: "user", content: "go" }],
+    )
+
+    expect(result.timedOut).toBe(true)
+    expect(result.tokens.input).toBe(calls() * 10)
+  })
+
+  test("a single-turn run still totals correctly", async () => {
+    const provider: LLMProvider = {
+      name: "one-shot",
+      async complete(): Promise<LLMResponse> {
+        return { text: "done", toolCalls: [], tokens: TOKENS(7), costUsd: 0.002, durationMs: 9, stopReason: "end_turn" }
+      },
+      async completeWithToolResults(): Promise<LLMResponse> { throw new Error("not used") },
+    }
+    const result = await runAgentLoop(
+      {
+        provider, model: "mock", tools: [],
+        executeTool: async () => ({ output: "", durationMs: 0 }),
+        system: "", maxIterations: 5, timeoutMs: 5000,
+      },
+      [{ role: "user", content: "go" }],
+    )
+
+    expect(result.tokens.input).toBe(7)
+    expect(result.totalCostUsd).toBeCloseTo(0.002, 6)
+    expect(result.llmDurationMs).toBe(9)
+  })
+})
