@@ -491,3 +491,43 @@ describe("junit-grade end-to-end run()", () => {
     }
   })
 })
+
+describe("junit-grade — a grader that produced no results", () => {
+  const payload = {
+    testFile: "grade.test.ts",
+    criteria: [{ id: "a", description: "does the thing", testPattern: "thing", weight: 1 }],
+  }
+
+  async function gradeWith(testFileContents: string) {
+    const workDir = await mkdtemp(path.join(tmpdir(), "junit-noxml-"))
+    await Bun.write(path.join(workDir, "fixtures-marker"), "")
+    await Bun.write(path.join(workDir, "grade.test.ts"), testFileContents)
+    try {
+      return await junitGrade.run({
+        criterion: { method: "custom", evaluatorId: "junit-grade", payload },
+        runResult: baseRunResult(workDir),
+      } as Parameters<typeof junitGrade.run>[0])
+    } finally {
+      await rm(workDir, { recursive: true, force: true })
+    }
+  }
+
+  test("exiting 0 without writing results is an infra error, not full marks", async () => {
+    // The reporter never ran, so there is no evidence either way. Reading
+    // exitCode === 0 as success turned a crashed grader — or a broken bun
+    // install across a whole grid — into a perfect score on every criterion.
+    const result = await gradeWith(`process.exit(0)\n`)
+
+    expect(result.infraError).toBeDefined()
+    expect(result.score).toBe(0)
+    expect(result.details).toContain("did not run to completion")
+  })
+
+  test("a test file that fails to load is an infra error too", async () => {
+    // Non-zero exit with no results is equally uninformative: nothing ran.
+    const result = await gradeWith(`this is not valid typescript(((\n`)
+
+    expect(result.infraError).toBeDefined()
+    expect(result.score).toBe(0)
+  })
+})

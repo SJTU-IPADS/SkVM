@@ -62,7 +62,18 @@ export type ConditionResultMeta = Pick<
 export function toConditionResult(
   condition: BenchCondition,
   runResult: RunResult,
-  evalResults: { pass: boolean; score: number; details: string; criterion?: { method: string } }[],
+  evalResults: {
+    pass: boolean
+    score: number
+    details: string
+    criterion?: { method: string }
+    /**
+     * Set by an evaluator that could not evaluate — as opposed to one that
+     * evaluated and found the work wanting. Without a channel for it here, a
+     * broken grader was indistinguishable from a failing agent.
+     */
+    infraError?: string
+  }[],
   opts?: ConditionResultMeta & {
     gradingWeights?: { automated: number; llmJudge: number }
   },
@@ -82,6 +93,16 @@ export function toConditionResult(
     // visible error string in report.md.
     error = runResult.statusDetail
   }
+
+  // An evaluator that could not evaluate makes the row unevaluable, even when
+  // the agent run itself was clean: scoring it 0 would put a fabricated failure
+  // into the model's average. A run that is already non-ok keeps its own status.
+  const evalInfraError = evalResults.find((r) => r.infraError)?.infraError
+  const runStatus: ConditionResult["runStatus"] = runResult.runStatus === "ok" && evalInfraError
+    ? "tainted"
+    : runResult.runStatus
+  const statusDetail = runResult.statusDetail
+    ?? (runStatus === "tainted" && evalInfraError ? evalInfraError : undefined)
 
   return {
     condition,
@@ -103,8 +124,8 @@ export function toConditionResult(
     skillContentHash: opts?.skillContentHash,
     ...(runResult.skillLoaded !== undefined ? { skillLoaded: runResult.skillLoaded } : {}),
     ...(error ? { error } : {}),
-    runStatus: runResult.runStatus,
-    ...(runResult.statusDetail ? { statusDetail: runResult.statusDetail } : {}),
+    runStatus,
+    ...(statusDetail ? { statusDetail } : {}),
   }
 }
 
