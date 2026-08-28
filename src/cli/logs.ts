@@ -32,7 +32,7 @@ export const LOGS_FLAGS = defineFlags("logs", "List recent runs across all subsy
 export type LogsConfig = ConfigOf<typeof LOGS_FLAGS>
 
 export async function runLogs(config: LogsConfig): Promise<void> {
-  const { readSessions } = await import("../core/run-session.ts")
+  const { readSessions, effectiveStatus } = await import("../core/run-session.ts")
 
   const limit = config.all ? undefined : config.limit
   const entries = await readSessions({ type: config.type, limit })
@@ -45,10 +45,12 @@ export async function runLogs(config: LogsConfig): Promise<void> {
   console.log(`\nRecent runs${config.type ? ` (type: ${config.type})` : ""}:\n`)
 
   const statusColor: Record<string, (s: string) => string> = {
-    COMPLETED: c.green, FAILED: c.red, RUNNING: c.yellow,
+    COMPLETED: c.green, FAILED: c.red, RUNNING: c.yellow, STALE: c.gray,
   }
   for (const e of entries) {
-    const label = e.status.toUpperCase().padEnd(10)
+    // "stale" = index says running but the recorded pid is dead (the run
+    // was hard-killed and never wrote its terminal entry).
+    const label = effectiveStatus(e).toUpperCase().padEnd(10)
     const colorFn = statusColor[label.trim()] ?? noColor
     console.log(`  ${colorFn(label)} ${e.id}`)
 

@@ -2,7 +2,7 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test"
 import path from "node:path"
 import { mkdtemp, rm, unlink } from "node:fs/promises"
 import os from "node:os"
-import { RunSession, readSessions } from "../../src/core/run-session.ts"
+import { RunSession, readSessions, effectiveStatus, type SessionEntry } from "../../src/core/run-session.ts"
 import { SKVM_CACHE, SESSIONS_INDEX_PATH } from "../../src/core/config.ts"
 
 // SKVM_CACHE is redirected to a temp dir by the bunfig preload, so these
@@ -118,5 +118,50 @@ describe("RunSession.rehydrate", () => {
   test("returns null for an id not in the index", async () => {
     const session = await RunSession.rehydrate("20990101-000000-bench-nonexistent")
     expect(session).toBeNull()
+  })
+})
+
+describe("pid + effectiveStatus", () => {
+  function entryWith(overrides: Partial<SessionEntry>): SessionEntry {
+    return {
+      id: "20260828-000000-bench-liveness",
+      type: "bench",
+      status: "running",
+      startedAt: "2026-08-28T00:00:00.000Z",
+      logDir: "log/bench/liveness",
+      ...overrides,
+    }
+  }
+
+  test("start() records the recording process's pid", async () => {
+    const { id } = await RunSession.start({
+      type: "bench",
+      tag: "pid-recorded",
+      logDir: path.join(SKVM_CACHE, "log", "bench", "pid-recorded"),
+    })
+    const matches = await findEntry(id)
+    expect(matches[0]!.pid).toBe(process.pid)
+  })
+
+  test("running entry with a live pid stays running", () => {
+    expect(effectiveStatus(entryWith({ pid: process.pid }))).toBe("running")
+  })
+
+  test("running entry with a dead pid is stale", async () => {
+    // A process we know is dead: spawn one and wait for it to exit.
+    const child = Bun.spawn(["sleep", "0"])
+    await child.exited
+    expect(effectiveStatus(entryWith({ pid: child.pid }))).toBe("stale")
+  })
+
+  test("running entry without a pid (pre-#115 index) stays running", () => {
+    expect(effectiveStatus(entryWith({}))).toBe("running")
+  })
+
+  test("terminal entries are never stale, even with a dead pid", async () => {
+    const child = Bun.spawn(["sleep", "0"])
+    await child.exited
+    expect(effectiveStatus(entryWith({ status: "completed", pid: child.pid }))).toBe("completed")
+    expect(effectiveStatus(entryWith({ status: "failed", pid: child.pid }))).toBe("failed")
   })
 })

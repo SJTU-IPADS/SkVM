@@ -27,8 +27,10 @@
  */
 
 import indexHtml from "./frontend/index.html"
+import runsHtml from "./frontend/runs.html"
 import { json, bad, type RouteTable } from "./http.ts"
 import { proposalRoutes } from "./routes/proposals.ts"
+import { sessionRoutes } from "./routes/sessions.ts"
 import { createLogger } from "../core/logger.ts"
 
 const log = createLogger("server")
@@ -43,6 +45,7 @@ export interface ServeOptions {
 const routes: RouteTable = {
   "GET /api/health": () => json({ ok: true }),
   ...proposalRoutes,
+  ...sessionRoutes,
 }
 
 /**
@@ -96,7 +99,7 @@ export function startServer(opts: ServeOptions): RunningServer {
     port: opts.port,
     hostname: opts.host,
     development: false,
-    routes: { "/": indexHtml },
+    routes: { "/": indexHtml, "/runs": runsHtml },
     fetch: makeRouter({ host: opts.host, token }),
   })
   const url = `http://${opts.host}:${server.port}`

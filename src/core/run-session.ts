@@ -29,6 +29,8 @@ export const SessionEntrySchema = z.object({
   startedAt: z.string(),
   completedAt: z.string().optional(),
   logDir: z.string(),
+  /** Recording process, for liveness checks. Absent on pre-#115 entries. */
+  pid: z.number().int().positive().optional(),
   models: z.array(z.string()).optional(),
   harness: z.string().optional(),
   skill: z.string().optional(),
@@ -149,12 +151,7 @@ export class RunSession {
   static async rehydrate(id: string): Promise<RunSession | null> {
     const entry = (await readSessions()).find((e) => e.id === id)
     if (!entry) return null
-    // logDir is stored cache-relative (see toRelativePath); resolve it back
-    // to absolute so the instance behaves exactly like a live session.
-    const logDir = path.isAbsolute(entry.logDir)
-      ? entry.logDir
-      : path.join(SKVM_CACHE, entry.logDir)
-    return new RunSession(entry.id, entry.type, entry.startedAt, logDir)
+    return new RunSession(entry.id, entry.type, entry.startedAt, resolveLogDir(entry))
   }
 
   /** Create a new session and register it in sessions.jsonl with status=running. */
@@ -169,6 +166,7 @@ export class RunSession {
       status: "running",
       startedAt,
       logDir: toRelativePath(opts.logDir),
+      pid: process.pid,
       ...(opts.models && { models: opts.models }),
       ...(opts.harness && { harness: opts.harness }),
       ...(opts.skill && { skill: opts.skill }),
@@ -209,6 +207,45 @@ export class RunSession {
     await appendEntry(entry)
     log.debug(`Session failed: ${this.id}`)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Derived state
+// ---------------------------------------------------------------------------
+
+/**
+ * logDir is stored cache-relative (see toRelativePath); resolve it back to
+ * absolute for consumers that touch the filesystem.
+ */
+export function resolveLogDir(entry: SessionEntry): string {
+  return path.isAbsolute(entry.logDir) ? entry.logDir : path.join(SKVM_CACHE, entry.logDir)
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    // EPERM = the pid exists but belongs to another user — alive for our
+    // purposes. Anything else (ESRCH) means gone.
+    return (err as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
+export type EffectiveSessionStatus = SessionStatus | "stale"
+
+/**
+ * Status with liveness applied: a "running" entry whose recorded pid is no
+ * longer alive is reported as "stale" — the process died without writing a
+ * terminal entry (hard kill, OOM, machine reboot), so the raw index would
+ * show it "running" forever. Two accepted blind spots, both erring toward
+ * "running": entries without a pid (pre-#115) stay "running" — absence of
+ * evidence is not evidence of death — and a recycled pid makes a dead
+ * session look alive until the impostor process exits.
+ */
+export function effectiveStatus(entry: SessionEntry): EffectiveSessionStatus {
+  if (entry.status !== "running" || entry.pid === undefined) return entry.status
+  return isPidAlive(entry.pid) ? "running" : "stale"
 }
 
 // ---------------------------------------------------------------------------
