@@ -5,6 +5,7 @@ import type {
 } from "./types.ts"
 import type { RunStatus } from "../core/types.ts"
 import { hasUsageTelemetry } from "../core/run-record.ts"
+import { isAotCondition } from "./types.ts"
 
 /**
  * A row is "evaluable" — i.e. its score / pass boolean should be counted in
@@ -107,11 +108,24 @@ function computeSummary(tasks: TaskReport[], conditions: BenchCondition[]): Benc
     }
   }
 
-  // Deltas
+  // Deltas.
+  //
+  // The AOT and JIT conditions are named "aot-compiled" (optionally pass-scoped:
+  // "aot-compiled-p1", "-p12", "-p23") and "jit-optimized". Keying them as "aot"
+  // and "jit" matched nothing, so both deltas were permanently null and the
+  // Optimization Impact block never rendered — while originalVsBaseline worked,
+  // because "no-skill" and "original" happen to be exact matches.
+  //
+  // A run can carry several AOT conditions at once; prefer the full-pass one and
+  // otherwise take the first present, so a pass-scoped-only run still gets a
+  // delta rather than nothing.
+  const aotConditions = conditions.filter(isAotCondition)
+  const aotKey = aotConditions.includes("aot-compiled") ? "aot-compiled" : aotConditions[0]
+
   const noSkillAvg = perCondition["no-skill"]?.avgScore ?? null
   const originalAvg = perCondition.original?.avgScore ?? null
-  const aotAvg = perCondition.aot?.avgScore ?? null
-  const jitAvg = perCondition.jit?.avgScore ?? null
+  const aotAvg = aotKey ? perCondition[aotKey]?.avgScore ?? null : null
+  const jitAvg = perCondition["jit-optimized"]?.avgScore ?? null
 
   return {
     taskCount: tasks.length,
