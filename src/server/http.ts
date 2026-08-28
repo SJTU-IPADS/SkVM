@@ -25,9 +25,3 @@ export function json(body: unknown, init: ResponseInit = {}): Response {
 export function bad(status: number, message: string): Response {
   return json({ ok: false, error: message }, { status })
 }
-
-export function html(body: string): Response {
-  return new Response(body, {
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
-  })
-}

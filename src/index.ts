@@ -60,6 +60,7 @@ Commands:
   bench        Benchmark skills across conditions and models
   jit-optimize Optimize a skill from synthetic, real, or log evidence
   proposals    List, inspect, accept, or reject proposals
+  ui           Serve the SkVM web UI
   clean-jit    Remove persisted JIT artifacts for a model+adapter
   logs         List recent runs across subsystems
   config       Configure providers, adapters, and paths (init / show / doctor)
@@ -111,6 +112,11 @@ Use --help with any command for details.`)
     case "proposals": {
       const { runProposals } = await import("./cli/proposals.ts")
       await runProposals(args.slice(1))
+      break
+    }
+    case "ui": {
+      const { UI_FLAGS, runUi } = await import("./cli/ui.ts")
+      await runOrExit(UI_FLAGS, args.slice(1), runUi)
       break
     }
     case "clean-jit": {

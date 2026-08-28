@@ -200,7 +200,7 @@ skvm jit-optimize \
 skvm proposals list        # CLI：列出 proposal
 skvm proposals show <id>   # CLI：查看 proposal 详情
 skvm proposals accept <id> # CLI：接受 proposal
-skvm proposals serve       # Web：打开本地审阅界面
+skvm ui                    # Web：打开本地审阅界面
 ```
 
 ## 配置

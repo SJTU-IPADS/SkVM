@@ -199,7 +199,7 @@ skvm jit-optimize \
 skvm proposals list        # CLI listing
 skvm proposals show <id>   # CLI detail view
 skvm proposals accept <id> # CLI accept
-skvm proposals serve       # Web review UI
+skvm ui                    # Web review UI
 ```
 
 ## Configuration

@@ -16,10 +16,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { startServer, type RunningServer } from "../../src/server/index.ts"
 import { createProposal } from "../../src/proposals/storage.ts"
 
+const TOKEN = "test-token"
 let server: RunningServer
 
 beforeAll(() => {
-  server = startServer({ port: 0, host: "127.0.0.1" })
+  server = startServer({ port: 0, host: "127.0.0.1", token: TOKEN })
 })
 
 afterAll(() => {
@@ -77,6 +78,7 @@ describe("proposals serve routes", () => {
   test("POST /api/proposal/accept without id is a 400", async () => {
     const res = await fetch(`${server.url}/api/proposal/accept`, {
       method: "POST",
+      headers: { "x-skvm-token": TOKEN },
       body: JSON.stringify({}),
     })
     expect(res.status).toBe(400)
@@ -85,9 +87,41 @@ describe("proposals serve routes", () => {
   test("POST /api/proposal/reject with a non-JSON body is a 400", async () => {
     const res = await fetch(`${server.url}/api/proposal/reject`, {
       method: "POST",
+      headers: { "x-skvm-token": TOKEN },
       body: "not json",
     })
     expect(res.status).toBe(400)
+  })
+
+  test("POST without a token is a 401 before the handler runs", async () => {
+    const res = await fetch(`${server.url}/api/proposal/reject`, {
+      method: "POST",
+      body: JSON.stringify({ id: "x" }),
+    })
+    expect(res.status).toBe(401)
+  })
+
+  test("POST with a wrong token is a 401", async () => {
+    const res = await fetch(`${server.url}/api/proposal/reject`, {
+      method: "POST",
+      headers: { "x-skvm-token": "wrong" },
+      body: JSON.stringify({ id: "x" }),
+    })
+    expect(res.status).toBe(401)
+  })
+
+  test("a non-local Host header is a 403 (DNS-rebinding guard)", async () => {
+    const res = await fetch(`${server.url}/api/health`, {
+      headers: { host: "evil.example.com" },
+    })
+    expect(res.status).toBe(403)
+  })
+
+  test("a local Host header with a port passes the guard", async () => {
+    const res = await fetch(`${server.url}/api/health`, {
+      headers: { host: "localhost:9999" },
+    })
+    expect(res.status).toBe(200)
   })
 
   test("unknown path is a 404", async () => {
@@ -96,7 +130,12 @@ describe("proposals serve routes", () => {
   })
 
   test("wrong method on a known path is a 404", async () => {
-    const res = await fetch(`${server.url}/api/proposals`, { method: "POST" })
+    // Token included so the request clears the auth guard and the 404
+    // genuinely comes from the dispatcher's table miss.
+    const res = await fetch(`${server.url}/api/proposals`, {
+      method: "POST",
+      headers: { "x-skvm-token": TOKEN },
+    })
     expect(res.status).toBe(404)
   })
 })

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SkVM Proposals</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Host+Grotesk:ital,wght@0,300..800;1,300..800&family=JetBrains+Mono:ital,wght@0,300..700;1,300..700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<main class="page">
+  <header class="page-header">
+    <h1>SkVM Proposals</h1>
+    <div class="meta" id="gen-date">—</div>
+  </header>
+
+  <div class="stats" id="stats">
+    <div class="stat"><div class="stat-value">—</div><div class="stat-label">loading</div></div>
+  </div>
+
+  <div class="spread">
+    <aside class="sidebar">
+      <h3>Filters</h3>
+      <div class="field">
+        <label class="field-label" for="f-search">Search</label>
+        <input type="search" id="f-search" placeholder="skill, model, harness…">
+      </div>
+      <div class="field">
+        <label class="field-label" for="f-status">Status</label>
+        <select id="f-status"><option value="">all</option></select>
+      </div>
+      <div class="field">
+        <label class="field-label" for="f-group">Group by</label>
+        <select id="f-group">
+          <option value="">(none)</option>
+          <option value="skill">skill</option>
+          <option value="model">target model</option>
+          <option value="harness">harness</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="field-label" for="f-mindelta">Min Δ train</label>
+        <input type="search" id="f-mindelta" placeholder="e.g. 0.05">
+      </div>
+
+      <h3>Harnesses</h3>
+      <div class="sb-list" id="sb-harnesses"></div>
+
+      <h3>Target models</h3>
+      <div class="sb-list" id="sb-models"></div>
+    </aside>
+
+    <section class="main">
+      <div class="section-head">
+        <h2>Proposals</h2>
+        <div class="count" id="proposals-count">—</div>
+      </div>
+      <div class="ptable-wrap">
+        <table class="ptable">
+          <thead>
+            <tr>
+              <th data-sort="status" style="width:100px">status</th>
+              <th data-sort="skill">skill</th>
+              <th data-sort="harness">harness</th>
+              <th data-sort="model">target model</th>
+              <th data-sort="delta" class="num sort-desc">Δ</th>
+              <th data-sort="score" class="num">score</th>
+              <th data-sort="best" class="num">best/total</th>
+              <th data-sort="ts" class="num">timestamp</th>
+              <th data-sort="cost" class="num">cost</th>
+            </tr>
+          </thead>
+          <tbody id="entries">
+            <tr><td colspan="9"><div class="loading-state">Loading<span class="bar"></span>proposals</div></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="figures">
+        <div class="section-head" style="margin-top:16px">
+          <h2>Figures</h2>
+        </div>
+        <figure class="figure">
+          <div class="figure-head">
+            <div class="title">Δ train — skill × target model</div>
+            <div class="sub">Mean Δ across proposals. Rows = skills, columns = target models.</div>
+          </div>
+          <div class="figure-body" id="heat-skill"></div>
+        </figure>
+        <figure class="figure">
+          <div class="figure-head">
+            <div class="title">Δ train — target model × skill</div>
+            <div class="sub">Rows = target models, columns = skills.</div>
+          </div>
+          <div class="figure-body" id="heat-model"></div>
+        </figure>
+      </div>
+    </section>
+  </div>
+</main>
+<script type="module" src="./app.ts"></script>
+</body>
+</html>
