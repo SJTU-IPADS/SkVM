@@ -210,3 +210,63 @@ describe("reporter summary — empty-denominator sentinel", () => {
     expect(original?.evaluableCount).toBe(1)
   })
 })
+
+describe("summary deltas", () => {
+  const tasksFor = (conds: Array<{ condition: string; score: number }>): TaskReport[] => [{
+    taskId: "t1", taskName: "t1", category: "c", gradingType: "automated",
+    conditions: conds.map(c => makeResult({ condition: c.condition as never, score: c.score })),
+  }]
+
+  test("aotVsOriginal and jitVsAot are computed for the real condition names", () => {
+    // They were keyed on `perCondition.aot` / `.jit` while the conditions are
+    // named `aot-compiled` / `jit-optimized`, so both were permanently null and
+    // the Optimization Impact block rendered empty.
+    const report = generateReport("test", {
+      model: "m", adapter: "a", conditions: ["no-skill", "original", "aot-compiled", "jit-optimized"],
+    } as never, tasksFor([
+      { condition: "no-skill", score: 0.2 },
+      { condition: "original", score: 0.5 },
+      { condition: "aot-compiled", score: 0.8 },
+      { condition: "jit-optimized", score: 0.9 },
+    ]))
+
+    expect(report.summary.delta.originalVsBaseline).toBeCloseTo(0.3, 5)
+    expect(report.summary.delta.aotVsOriginal).toBeCloseTo(0.3, 5)
+    expect(report.summary.delta.jitVsAot).toBeCloseTo(0.1, 5)
+  })
+
+  test("a pass-scoped AOT run still gets a delta", () => {
+    const report = generateReport("test", {
+      model: "m", adapter: "a", conditions: ["original", "aot-compiled-p1"],
+    } as never, tasksFor([
+      { condition: "original", score: 0.5 },
+      { condition: "aot-compiled-p1", score: 0.7 },
+    ]))
+
+    expect(report.summary.delta.aotVsOriginal).toBeCloseTo(0.2, 5)
+  })
+
+  test("the full-pass condition wins when several AOT arms are present", () => {
+    const report = generateReport("test", {
+      model: "m", adapter: "a", conditions: ["original", "aot-compiled-p1", "aot-compiled"],
+    } as never, tasksFor([
+      { condition: "original", score: 0.5 },
+      { condition: "aot-compiled-p1", score: 0.6 },
+      { condition: "aot-compiled", score: 0.9 },
+    ]))
+
+    expect(report.summary.delta.aotVsOriginal).toBeCloseTo(0.4, 5)
+  })
+
+  test("a run with no AOT arm reports null rather than a fabricated delta", () => {
+    const report = generateReport("test", {
+      model: "m", adapter: "a", conditions: ["no-skill", "original"],
+    } as never, tasksFor([
+      { condition: "no-skill", score: 0.2 },
+      { condition: "original", score: 0.5 },
+    ]))
+
+    expect(report.summary.delta.aotVsOriginal).toBeNull()
+    expect(report.summary.delta.jitVsAot).toBeNull()
+  })
+})
