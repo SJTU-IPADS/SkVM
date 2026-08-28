@@ -73,6 +73,8 @@ export async function loadRunTask(taskPath: string): Promise<LoadedRunTask> {
     taskDir: path.dirname(resolvedTaskPath),
     hostReady: parsed.hostReady,
     difficulty: parsed.difficulty,
+    tbDockerImage: parsed.tbDockerImage,
+    tbTestsDir: parsed.tbTestsDir,
     taskPath: resolvedTaskPath,
   }
 }
