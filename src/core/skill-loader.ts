@@ -80,7 +80,12 @@ export function parseSkillMeta(skillContent: string, skillDir: string): SkillMet
   const fallbackName = path.basename(skillDir)
   const fallbackDescription = "User-specified skill injected by SkVM"
 
-  const match = /^---\n([\s\S]*?)\n---\n/.exec(skillContent)
+  // CRLF-tolerant: a skill authored on Windows (or checked out with
+  // core.autocrlf=true) otherwise fails to match its own frontmatter, and
+  // silently falls back to the directory name plus the generic description —
+  // which is what a harness routes on, so the skill is injected and never
+  // selected. The per-line `.trim()` below already absorbs the trailing \r.
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(skillContent)
   if (!match) {
     return { name: fallbackName, description: fallbackDescription }
   }
