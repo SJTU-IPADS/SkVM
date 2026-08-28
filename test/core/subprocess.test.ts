@@ -1,4 +1,8 @@
-import { test, expect, describe } from "bun:test"
+import { test, expect, describe, beforeEach, afterEach } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import { existsSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { runSubprocess } from "../../src/core/subprocess.ts"
 
 describe("runSubprocess: exit + output", () => {
@@ -76,5 +80,80 @@ describe("runSubprocess: env overlay", () => {
     } finally {
       delete process.env.SKVM_SUBPROC_INHERIT
     }
+  })
+})
+
+describe("runSubprocess: stdoutSink", () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(tmpdir(), "skvm-subproc-sink-"))
+  })
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true })
+  })
+
+  test("streams stdout verbatim to the sink file and returns stdout=''", async () => {
+    const sink = path.join(tmpDir, "out.log")
+    const r = await runSubprocess(["sh", "-c", "echo hello; echo world"], { stdoutSink: sink })
+
+    expect(r.stdout).toBe("")
+    expect(r.stdoutFile).toBe(sink)
+    expect(await Bun.file(sink).text()).toBe("hello\nworld\n")
+  })
+
+  test("streams output larger than the OS pipe buffer to the sink", async () => {
+    // 1 MB of 'a' — well past the ~64 KB pipe buffer; would deadlock without
+    // concurrent draining, and would OOM the old string path at GB scale.
+    const sink = path.join(tmpDir, "big.log")
+    const r = await runSubprocess(["sh", "-c", 'head -c 1048576 /dev/zero | tr "\\0" a'], {
+      stdoutSink: sink,
+    })
+
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout).toBe("")
+    expect(await Bun.file(sink).size).toBe(1048576)
+  })
+
+  test("flushes partial content to the sink on timeout", async () => {
+    // Echo 'a' immediately, then sleep past the timeout. The sink must hold
+    // the 'a' line even though the child is killed mid-flight.
+    const sink = path.join(tmpDir, "partial.log")
+    const r = await runSubprocess(["sh", "-c", "echo a; sleep 10; echo b"], {
+      timeoutMs: 300,
+      stdoutSink: sink,
+    })
+
+    expect(r.timedOut).toBe(true)
+    const content = await Bun.file(sink).text()
+    expect(content).toContain("a\n")
+  })
+
+  test("auto-creates the sink parent directory", async () => {
+    const sink = path.join(tmpDir, "nested", "deeper", "out.log")
+    const r = await runSubprocess(["sh", "-c", "echo deep"], { stdoutSink: sink })
+
+    expect(r.stdoutFile).toBe(sink)
+    expect(await Bun.file(sink).text()).toBe("deep\n")
+  })
+
+  test("does not create the sink file when stdout is empty", async () => {
+    // Lazy-open: a child that produces no stdout must not leave an empty file
+    // behind — preserves the old `stdout.trim()` guard in pi.ts.
+    const sink = path.join(tmpDir, "empty.log")
+    const r = await runSubprocess(["sh", "-c", "true"], { stdoutSink: sink })
+
+    expect(r.stdout).toBe("")
+    expect(existsSync(sink)).toBe(false)
+  })
+
+  test("stderr is still buffered as a string when stdoutSink is set", async () => {
+    const sink = path.join(tmpDir, "out.log")
+    const r = await runSubprocess(["sh", "-c", "echo out; echo err >&2"], { stdoutSink: sink })
+
+    expect(r.stdout).toBe("")
+    expect(r.stderr.trim()).toBe("err")
+    expect(await Bun.file(sink).text()).toBe("out\n")
   })
 })

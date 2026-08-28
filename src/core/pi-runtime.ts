@@ -111,25 +111,16 @@ export function parsePiNDJSON(output: string): PiEvent[] {
 // events → RunResult (shared by adapter + headless driver)
 // ---------------------------------------------------------------------------
 
-export function piEventsToRunRecord(events: PiEvent[]): RunRecordBuilder {
-  const agentEndEvents = events.filter(
-    (e): e is Extract<PiEvent, { type: "agent_end" }> => e.type === "agent_end",
-  )
-  const lastAgentEnd = agentEndEvents[agentEndEvents.length - 1]
-
-  const messages: PiMessage[] = lastAgentEnd?.messages ? [...lastAgentEnd.messages] : []
-
-  if (messages.length === 0) {
-    const messageEnds = events.filter(
-      (e): e is Extract<PiEvent, { type: "message_end" }> => e.type === "message_end",
-    )
-    for (const me of messageEnds) {
-      if (me.message.role === "assistant" || me.message.role === "toolResult") {
-        messages.push(me.message)
-      }
-    }
-  }
-
+/**
+ * Shared message → RunRecord logic for both the NDJSON streaming path
+ * (`piBuildRunRecordFromNDJSON`) and the full-events path
+ * (`piEventsToRunRecord`, used by the headless driver which already has the
+ * events in memory). Extracted so the two paths cannot drift in behavior.
+ */
+function piMessagesToRunRecord(
+  messages: PiMessage[],
+  lastAgentEnd: Extract<PiEvent, { type: "agent_end" }> | undefined,
+): RunRecordBuilder {
   // Pi dialect: text on a tool-call turn claims the final text; conversation
   // order pairs outputs back via toolResult(), which also records the
   // standalone tool step pi transcripts carry.
@@ -190,6 +181,144 @@ export function piEventsToRunRecord(events: PiEvent[]): RunRecordBuilder {
   })
 
   return builder
+}
+
+export function piEventsToRunRecord(events: PiEvent[]): RunRecordBuilder {
+  const agentEndEvents = events.filter(
+    (e): e is Extract<PiEvent, { type: "agent_end" }> => e.type === "agent_end",
+  )
+  const lastAgentEnd = agentEndEvents[agentEndEvents.length - 1]
+
+  const messages: PiMessage[] = lastAgentEnd?.messages ? [...lastAgentEnd.messages] : []
+
+  if (messages.length === 0) {
+    const messageEnds = events.filter(
+      (e): e is Extract<PiEvent, { type: "message_end" }> => e.type === "message_end",
+    )
+    for (const me of messageEnds) {
+      if (me.message.role === "assistant" || me.message.role === "toolResult") {
+        messages.push(me.message)
+      }
+    }
+  }
+
+  return piMessagesToRunRecord(messages, lastAgentEnd)
+}
+
+/**
+ * Collects the only pi events the RunRecord builder consumes (agent_end +
+ * message_end). Shared by the string-scanning `piBuildRunRecordFromNDJSON`
+ * and the streaming `piBuildRunRecordFromFile` so both paths apply the same
+ * `includes` pre-filter (the 99.9% noise skip) and the same fallback rules.
+ */
+class PiEventCollector {
+  private lastAgentEnd: Extract<PiEvent, { type: "agent_end" }> | undefined
+  private messageEnds: Extract<PiEvent, { type: "message_end" }>[] = []
+
+  ingestLine(line: string): void {
+    if (!line.trim()) return
+    // Pre-filter: only agent_end / message_end feed the builder. Skipping
+    // JSON.parse for the other ~99.9% of lines avoids creating tens of
+    // thousands of transient objects that would pressure the GC even though
+    // they are never retained.
+    if (
+      !line.includes('"type":"agent_end"') &&
+      !line.includes('"type":"message_end"')
+    ) {
+      return
+    }
+    try {
+      const e = JSON.parse(line) as PiEvent
+      if (e.type === "agent_end") {
+        this.lastAgentEnd = e
+      } else if (e.type === "message_end") {
+        this.messageEnds.push(e)
+      }
+    } catch {
+      log.debug(`Skipping non-JSON line: ${line.slice(0, 100)}`)
+    }
+  }
+
+  build(): RunRecordBuilder {
+    const messages: PiMessage[] = this.lastAgentEnd?.messages
+      ? [...this.lastAgentEnd.messages]
+      : []
+    if (messages.length === 0) {
+      for (const me of this.messageEnds) {
+        if (me.message.role === "assistant" || me.message.role === "toolResult") {
+          messages.push(me.message)
+        }
+      }
+    }
+    return piMessagesToRunRecord(messages, this.lastAgentEnd)
+  }
+}
+
+/**
+ * Stream-parse pi's NDJSON stdout directly into a RunRecord, retaining ONLY
+ * the events the builder actually consumes (agent_end + message_end).
+ *
+ * WHY: pi emits ~30k NDJSON events per long task (message_update / thinking /
+ * *_delta streaming deltas make up ~99.9% of a 0.3–1.7 GB transcript). The
+ * old path — `piEventsToRunRecord(parsePiNDJSON(stdout))` — materialized ALL
+ * of them into a retained `PiEvent[]`, but the builder reads only agent_end /
+ * message_end (~25 events). Holding 30k parsed objects alongside the buffered
+ * stdout string drove peak heap to 10–32 GB and threw
+ * `RangeError: Out of memory` on long crypto tasks (circuit-fibsqrt,
+ * feal-*-cryptanalysis). This function is behaviorally equivalent to the old
+ * path but with O(relevant-events) memory instead of O(total-events).
+ *
+ * `output` is the raw NDJSON string (already buffered by runSubprocess); we
+ * scan it with indexOf instead of `output.split("\n")` so no 30k-element
+ * substring array is materialized, and each line string is releasable as we
+ * advance. A cheap `includes` pre-filter skips JSON.parse for the 99.9% of
+ * lines that are streaming deltas — pi emits compact JSON
+ * (`{"type":"message_end",...}`, no spaces), so the literal match is exact.
+ * False positives are harmless (JSON.parse still classifies the event);
+ * false negatives are impossible for pi's compact format.
+ */
+export function piBuildRunRecordFromNDJSON(output: string): RunRecordBuilder {
+  const collector = new PiEventCollector()
+
+  const len = output.length
+  let lineStart = 0
+  for (let i = 0; i <= len; i++) {
+    if (i !== len && output.charCodeAt(i) !== 10 /* \n */) continue
+    const line = lineStart < i ? output.slice(lineStart, i) : ""
+    lineStart = i + 1
+    collector.ingestLine(line)
+  }
+
+  return collector.build()
+}
+
+/**
+ * Streaming variant of `piBuildRunRecordFromNDJSON`: reads the NDJSON
+ * transcript from disk line-by-line instead of materializing the whole stdout
+ * string in memory. Used together with `runSubprocess({ stdoutSink })` — the
+ * subprocess streams its stdout verbatim to the convLog file, and this
+ * function streams it back out, so peak heap is O(longest-line) rather than
+ * O(transcript). For a 0.3–1.7 GB agentic transcript this is the difference
+ * between a 10–32 GB heap (RangeError: Out of memory) and a few MB.
+ */
+export async function piBuildRunRecordFromFile(filePath: string): Promise<RunRecordBuilder> {
+  const collector = new PiEventCollector()
+  const file = Bun.file(filePath)
+  if (!(await file.exists())) return collector.build()
+
+  const decoder = new TextDecoder()
+  let buf = ""
+  for await (const chunk of file.stream() as ReadableStream<Uint8Array>) {
+    buf += decoder.decode(chunk, { stream: true })
+    let nl: number
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      collector.ingestLine(buf.slice(0, nl))
+      buf = buf.slice(nl + 1)
+    }
+  }
+  if (buf) collector.ingestLine(buf) // trailing line without a final \n
+
+  return collector.build()
 }
 
 // ---------------------------------------------------------------------------
