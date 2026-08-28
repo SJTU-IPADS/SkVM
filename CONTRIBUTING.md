@@ -11,31 +11,27 @@ This document describes the contribution workflow, local development setup, and 
 ## Workflow at a glance
 
 ```
-            ┌─ bug fix / docs / typo ──────────────────────┐
-            │                                              ▼
-  idea ─────┤                                          open PR ──► review ──► merge
-            │                                              ▲
-            └─ feature / refactor / breaking change ──┐    │
-                                                      ▼    │
-                                              open issue ──┘
-                                              (discuss design first)
+  idea ──┬───────────────────────────────► open PR ──► review ──► merge
+         │                                    ▲
+         └─ want design feedback first? ──────┘
+            open an issue (optional)
 ```
 
 **Rule of thumb:**
 
-- **File an issue first** for any new feature, non-trivial refactor, or change that touches public CLI flags, on-disk layouts (`~/.skvm/`, `skvm-data/`), or the adapter / provider interfaces. The goal is to align on the design before code is written, so reviewers don't have to ask you to redo work.
-- **Open a pull request directly** for bug fixes, documentation updates, typos, test additions, and small internal cleanups. If the fix turns out to be larger than expected, we may ask you to convert it into an issue first.
+- **Open a pull request directly.** That holds for bug fixes, documentation, tests, and cleanups, and equally for new features, refactors, and changes to CLI flags, on-disk layouts (`~/.skvm/`, `skvm-data/`), or the adapter / provider interfaces. No tracking issue is required for any of them.
+- **File an issue first when you want to,** not because the process demands it. It is worth doing when you would rather not write the code twice — a large or speculative change, an approach you are unsure fits the architecture, or a question you want answered before you start.
 
-When in doubt, file an issue. It's cheap.
+A PR is a concrete proposal, and a concrete proposal is easier to discuss than a description of one. If a reviewer thinks the design needs its own conversation, they will say so on the PR — you will not be asked to close it and start again in an issue.
 
 ---
 
 ## Filing an issue
 
-We provide three issue templates under [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/):
+Issues are for things a PR cannot carry on its own: a bug you are not fixing yourself, an idea you would like someone else to pick up, or a design question you want settled before you write code. We provide three templates under [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/):
 
 - **Bug report** — something is broken or behaves unexpectedly.
-- **Feature request** — propose a new capability before sending a PR.
+- **Feature request** — propose a new capability (optionally before sending a PR).
 - **Question / discussion** — open-ended design or usage questions.
 
 A good issue includes:
@@ -73,8 +69,8 @@ git submodule update --init       # populates skvm-data/
 
 ## Submitting a pull request
 
-1. **Fork** the repo and create a branch off `main`. Name it after the issue or topic, e.g. `fix/jit-optimize-empty-history`, `feat/m9-search-index`.
-2. **Link the issue.** Put `Closes #123` or `Refs #123` in the PR description. PRs that introduce a new feature without a tracking issue may be put on hold until one is opened.
+1. **Fork** the repo and create a branch off `main`. Name it after the topic, e.g. `fix/jit-optimize-empty-history`, `feat/m9-search-index`.
+2. **Link an issue if there is one.** Put `Closes #123` or `Refs #123` in the PR description. There is no requirement that one exists.
 3. **Keep PRs focused.** One logical change per PR. If you find unrelated cleanups along the way, send them as a separate PR.
 4. **Run the local checks** before pushing:
 
