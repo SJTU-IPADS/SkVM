@@ -42,7 +42,7 @@ export async function extractStructured<T>(opts: {
   system?: string
   maxRetries?: number
   maxTokens?: number
-}): Promise<{ result: T; rawResponse: string; tokens: TokenUsage; costUsd?: number }> {
+}): Promise<{ result: T; rawResponse: string; tokens: TokenUsage; costUsd?: number; pricedCostUsd: number }> {
   const { provider, schema, schemaName, schemaDescription, prompt, system, maxRetries = 3, maxTokens } = opts
 
   // Layer 1: tool_use, forced via toolChoice so the model can't decline.
@@ -83,7 +83,7 @@ async function extractViaToolUse<T>(opts: {
   prompt: string
   system?: string
   maxTokens?: number
-}): Promise<{ result: T; rawResponse: string; tokens: TokenUsage; costUsd?: number }> {
+}): Promise<{ result: T; rawResponse: string; tokens: TokenUsage; costUsd?: number; pricedCostUsd: number }> {
   const { provider, schema, schemaName, schemaDescription, prompt, system, maxTokens } = opts
 
   // Convert Zod schema to JSON Schema for tool definition
@@ -111,7 +111,13 @@ async function extractViaToolUse<T>(opts: {
   }
 
   const result = schema.parse(toolCall.arguments)
-  return { result, rawResponse: JSON.stringify(toolCall.arguments), tokens: response.tokens, costUsd: response.costUsd }
+  return {
+    result,
+    rawResponse: JSON.stringify(toolCall.arguments),
+    tokens: response.tokens,
+    costUsd: response.costUsd,
+    pricedCostUsd: response.costUsd ?? 0,
+  }
 }
 
 async function extractViaPromptParse<T>(opts: {
@@ -122,7 +128,7 @@ async function extractViaPromptParse<T>(opts: {
   system?: string
   maxRetries: number
   maxTokens?: number
-}): Promise<{ result: T; rawResponse: string; tokens: TokenUsage; costUsd?: number }> {
+}): Promise<{ result: T; rawResponse: string; tokens: TokenUsage; costUsd?: number; pricedCostUsd: number }> {
   const { provider, schema, schemaName, prompt, system, maxRetries, maxTokens } = opts
 
   const jsonSchema = zodToJsonSchema(schema)
@@ -142,6 +148,11 @@ Output ONLY the JSON object, nothing else. No markdown fences, no explanation.`
   let totalTokens = emptyTokenUsage()
   // All-or-nothing cost accumulator across retry attempts
   let totalCostUsd: number | undefined = 0
+  // …and the subtotal over the attempts that DID report a cost. One unpriced
+  // retry makes `totalCostUsd` undefined, and callers then re-price the whole
+  // extraction from the local pricing table; this keeps the measured part so a
+  // partially-priced extraction can report a floor instead.
+  let pricedCostUsd = 0
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const response = await provider.complete({
       messages: [{ role: "user", content: extractionPrompt }],
@@ -150,6 +161,7 @@ Output ONLY the JSON object, nothing else. No markdown fences, no explanation.`
       maxTokens,
     })
     totalTokens = addTokenUsage(totalTokens, response.tokens)
+    if (response.costUsd !== undefined) pricedCostUsd += response.costUsd
     if (totalCostUsd !== undefined && response.costUsd !== undefined) {
       totalCostUsd += response.costUsd
     } else {
@@ -162,7 +174,7 @@ Output ONLY the JSON object, nothing else. No markdown fences, no explanation.`
       const jsonStr = raw.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "").trim()
       const parsed = JSON.parse(jsonStr)
       const result = schema.parse(parsed)
-      return { result, rawResponse: raw, tokens: totalTokens, costUsd: totalCostUsd }
+      return { result, rawResponse: raw, tokens: totalTokens, costUsd: totalCostUsd, pricedCostUsd }
     } catch (err) {
       lastError = err
       log.warn(`Attempt ${attempt + 1}/${maxRetries} parse failed: ${err}`)

@@ -23,7 +23,7 @@ import { evaluateAll } from "../framework/evaluator.ts"
 import "../bench/evaluators/index.ts"
 import type { AdapterConfig, TokenUsage, AgentAdapter, SkillMode } from "../core/types.ts"
 import { emptyTokenUsage, addTokenUsage, sumTokenUsages } from "../core/types.ts"
-import { estimateCost } from "../core/cost.ts"
+import { resolveMeasuredCost } from "../core/cost.ts"
 import type {
   JitOptimizeConfig,
   JitOptimizeResult,
@@ -366,9 +366,9 @@ export async function runLoop(
     judgeAcc: CostSlice & { calls: number },
   ): EvaluatorConfig => ({
     llmProvider: evalLLMProvider,
-    onJudgeUsage: (tokens, costUsd) => {
+    onJudgeUsage: (tokens, costUsd, pricedCostUsd) => {
       judgeAcc.tokens = addTokenUsage(judgeAcc.tokens, tokens)
-      judgeAcc.costUsd += estimateCost(judgeModelForCost, tokens, costUsd)
+      judgeAcc.costUsd += resolveMeasuredCost(judgeModelForCost, tokens, { costUsd, pricedCostUsd })
       judgeAcc.calls += 1
     },
   })

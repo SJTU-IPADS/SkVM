@@ -7,7 +7,7 @@ import { createProviderForModel } from "../providers/registry.ts"
 import { extractStructured } from "../providers/structured.ts"
 import { isProviderError } from "../providers/errors.ts"
 import { parseConvLog, type ExtractedToolCode } from "../core/conv-log-parser.ts"
-import { estimateCost } from "../core/cost.ts"
+import { resolveMeasuredCost } from "../core/cost.ts"
 import { createLogger } from "../core/logger.ts"
 import { TIMEOUT_DEFAULTS } from "../core/timeouts.ts"
 
@@ -276,7 +276,7 @@ Identify structural CODE PATTERNS from these snippets that would repeat if the s
     await mkdir(outputDir, { recursive: true })
     const outputFile = path.join(outputDir, "boost-candidates.json")
 
-    const { result, tokens, costUsd } = await extractStructured({
+    const { result, tokens, costUsd, pricedCostUsd } = await extractStructured({
       provider,
       schema: BoostCandidatesFileSchema,
       schemaName: "generate_boost_candidates",
@@ -285,7 +285,9 @@ Identify structural CODE PATTERNS from these snippets that would repeat if the s
       maxTokens: 8192,
     })
 
-    const cost = estimateCost(model, tokens, costUsd)
+    // A partially-priced extraction reports the measured part as a floor; only
+    // a fully unpriced one falls back to the local pricing table.
+    const cost = resolveMeasuredCost(model, tokens, { costUsd, pricedCostUsd })
 
     // Step 5: Validate each candidate's regex compiles
     const validated: BoostCandidate[] = []
