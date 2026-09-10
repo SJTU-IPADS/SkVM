@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SkVM Runs</title>
+<title>SkVM Bench</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Host+Grotesk:ital,wght@0,300..800;1,300..800&family=JetBrains+Mono:ital,wght@0,300..700;1,300..700&display=swap" rel="stylesheet">
@@ -13,12 +13,12 @@
 <main class="page">
   <header class="page-header">
     <div class="ph-left">
-      <h1>SkVM Runs</h1>
+      <h1>SkVM Bench</h1>
       <nav class="topnav">
         <a href="/">Proposals</a>
-        <a href="/runs" class="active">Runs</a>
+        <a href="/runs">Runs</a>
         <a href="/profiles">Profiles</a>
-        <a href="/bench">Bench</a>
+        <a href="/bench" class="active">Bench</a>
       </nav>
     </div>
     <div class="meta" id="gen-date">—</div>
@@ -26,8 +26,8 @@
 
   <section class="main">
     <div class="section-head">
-      <h2>Runs</h2>
-      <div class="count" id="runs-count">—</div>
+      <h2>Bench Sessions</h2>
+      <div class="count" id="bench-count">—</div>
     </div>
     <div class="ptable-wrap">
       <table class="ptable">
@@ -35,21 +35,19 @@
           <tr>
             <th style="width:110px">status</th>
             <th>id</th>
-            <th>type</th>
             <th>model</th>
             <th>harness</th>
             <th>skill</th>
             <th class="num">started</th>
-            <th class="num">duration</th>
           </tr>
         </thead>
         <tbody id="entries">
-          <tr><td colspan="8"><div class="loading-state">Loading<span class="bar"></span>runs</div></td></tr>
+          <tr><td colspan="6"><div class="loading-state">Loading<span class="bar"></span>bench sessions</div></td></tr>
         </tbody>
       </table>
     </div>
   </section>
 </main>
-<script type="module" src="./runs.ts"></script>
+<script type="module" src="./bench.ts"></script>
 </body>
 </html>

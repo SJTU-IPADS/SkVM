@@ -7,6 +7,7 @@
  *   GET /api/sessions?type=&limit=      → entries newest-first, with liveness applied
  *   GET /api/session/files?id=          → recursive logDir listing
  *   GET /api/session/tail?id=&file=     → SSE tail of one logDir file
+ *   GET /api/session/conv?id=&file=     → a conv-*.jsonl parsed into display turns
  */
 
 import path from "node:path"
@@ -153,8 +154,65 @@ async function handleGetSessionTail(_req: Request, url: URL): Promise<Response> 
   return sseTail(abs)
 }
 
+/** Conv logs repeat the full message history in every request entry; refuse absurd files. */
+const CONV_MAX_BYTES = 20 * 1024 * 1024
+
+/**
+ * Parse a ConversationLog NDJSON file (see core/conversation-logger.ts) into
+ * turns the runs page can render as a chat. Request entries carry the whole
+ * message history, so only the last message — the turn's actual new input —
+ * is kept; response entries pass through their display fields.
+ */
+async function handleGetSessionConv(_req: Request, url: URL): Promise<Response> {
+  const id = url.searchParams.get("id")
+  const rel = url.searchParams.get("file")
+  if (!id) return bad(400, "missing id")
+  if (!rel) return bad(400, "missing file")
+  const entry = await findSession(id)
+  if (!entry) return bad(404, "unknown session id")
+  const logDir = resolveLogDir(entry)
+  const abs = resolveWithin(logDir, rel)
+  if (!abs) return bad(400, "file outside session log dir")
+  const f = Bun.file(abs)
+  if (!(await f.exists())) return bad(404, "no such file")
+  if (f.size > CONV_MAX_BYTES) return bad(413, "conv log too large to parse")
+
+  const turns: unknown[] = []
+  for (const line of (await f.text()).split("\n")) {
+    if (!line.trim()) continue
+    let e: any
+    try {
+      e = JSON.parse(line)
+    } catch {
+      continue // tolerate torn/malformed lines from interrupted runs
+    }
+    if (e.type === "request") {
+      const messages = Array.isArray(e.messages) ? e.messages : []
+      turns.push({
+        kind: "request",
+        ts: e.ts,
+        method: e.method,
+        lastMessage: messages.length ? messages[messages.length - 1] : null,
+        toolResults: e.toolResults,
+      })
+    } else if (e.type === "response") {
+      turns.push({
+        kind: "response",
+        ts: e.ts,
+        text: e.text,
+        toolCalls: e.toolCalls,
+        tokens: e.tokens,
+        durationMs: e.durationMs,
+        stopReason: e.stopReason,
+      })
+    }
+  }
+  return json({ id, file: rel, turns })
+}
+
 export const sessionRoutes: RouteTable = {
   "GET /api/sessions": handleGetSessions,
   "GET /api/session/files": handleGetSessionFiles,
   "GET /api/session/tail": handleGetSessionTail,
+  "GET /api/session/conv": handleGetSessionConv,
 }

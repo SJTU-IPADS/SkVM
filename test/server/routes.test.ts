@@ -231,4 +231,136 @@ describe("session routes", () => {
     const res = await fetch(`${server.url}/api/session/files?id=nope`)
     expect(res.status).toBe(404)
   })
+
+  test("conv parses an NDJSON conversation log into display turns", async () => {
+    const logDir = path.join(SKVM_CACHE, "log", "run", "server-routes-conv")
+    await mkdir(logDir, { recursive: true })
+    const lines = [
+      JSON.stringify({
+        type: "request", ts: "2026-09-10T00:00:00Z", method: "complete",
+        system: "sys", messages: [{ role: "user", content: "write a file" }],
+      }),
+      "{ torn line",
+      JSON.stringify({
+        type: "response", ts: "2026-09-10T00:00:01Z", text: "on it",
+        toolCalls: [{ name: "write_file", arguments: { path: "a.txt", content: "hi" } }],
+        tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+        durationMs: 1200, stopReason: "tool_use",
+      }),
+    ]
+    await writeFile(path.join(logDir, "conv-1-agent.jsonl"), lines.join("\n") + "\n")
+    const { id } = await RunSession.start({ type: "run", tag: "server-routes-conv", logDir })
+
+    const res = await fetch(`${server.url}/api/session/conv?id=${encodeURIComponent(id)}&file=conv-1-agent.jsonl`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { turns: any[] }
+    expect(body.turns).toHaveLength(2) // torn line tolerated, not counted
+    expect(body.turns[0]!.kind).toBe("request")
+    expect(body.turns[0]!.lastMessage).toEqual({ role: "user", content: "write a file" })
+    expect(body.turns[1]!.kind).toBe("response")
+    expect(body.turns[1]!.text).toBe("on it")
+    expect(body.turns[1]!.toolCalls[0].name).toBe("write_file")
+  })
+
+  test("conv rejects a path escaping the log dir", async () => {
+    const logDir = path.join(SKVM_CACHE, "log", "run", "server-routes-conv-guard")
+    await mkdir(logDir, { recursive: true })
+    const { id } = await RunSession.start({ type: "run", tag: "server-routes-conv-guard", logDir })
+    const res = await fetch(`${server.url}/api/session/conv?id=${encodeURIComponent(id)}&file=../../sessions.jsonl`)
+    expect(res.status).toBe(400)
+  })
+})
+
+describe("profile routes", () => {
+  // Unique harness dir so the seed can be removed wholesale — the CLI
+  // profile test asserts an EMPTY profiles listing, so leftovers here would
+  // make that test order-dependent.
+  const HARNESS = "ui-routes-harness"
+
+  function makeTcp(model: string) {
+    return {
+      version: "1.0" as const,
+      model,
+      harness: HARNESS,
+      profiledAt: "2026-09-10T00:00:00.000Z",
+      capabilities: { execute_command: "L2" as const, write_file: "L3" as const },
+      details: [{
+        primitiveId: "execute_command",
+        highestLevel: "L2" as const,
+        levelResults: [{
+          level: "L2" as const, passed: true, passCount: 3, totalCount: 3,
+          skipCount: 0, durationMs: 5000, costUsd: 0.02, testDescription: "runs shell commands",
+          failureDetails: [] as string[],
+        }],
+      }],
+      cost: { totalUsd: 0.5, totalTokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 }, durationMs: 60_000 },
+      isPartial: false,
+    }
+  }
+
+  test("list + detail over a seeded TCP", async () => {
+    const { saveProfile } = await import("../../src/profiler/cache.ts")
+    const { PROFILES_DIR } = await import("../../src/core/config.ts")
+    const model = "test/ui-routes-model"
+    await saveProfile(makeTcp(model))
+    try {
+      const listRes = await fetch(`${server.url}/api/profiles`)
+      expect(listRes.status).toBe(200)
+      const list = (await listRes.json()) as { profiles: Array<{ model: string; harness: string }> }
+      expect(list.profiles.some((p) => p.model === model && p.harness === HARNESS)).toBe(true)
+
+      const res = await fetch(`${server.url}/api/profile?model=${encodeURIComponent(model)}&harness=${HARNESS}`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { profile: { capabilities: Record<string, string>; isPartial: boolean } }
+      expect(body.profile.capabilities["write_file"]).toBe("L3")
+      expect(body.profile.isPartial).toBe(false)
+    } finally {
+      await rm(path.join(PROFILES_DIR, HARNESS), { recursive: true, force: true })
+    }
+  })
+
+  test("detail for an unknown pair is a 404", async () => {
+    const res = await fetch(`${server.url}/api/profile?model=test/none&harness=${HARNESS}`)
+    expect(res.status).toBe(404)
+  })
+})
+
+describe("bench routes", () => {
+  test("report passthrough for a seeded bench session", async () => {
+    const logDir = path.join(SKVM_CACHE, "log", "bench", "server-routes-report")
+    await mkdir(logDir, { recursive: true })
+    const report = {
+      sessionId: "server-routes-report", model: "test/model", adapter: "bare-agent",
+      timestamp: "2026-09-10T00:00:00Z",
+      tasks: [{
+        taskId: "t1", taskName: "task one", category: "general", gradingType: "script",
+        conditions: [{
+          condition: "baseline", score: 1, pass: true, evalDetails: [],
+          tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, cost: 0.01, durationMs: 900,
+        }],
+      }],
+      summary: {
+        taskCount: 1,
+        perCondition: { baseline: { avgScore: 1, passRate: 1, avgTokens: 15, avgCost: 0.01, avgDurationMs: 900, avgLlmDurationMs: 800 } },
+        perCategory: {},
+        delta: { originalVsBaseline: null, aotVsOriginal: null, jitVsAot: null },
+      },
+    }
+    await writeFile(path.join(logDir, "report.json"), JSON.stringify(report))
+    const { id } = await RunSession.start({ type: "bench", tag: "server-routes-report", logDir })
+
+    const res = await fetch(`${server.url}/api/bench/report?id=${encodeURIComponent(id)}`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { report: { model: string; summary: { taskCount: number } } }
+    expect(body.report.model).toBe("test/model")
+    expect(body.report.summary.taskCount).toBe(1)
+  })
+
+  test("a bench session without report.json is a 404", async () => {
+    const logDir = path.join(SKVM_CACHE, "log", "bench", "server-routes-noreport")
+    await mkdir(logDir, { recursive: true })
+    const { id } = await RunSession.start({ type: "bench", tag: "server-routes-noreport", logDir })
+    const res = await fetch(`${server.url}/api/bench/report?id=${encodeURIComponent(id)}`)
+    expect(res.status).toBe(404)
+  })
 })

@@ -28,9 +28,13 @@
 
 import indexHtml from "./frontend/index.html"
 import runsHtml from "./frontend/runs.html"
+import profilesHtml from "./frontend/profiles.html"
+import benchHtml from "./frontend/bench.html"
 import { json, bad, type RouteTable } from "./http.ts"
 import { proposalRoutes } from "./routes/proposals.ts"
 import { sessionRoutes } from "./routes/sessions.ts"
+import { profileRoutes } from "./routes/profiles.ts"
+import { benchRoutes } from "./routes/bench.ts"
 import { createLogger } from "../core/logger.ts"
 
 const log = createLogger("server")
@@ -46,6 +50,8 @@ const routes: RouteTable = {
   "GET /api/health": () => json({ ok: true }),
   ...proposalRoutes,
   ...sessionRoutes,
+  ...profileRoutes,
+  ...benchRoutes,
 }
 
 /**
@@ -99,7 +105,7 @@ export function startServer(opts: ServeOptions): RunningServer {
     port: opts.port,
     hostname: opts.host,
     development: false,
-    routes: { "/": indexHtml, "/runs": runsHtml },
+    routes: { "/": indexHtml, "/runs": runsHtml, "/profiles": profilesHtml, "/bench": benchHtml },
     fetch: makeRouter({ host: opts.host, token }),
   })
   const url = `http://${opts.host}:${server.port}`
