@@ -121,6 +121,7 @@ function renderDetail(e: any): string {
           '<label><input type="checkbox" checked onchange="window.__srFollow(this)"> follow</label>' +
         '</div>' +
         '<pre class="log-view empty" data-tail-view>—</pre>' +
+        '<div class="log-view conv" data-conv-view style="display:none"></div>' +
       '</div>' +
     '</div>'
   )
@@ -137,12 +138,18 @@ async function loadFiles(id: string): Promise<void> {
       list.innerHTML = '<span class="dim" style="font-size:11.5px">no files in log dir</span>'
       return
     }
-    list.innerHTML = data.files.map((f: any) =>
-      '<div class="file-row" data-file="' + esc(f.path) + '" onclick="window.__srTail(this,\'' + encodeURIComponent(id) + '\',\'' + encodeURIComponent(f.path) + '\')">' +
+    list.innerHTML = data.files.map((f: any) => {
+      // Conversation logs get a second affordance: a parsed chat view.
+      const isConv = /(^|\/)conv-.*\.jsonl$/.test(f.path)
+      const chat = isConv
+        ? '<span class="fchat" onclick="event.stopPropagation();window.__srConv(this,\'' + encodeURIComponent(id) + '\',\'' + encodeURIComponent(f.path) + '\')">chat</span>'
+        : ""
+      return '<div class="file-row" data-file="' + esc(f.path) + '" onclick="window.__srTail(this,\'' + encodeURIComponent(id) + '\',\'' + encodeURIComponent(f.path) + '\')">' +
         '<span class="fname">' + esc(f.path) + '</span>' +
+        chat +
         '<span class="fsize">' + esc(fmtSize(f.size)) + '</span>' +
       '</div>'
-    ).join("") + (data.truncated ? '<span class="dim" style="font-size:11px">listing truncated</span>' : "")
+    }).join("") + (data.truncated ? '<span class="dim" style="font-size:11px">listing truncated</span>' : "")
   } catch (err: any) {
     list.innerHTML = '<span class="dim" style="font-size:11.5px">failed: ' + esc(err.message) + '</span>'
   }
@@ -178,12 +185,20 @@ function closeTail(): void {
   void loadFiles(id)
 }
 
+function showPane(which: "tail" | "conv"): void {
+  const tail = document.querySelector("[data-tail-view]") as HTMLElement
+  const conv = document.querySelector("[data-conv-view]") as HTMLElement
+  tail.style.display = which === "tail" ? "" : "none"
+  conv.style.display = which === "conv" ? "" : "none"
+}
+
 ;(window as any).__srTail = function (fileRow: HTMLElement, encodedId: string, encodedFile: string): void {
   const id = decodeURIComponent(encodedId)
   const file = decodeURIComponent(encodedFile)
   closeTail()
   document.querySelectorAll(".file-row.active").forEach((x) => x.classList.remove("active"))
   fileRow.classList.add("active")
+  showPane("tail")
 
   const view = document.querySelector("[data-tail-view]") as HTMLElement
   const name = document.querySelector("[data-tail-name]") as HTMLElement
@@ -206,6 +221,53 @@ function closeTail(): void {
 
 ;(window as any).__srFollow = function (box: HTMLInputElement): void {
   state.follow = box.checked
+}
+
+function renderTurn(t: any): string {
+  if (t.kind === "request") {
+    const msg = t.lastMessage
+    if (!msg) return ""
+    const role = typeof msg.role === "string" ? msg.role : "user"
+    const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2)
+    return (
+      '<div class="turn turn-req">' +
+        '<div class="turn-role">' + esc(role) + '</div>' +
+        '<div class="turn-body">' + esc(content) + '</div>' +
+      '</div>'
+    )
+  }
+  const text = t.text ? '<div class="turn-body">' + esc(t.text) + '</div>' : ""
+  const tools = (t.toolCalls || []).map((tc: any) =>
+    '<div class="tool-call"><div class="tool-name">' + esc(tc.name || "tool") + '</div>' +
+      '<pre>' + esc(JSON.stringify(tc.arguments ?? tc.input ?? {}, null, 2)) + '</pre></div>'
+  ).join("")
+  const tokens = t.tokens ? (t.tokens.input || 0) + "→" + (t.tokens.output || 0) + " tok · " : ""
+  const meta = '<div class="turn-meta">' + esc(tokens + Math.round((t.durationMs || 0) / 1000) + "s · " + (t.stopReason || "")) + '</div>'
+  return '<div class="turn turn-res"><div class="turn-role">assistant</div>' + text + tools + meta + '</div>'
+}
+
+;(window as any).__srConv = async function (chatBtn: HTMLElement, encodedId: string, encodedFile: string): Promise<void> {
+  const id = decodeURIComponent(encodedId)
+  const file = decodeURIComponent(encodedFile)
+  closeTail()
+  document.querySelectorAll(".file-row.active").forEach((x) => x.classList.remove("active"))
+  chatBtn.closest(".file-row")?.classList.add("active")
+  showPane("conv")
+
+  const view = document.querySelector("[data-conv-view]") as HTMLElement
+  const name = document.querySelector("[data-tail-name]") as HTMLElement
+  name.textContent = file + " (conversation)"
+  view.innerHTML = '<span class="dim">parsing…</span>'
+  try {
+    const res = await fetch("/api/session/conv?id=" + encodeURIComponent(id) + "&file=" + encodeURIComponent(file))
+    const data: any = await res.json()
+    if (!res.ok) throw new Error(data.error || "parse failed")
+    view.innerHTML = data.turns.length
+      ? data.turns.map(renderTurn).join("")
+      : '<span class="dim">no parseable turns in this file</span>'
+  } catch (err: any) {
+    view.innerHTML = '<span class="dim">failed: ' + esc(err.message) + '</span>'
+  }
 }
 
 async function refresh(): Promise<void> {

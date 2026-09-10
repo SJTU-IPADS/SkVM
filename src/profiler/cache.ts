@@ -53,6 +53,16 @@ export async function loadProfile(model: string, harness: string): Promise<TCP |
 }
 
 /**
+ * Load the latest TCP for a (model, harness) pair, partial or complete.
+ * The compiler path uses loadProfile (which refuses partials); display
+ * surfaces (the web UI's profiles page) want the partial too, flagged as
+ * such, rather than pretending nothing exists.
+ */
+export async function loadProfileAny(model: string, harness: string): Promise<TCP | null> {
+  return tryLoadProfile(latestPath(model, harness))
+}
+
+/**
  * Save a TCP to the versioned cache.
  * Creates both a timestamped archive and a latest.json.
  */
