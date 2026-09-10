@@ -6,6 +6,16 @@ import type { Level } from "../../src/core/types.ts"
 
 const LEVELS: Exclude<Level, "L0">[] = ["L1", "L2", "L3"]
 
+/**
+ * Count distinct results over several draws. Randomization spaces can be
+ * small (gen-text-structured L3 had 27 possible prompts), so asserting that
+ * exactly two draws differ flaked whenever they collided (~4% per run);
+ * five draws all colliding is vanishingly unlikely for any nontrivial space.
+ */
+function distinctDraws(gen: () => string, draws = 5): number {
+  return new Set(Array.from({ length: draws }, gen)).size
+}
+
 describe("gen.code.python generator", () => {
   test("has correct primitiveId", () => {
     expect(genCodePython.primitiveId).toBe("gen.code.python")
@@ -19,12 +29,12 @@ describe("gen.code.python generator", () => {
     })
 
     test(`${level} produces randomized instances`, () => {
-      const a = genCodePython.generate(level)
-      const b = genCodePython.generate(level)
       // Either prompts or setup files should differ due to randomization
-      const aDiff = a.prompt + JSON.stringify(a.setupFiles ?? {})
-      const bDiff = b.prompt + JSON.stringify(b.setupFiles ?? {})
-      expect(aDiff).not.toBe(bDiff)
+      const draw = () => {
+        const inst = genCodePython.generate(level)
+        return inst.prompt + JSON.stringify(inst.setupFiles ?? {})
+      }
+      expect(distinctDraws(draw)).toBeGreaterThan(1)
     })
   }
 
@@ -74,9 +84,7 @@ describe("gen.text.structured generator", () => {
     })
 
     test(`${level} produces randomized instances`, () => {
-      const a = genTextStructured.generate(level)
-      const b = genTextStructured.generate(level)
-      expect(a.prompt).not.toBe(b.prompt)
+      expect(distinctDraws(() => genTextStructured.generate(level).prompt)).toBeGreaterThan(1)
     })
   }
 
@@ -102,9 +110,7 @@ describe("reason.arithmetic generator", () => {
     })
 
     test(`${level} produces randomized instances`, () => {
-      const a = reasonArithmetic.generate(level)
-      const b = reasonArithmetic.generate(level)
-      expect(a.prompt).not.toBe(b.prompt)
+      expect(distinctDraws(() => reasonArithmetic.generate(level).prompt)).toBeGreaterThan(1)
     })
   }
 
