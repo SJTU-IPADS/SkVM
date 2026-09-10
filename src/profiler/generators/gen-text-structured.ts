@@ -145,14 +145,24 @@ except json.JSONDecodeError as e:
 /**
  * L3: Valid JSON >5KB, deeply nested
  */
+// Org names only diversify the instance space — the eval never checks the
+// name. Without this, L3's space was just D×T×M = 27 prompts, small enough
+// for two random draws to collide noticeably often.
+const ORG_NAMES = [
+  "GlobalTech", "NorthWind", "Acme Systems", "Helios Group", "BlueRiver Labs",
+  "Vertex Holdings", "Quantum Dynamics", "Solstice Media", "Ironwood Industries",
+  "Cascade Partners", "Nimbus Digital", "Meridian Corp",
+] as const
+
 function generateL3(rng: Rng): MicrobenchmarkInstance {
   const D = rng.randInt(3, 5)
   const T = rng.randInt(2, 4)
   const M = rng.randInt(3, 5)
+  const ORG = rng.randChoice(ORG_NAMES)
 
   return {
     prompt: `Respond with a JSON object representing an organization with this structure:
-- "org_name": "GlobalTech"
+- "org_name": "${ORG}"
 - "departments": an array of ${D} department objects, each with:
   - "name": a unique department name
   - "head": a person's name
