@@ -55,6 +55,10 @@ export interface BenchTask extends Task {
   hostReady?: boolean
   /** Task difficulty from source benchmark */
   difficulty?: "easy" | "medium" | "hard"
+  /** Terminal-Bench docker image (TB-imported tasks only) */
+  tbDockerImage?: string
+  /** Terminal-Bench tests/ directory, LF-normalised (TB-imported tasks only) */
+  tbTestsDir?: string
 }
 
 /**
@@ -78,6 +82,15 @@ export const BenchTaskFileSchema = z.object({
   origin: OriginSchema.optional(),
   hostReady: z.boolean().default(TASK_FILE_DEFAULTS.hostReady),
   difficulty: z.enum(["easy", "medium", "hard"]).optional(),
+  /**
+   * Terminal-Bench 2.1 task metadata. Present only on TB-imported tasks.
+   * `tbDockerImage` is the image the TB verifier (and originally the agent)
+   * runs in; `tbTestsDir` points at the LF-normalised tests/ directory the
+   * tb-grade evaluator mounts at /tests. Mirrored into the custom criterion's
+   * payload at import time so the evaluator can read it without a task object.
+   */
+  tbDockerImage: z.string().optional(),
+  tbTestsDir: z.string().optional(),
 })
 
 // ---------------------------------------------------------------------------
