@@ -67,6 +67,10 @@ export async function runTask(opts: RunOptions): Promise<TestResult> {
       // executeBenchItem or `skvm run`'s CLI parser). Reading task.timeoutMs
       // directly here would silently shadow CLI --timeoutMs / --timeout-ms.
       timeoutMs: adapterConfig.timeoutMs,
+      // BenchTask (which extends Task) carries this for TB-imported tasks.
+      // The generic Task type doesn't declare it; the cast is safe because
+      // container-aware adapters guard on the field's presence themselves.
+      tbDockerImage: (task as { tbDockerImage?: string }).tbDockerImage,
     })
 
     // 5. Gate on adapter runStatus.

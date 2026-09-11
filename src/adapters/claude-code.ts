@@ -18,6 +18,7 @@ import {
   buildClaudeCodeSettingsContent,
   type Sandbox,
 } from "../core/adapter-sandbox.ts"
+import { startContainer, execInContainer } from "../core/docker-run.ts"
 
 const log = createLogger("claude-code")
 
@@ -451,6 +452,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private mode: AdapterConfigMode = "managed"
   private extraCliArgs: string[] = []
   private sandbox: Sandbox | undefined
+  /** Cached route env overlay (ANTHROPIC_API_KEY etc.) from setup. Container
+   * mode uses this to seed the container's env — cheaper and safer than
+   * re-resolving the route at run time. */
+  private routeEnv: Record<string, string> = {}
+  /** Cached settings.json body from managed-mode setup. Container mode
+   * writes this into the container-side sandbox at /app/.cc-sandbox. `null`
+   * in native mode (auth comes from the host user config; not used by
+   * container mode yet). */
+  private settingsJson: string | null = null
 
   async setup(config: AdapterConfig): Promise<void> {
     this.model = config.model
@@ -508,6 +518,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     } catch (err) {
       if (this.mode === "managed") throw err
     }
+    this.routeEnv = routeEnv
 
     this.envOverlay = {
       ...resolved.env,
@@ -531,6 +542,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     } else {
       const settingsJson = buildClaudeCodeSettingsContent(route!, resolveBackendModel(this.model))
       await Bun.write(path.join(root, "settings.json"), settingsJson)
+      this.settingsJson = settingsJson
     }
 
     log.info(`claude-code command: ${this.cmdPrefix.join(" ")}`)
@@ -538,6 +550,26 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   async run(task: {
+    prompt: string
+    workDir: string
+    skill?: SkillBundle
+    taskId?: string
+    convLog?: import("../core/conversation-logger.ts").ConversationLog
+    timeoutMs?: number
+    /** Terminal-Bench image — when set (and SKVM_CC_HOST_MODE is not), claude
+     * runs inside skvm-claude-code-runtime with workDir bind-mounted at /app
+     * so model-generated shell commands (find /, grep -r, etc.) execute in a
+     * clean Ubuntu root rather than the Windows Git-Bash host. Mirrors pi's
+     * containerized branch. */
+    tbDockerImage?: string
+  }): Promise<RunResult> {
+    if (task.tbDockerImage && !process.env.SKVM_CC_HOST_MODE) {
+      return this.runInContainer(task)
+    }
+    return this.runOnHost(task)
+  }
+
+  private async runOnHost(task: {
     prompt: string
     workDir: string
     skill?: SkillBundle
@@ -648,6 +680,183 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     })
 
     return builder.finish({ workDir: task.workDir, durationMs, skillLoaded, ...verdict })
+  }
+
+  /**
+   * Container-mode claude-code: launch skvm-claude-code-runtime with workDir
+   * bind-mounted at /app, then `docker exec claude …` there. Mirrors the pi
+   * adapter's containerized branch (see src/adapters/pi.ts:runInContainer for
+   * the design rationale — solves the "find /" host-traversal timeout by
+   * giving claude a real Linux root to walk).
+   *
+   * Preconditions:
+   *   • Docker daemon reachable (probed at startContainer).
+   *   • skvm-claude-code-runtime:latest built
+   *     (`docker build -f docker/skvm-claude-code-runtime.Dockerfile`).
+   *   • task.workDir already seeded with the TB image's /app contents by
+   *     `seedTbAppFiles` in run-condition.ts.
+   *
+   * Non-goals: does NOT run inside `task.tbDockerImage` — that image is the
+   * VERIFIER's runtime and typically lacks node/claude. The agent's runtime
+   * is skvm-claude-code-runtime; the verifier still runs in tbDockerImage
+   * via tb-grade.
+   *
+   * Native mode is not yet implemented for container path (bench always uses
+   * managed mode). Attempting native → clear error, tell the user to switch.
+   */
+  private async runInContainer(task: {
+    prompt: string
+    workDir: string
+    skill?: SkillBundle
+    taskId?: string
+    convLog?: import("../core/conversation-logger.ts").ConversationLog
+    timeoutMs?: number
+    tbDockerImage?: string
+  }): Promise<RunResult> {
+    if (this.mode === "native") {
+      throw new Error(
+        "claude-code (container mode): native adapter-config is not supported " +
+        "inside containers yet — the host ~/.claude directory is not mounted. " +
+        "Switch to --adapter-config=managed, or set SKVM_CC_HOST_MODE=1 to run " +
+        "on the host.",
+      )
+    }
+
+    let skillLoaded: boolean | undefined
+    let appendSystemPrompt: string | undefined
+
+    // Skill staging is the SAME as host mode — files live under workDir and
+    // the container sees them at /app via the mount.
+    if (task.skill) {
+      skillLoaded = false
+      if (task.skill.mode === "inject") {
+        appendSystemPrompt = injectedSystemPrompt(task.skill.content)
+      } else {
+        const skillDir = path.join(task.workDir, ".claude", "skills", task.skill.meta.name)
+        await mkdir(skillDir, { recursive: true })
+        const frontmatter = `---\nname: ${task.skill.meta.name}\ndescription: ${task.skill.meta.description}\n---\n\n`
+        await Bun.write(path.join(skillDir, "SKILL.md"), frontmatter + task.skill.content)
+      }
+    }
+
+    // CLAUDE_CONFIG_DIR sandbox: put it inside workDir so it auto-mounts with
+    // the volume. Mirrors pi's .pi-sandbox strategy — settings.json for the
+    // managed-mode route goes here just like host mode.
+    const sandboxRel = ".cc-sandbox"
+    const hostSandbox = path.join(task.workDir, sandboxRel)
+    await mkdir(hostSandbox, { recursive: true })
+    const containerSandbox = `/app/${sandboxRel}`
+
+    // Reuse the settings.json emitted at setup(). Managed mode always
+    // populates it; the native-mode guard above rules out the null path.
+    if (this.settingsJson) {
+      await Bun.write(path.join(hostSandbox, "settings.json"), this.settingsJson)
+    }
+
+    const startMs = performance.now()
+    const timeoutMs = task.timeoutMs ?? this.timeoutMs
+
+    // API keys (ANTHROPIC_API_KEY etc.) come from envForRoute() at setup time.
+    // CLAUDE_CONFIG_DIR points at the container-side sandbox.
+    const env: Record<string, string> = {
+      ...this.routeEnv,
+      CLAUDE_CONFIG_DIR: containerSandbox,
+    }
+
+    const container = await startContainer({
+      image: "skvm-claude-code-runtime:latest",
+      mounts: [{ host: task.workDir, container: "/app", mode: "rw" }],
+      env,
+      workDir: "/app",
+      // Lifetime > task timeout so cleanup can rm -f cleanly even after a kill.
+      lifetimeMs: timeoutMs + 60_000,
+    })
+
+    try {
+      const prompt = `IMPORTANT: Do not ask clarifying questions. Proceed directly with implementation. Execute all steps immediately without waiting for user input.\n\n${task.prompt}`
+
+      const stripped = resolveBackendModel(this.model)
+      const cliModel = toClaudeCodeModelId(stripped)
+
+      // --bare: always safe in container mode — the sandbox starts clean, no
+      // OAuth / apiKeyHelper / Bedrock config to preserve. Auth flows purely
+      // through ANTHROPIC_API_KEY in `env`.
+      const claudeCmd = [
+        "claude",
+        "-p", prompt,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--model", cliModel,
+        "--permission-mode", "bypassPermissions",
+        "--add-dir", "/app",
+        "--bare",
+        ...(appendSystemPrompt ? ["--append-system-prompt", appendSystemPrompt] : []),
+        ...this.extraCliArgs,
+      ]
+
+      log.info(`claude-code (container): image=skvm-claude-code-runtime:latest container=${container.name} model=${cliModel}`)
+
+      const convLogPath = task.convLog?.filePath
+      const { stdout, stderr, exitCode, timedOut } = await execInContainer({
+        cmd: claudeCmd,
+        container,
+        cwd: "/app",
+        timeoutMs,
+        stdoutSink: convLogPath,
+      })
+
+      const durationMs = performance.now() - startMs
+
+      if (exitCode !== 0 && stderr) {
+        log.warn(`claude-code (container) exited with code ${exitCode}: ${stderr.slice(0, 2000)}`)
+      }
+
+      // If we streamed to disk we need to read it back to parse events;
+      // otherwise stdout is the entire payload.
+      let streamJson = stdout
+      if (convLogPath && !stdout) {
+        const convLogFile = Bun.file(convLogPath)
+        if (await convLogFile.exists()) {
+          try {
+            streamJson = await convLogFile.text()
+          } catch (err) {
+            log.warn(`Failed to read claude-code stream-json from ${convLogPath}: ${err}`)
+          }
+        }
+      }
+
+      const events = parseClaudeCodeStreamJSON(streamJson)
+
+      if (task.skill && skillLoaded === false) {
+        if (task.skill.mode === "inject") {
+          const snippet = task.skill.content.replace(/^#.*\n/m, "").trim().slice(0, 60)
+          skillLoaded = detectSkillInject(events, snippet)
+        } else {
+          skillLoaded = detectSkillDiscover(events, task.skill.meta.name)
+        }
+      }
+
+      const builder = eventsToRunRecord(events)
+      const verdict = await subprocessVerdict({
+        label: "claude-code",
+        timedOut,
+        exitCode,
+        timeoutMs,
+        stderr,
+        diagnose: () => diagnoseClaudeCode({
+          sandboxRoot: this.sandbox?.root ?? "",
+          stdout: streamJson,
+          stderr,
+          exitCode,
+        }),
+        warn: (msg) => log.warn(msg),
+      })
+
+      return builder.finish({ workDir: task.workDir, durationMs, skillLoaded, ...verdict })
+    } finally {
+      await container.cleanup()
+    }
   }
 
   async teardown(): Promise<void> {
