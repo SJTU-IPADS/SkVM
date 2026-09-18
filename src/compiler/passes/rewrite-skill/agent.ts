@@ -15,6 +15,90 @@ import { createLogger } from "../../../core/logger.ts"
 const log = createLogger("compiler-agent")
 
 // ---------------------------------------------------------------------------
+// Code-block masking
+//
+// The compiler agent rewrites SKILL.md wholesale and, despite prompt
+// instructions, sometimes drops or mutates original code blocks — a regression
+// the guard (correctly) rejects. To make code-block preservation structural
+// rather than advisory, every fenced code block is replaced with an atomic
+// single-line placeholder before the agent sees the skill, then restored
+// verbatim afterward. The agent edits prose only; original code survives
+// byte-for-byte, so guard check #2 passes by construction.
+// ---------------------------------------------------------------------------
+
+const CODE_FENCE_OPEN_RE = /^[ \t]{0,3}(`{3,}|~{3,})[^\r\n]*\r?\n/gm
+const codeBlockToken = (i: number): string => `[[SKVM_CODE_BLOCK_${i}]]`
+
+export function maskCodeBlocks(text: string): { masked: string; blocks: string[] } {
+  const blocks: string[] = []
+  let masked = ""
+  let copyFrom = 0
+  let searchFrom = 0
+
+  for (;;) {
+    CODE_FENCE_OPEN_RE.lastIndex = searchFrom
+    const opening = CODE_FENCE_OPEN_RE.exec(text)
+    if (!opening) break
+
+    const fence = opening[1]!
+    const fenceChar = fence[0]!
+    const closingRe = new RegExp(
+      `^[ \\t]{0,3}${fenceChar}{${fence.length},}[ \\t]*(?=\\r?$)`,
+      "gm",
+    )
+    closingRe.lastIndex = CODE_FENCE_OPEN_RE.lastIndex
+    const closing = closingRe.exec(text)
+    if (!closing) {
+      // An unmatched opening fence is prose, not a maskable code block.
+      searchFrom = CODE_FENCE_OPEN_RE.lastIndex
+      continue
+    }
+
+    const blockEnd = closing.index + closing[0].length
+    const token = codeBlockToken(blocks.length)
+    masked += text.slice(copyFrom, opening.index) + token
+    blocks.push(text.slice(opening.index, blockEnd))
+    copyFrom = blockEnd
+    searchFrom = blockEnd
+  }
+
+  masked += text.slice(copyFrom)
+  return { masked, blocks }
+}
+
+export function unmaskCodeBlocks(text: string, blocks: string[]): string {
+  let out = text
+  const dropped: string[] = []
+  blocks.forEach((block, i) => {
+    const token = codeBlockToken(i)
+    const first = out.indexOf(token)
+    if (first >= 0) {
+      const before = out.slice(0, first)
+      const after = out.slice(first + token.length)
+      const duplicateCount = after.split(token).length - 1
+      if (duplicateCount > 0) {
+        log.warn(
+          `Compiler agent duplicated code-block placeholder ${token} ${duplicateCount} time(s); removing duplicates`,
+        )
+      }
+      // Restore exactly once. Remove later copies of the token rather than
+      // expanding the same original block multiple times.
+      out = before + block + after.split(token).join("")
+    } else {
+      dropped.push(block)
+    }
+  })
+  // Safety net: if the agent deleted a placeholder line outright, re-attach the
+  // original block so the skill never loses reference content. Appends raw
+  // blocks (no new heading), keeping the guard's heading check happy.
+  if (dropped.length > 0) {
+    log.warn(`Compiler agent dropped ${dropped.length} code-block placeholder(s); restoring verbatim`)
+    out = `${out.replace(/\s*$/, "")}\n\n${dropped.join("\n\n")}\n`
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
 // WorkDir File Pre-loading
 // ---------------------------------------------------------------------------
 
@@ -286,8 +370,16 @@ If you cannot answer all six, do not make the edit.
 Preserve:
 - YAML frontmatter
 - all markdown headings
-- all original code blocks, unless a specific degradation requires a local simplification inside one
+- every code-block placeholder token exactly as written (see "Code Blocks Are Locked")
 - the overall workflow shape of the skill
+
+## Code Blocks Are Locked
+The skill's fenced code blocks have been replaced with atomic placeholder tokens
+of the form [[SKVM_CODE_BLOCK_N]], each on its own line. They are immutable:
+- Keep every [[SKVM_CODE_BLOCK_N]] token verbatim, on its own line, in its original position.
+- Never delete, reorder, merge, or edit a placeholder, and never invent new ones.
+- Compensate for gaps by editing the surrounding prose/instructions only.
+- If a gap genuinely requires new code, you may add your own fenced block, but you must still keep every existing placeholder.
 
 ## Workflow
 The full SKILL.md and bundled files are already provided.
@@ -347,8 +439,11 @@ function buildInitialMessage(
 EDIT the existing SKILL.md for model **${tcp.model}** on harness **${tcp.harness}**.
 All file contents are provided below. Plan your edits based on the gap details, then write the edited SKILL.md.`)
 
-  // Inline SKILL.md content
-  sections.push(`\n## Current SKILL.md\n\n\`\`\`markdown\n${skillContent}\n\`\`\``)
+  // Inline SKILL.md content (code blocks shown as [[SKVM_CODE_BLOCK_N]] placeholders)
+  sections.push(`\n## Current SKILL.md
+Fenced code blocks are shown as immutable [[SKVM_CODE_BLOCK_N]] placeholders — keep them verbatim and edit only the surrounding prose.
+
+\`\`\`markdown\n${skillContent}\n\`\`\``)
 
   // Inline bundled files
   if (bundledFiles.length > 0) {
@@ -427,9 +522,15 @@ export async function runPass1Agentic(
     return { scr, gaps, compiledSkill: skillContent }
   }
 
+  // Lock code blocks behind atomic placeholders so the agent edits prose only;
+  // originals are restored verbatim afterward. Write the masked SKILL.md to the
+  // workDir too, so a stray read_file stays consistent with the prompt.
+  const { masked, blocks } = maskCodeBlocks(skillContent)
+  await Bun.write(path.join(workDir, "SKILL.md"), masked)
+
   const bundledFiles = await readWorkDirFiles(workDir)
   const system = buildSystemPrompt(tcp)
-  const initialMessage = buildInitialMessage(scr, gaps, tcp, skillContent, bundledFiles, failureContext)
+  const initialMessage = buildInitialMessage(scr, gaps, tcp, masked, bundledFiles, failureContext)
   const executeTool = createAgentToolExecutor(workDir, { requireReadBeforeWrite: false })
 
   const loopResult = await runAgentLoop(
@@ -450,7 +551,13 @@ export async function runPass1Agentic(
   const compiledSkillFile = Bun.file(path.join(workDir, "SKILL.md"))
   let compiledSkill: string
   if (await compiledSkillFile.exists()) {
-    compiledSkill = await compiledSkillFile.text()
+    const written = await compiledSkillFile.text()
+    if (written === masked) {
+      log.warn("Compiler agent left SKILL.md unchanged — using original")
+      compiledSkill = skillContent
+    } else {
+      compiledSkill = unmaskCodeBlocks(written, blocks)
+    }
   } else {
     log.warn("Compiler agent did not write SKILL.md — using original")
     compiledSkill = skillContent
